@@ -100,14 +100,13 @@ def _load_domain_config() -> Optional[dict]:
         return None
 
 
-def run_demo(
-    target_product: Optional[str] = None,
-    competitors: Optional[list[str]] = None,
-    analysis_focus: Optional[list[str]] = None,
-    analysis_purpose: Optional[str] = None,
-    user_input: Optional[str] = None,
-) -> AgentState:
-    # DOMAIN 优先级:函数参数 > env DOMAIN > 默认 ai_coding
+def _resolve_run_args(
+    target_product: Optional[str],
+    competitors: Optional[list[str]],
+    analysis_focus: Optional[list[str]],
+    analysis_purpose: Optional[str],
+    user_input: Optional[str],
+) -> tuple[str, list[str], list[str], str, str]:
     dom = _load_domain_config()
     if dom:
         target_product = target_product or dom.get("target_product")
@@ -121,14 +120,53 @@ def run_demo(
     analysis_focus = analysis_focus or ["代码补全体验"]
     analysis_purpose = analysis_purpose or "学习竞品优点,优化自身产品"
     user_input = user_input or f"分析 {target_product} 与 {', '.join(competitors)} 在 {analysis_focus[0]} 上的差距"
+    return target_product, competitors, analysis_focus, analysis_purpose, user_input
+
+
+def run_demo_streaming(
+    target_product: Optional[str] = None,
+    competitors: Optional[list[str]] = None,
+    analysis_focus: Optional[list[str]] = None,
+    analysis_purpose: Optional[str] = None,
+    user_input: Optional[str] = None,
+):
+    """生成器: 每完成一个节点 yield (node_name, state_after_node)。
+    供 Streamlit / 任何 stream UI 实时展示节点进度用。"""
+    tp, comp, focus, purpose, ui = _resolve_run_args(
+        target_product, competitors, analysis_focus, analysis_purpose, user_input
+    )
+    app = build_app()
+    initial = build_initial_state(
+        user_input=ui,
+        target_product=tp,
+        competitors=comp,
+        analysis_focus=focus,
+        analysis_purpose=purpose,
+    )
+    for event in app.stream(initial, config={"recursion_limit": 50}):
+        # event 形如 {node_name: state_after_node}
+        for node_name, state_after in event.items():
+            yield node_name, state_after
+
+
+def run_demo(
+    target_product: Optional[str] = None,
+    competitors: Optional[list[str]] = None,
+    analysis_focus: Optional[list[str]] = None,
+    analysis_purpose: Optional[str] = None,
+    user_input: Optional[str] = None,
+) -> AgentState:
+    tp, comp, focus, purpose, ui = _resolve_run_args(
+        target_product, competitors, analysis_focus, analysis_purpose, user_input
+    )
 
     app = build_app()
     initial = build_initial_state(
-        user_input=user_input,
-        target_product=target_product,
-        competitors=competitors,
-        analysis_focus=analysis_focus,
-        analysis_purpose=analysis_purpose,
+        user_input=ui,
+        target_product=tp,
+        competitors=comp,
+        analysis_focus=focus,
+        analysis_purpose=purpose,
     )
     # LangGraph 0.2 默认 recursion_limit=25,我们最多 collector1+analyzer2+writer1 = 4 轮重试,
     # 每轮 5 节点,理论上限 ~25。给个 50 留余量。
