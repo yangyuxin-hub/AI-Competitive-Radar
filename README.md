@@ -126,3 +126,48 @@ docs/
 | `DOMAIN` | 选行业域 | `ai_coding` |
 | `REVIEWER_MODE` | `minimal` / `full` | `minimal` |
 | `SAMPLE_SOURCES_PATH` | 直接指定 evidence 文件路径(覆盖 DOMAIN) | unset |
+| `ENABLE_LIVE_FETCH` | =1 启用 OfficialPageAdapter 真实抓取 | unset(默认关) |
+| `DEMO_LOOP` | =1 配合 Mock 模式,演示 Reviewer 打回闭环 | unset |
+
+---
+
+## 答辩与演示材料
+
+- 📋 [`presentation/demo_script.md`](presentation/demo_script.md) — 5 分钟现场演示脚本(含台词)
+- 💬 [`presentation/talking_points.md`](presentation/talking_points.md) — 评委 12 个 Q&A 应答模板
+- 📊 [`docs/comparison.md`](docs/comparison.md) — 人工 vs 系统量化对比(38× 效率 + 质变)
+- 🛡️ [`docs/compliance.md`](docs/compliance.md) — 数据采集合规 / robots / 隐私
+- 🏗️ [`docs/design-v2.2.md`](docs/design-v2.2.md) — 完整架构设计(v2.2.1 frozen)
+
+---
+
+## TRAE 协作开发引导
+
+本项目设计上**预留了多个适合用 TRAE 协作开发**的扩展点。如果你要继续推进:
+
+| 模块 | 推荐用 TRAE 干什么 | 标注方式 |
+|------|------------------|---------|
+| `src/analyzer.py` | 让 TRAE 帮你迭代 prompt 结构、调整 quick_validate 规则边界 | commit message 加 `[TRAE]` 前缀,如 `[TRAE] tighten facts prompt for pricing extraction` |
+| `prompts/analyzer_*.md` | TRAE 配合实测样本调 prompt few-shot | 同上;同时在 prompt 文件头加 `> 最后调整:via TRAE 2026-05-XX` |
+| `src/reviewer.py` 规则函数 | TRAE 帮你为新规则写实现 + 单元测试 | 单测放在 `tests/test_reviewer.py`,文件头注释标 `# TRAE-assisted` |
+| `frontend/app.py` | TRAE 改 Streamlit 布局、加 chart 可视化 | commit `[TRAE-UI]` 前缀 |
+| `data/sample_sources_*.json` | TRAE 帮造新行业 evidence | data 文件 `_meta.generated_by: "TRAE-assisted"` |
+
+**为什么这样做**:评分维度 4 明确要求"TRAE 等 AI 编程工具的使用痕迹清晰",commit message + 文件头注释能让评委 5 秒看到协作证据,不需要现场演示 TRAE 操作。
+
+---
+
+## 当前完成度
+
+```
+[██████████] 阶段 A 数据 + Prompt
+[██████████] 阶段 B 骨架代码 + 真豆包跑通
+[██████████] 跨行业演示(PM 域 30 条 evidence)
+[██████████] 阶段 C 前端 Demo(Streamlit + 4 tabs)
+[██████████] 阶段 D CacheAdapter + OfficialPageAdapter(fixture 验证)
+[██████████] 阶段 E 打回闭环演示(DEMO_LOOP=1)
+[██████████] 阶段 F 答辩材料(脚本 + Q&A + 量化对比)
+[██████████] 合规说明(robots / UA / 隐私)
+```
+
+GitHub: https://github.com/yangyuxin-hub/AI-Competitive-Radar
