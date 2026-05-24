@@ -14,14 +14,21 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .analyzer import analyzer_node
-from .collector import collector_node
-from .reviewer import degraded_writer_node, make_reviewer_node
-from .state import AgentState, build_initial_state
-from .writer import writer_node
-
 
 _ROOT = Path(__file__).resolve().parent.parent
+
+# 加载 .env(若存在),允许通过 .env 注入 ARK_API_KEY / ARK_EP / ANALYZER_MOCK
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_ROOT / ".env")
+except ImportError:
+    pass
+
+from .analyzer import analyzer_node  # noqa: E402
+from .collector import collector_node  # noqa: E402
+from .reviewer import degraded_writer_node, make_reviewer_node  # noqa: E402
+from .state import AgentState, build_initial_state  # noqa: E402
+from .writer import writer_node  # noqa: E402
 
 
 # ────────────────────────────────────────────────────────────────────────────

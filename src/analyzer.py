@@ -223,11 +223,15 @@ def _step1_facts(evidence: list[dict], meta: dict) -> dict:
     llm = get_llm()
     system = load_prompt("analyzer_facts")
     payload = {"analysis_meta": meta, "raw_evidence": evidence}
-    facts = llm.call_json(system, payload, max_tokens=4096)
+    facts = llm.call_json(system, payload, max_tokens=8192, label="facts")
 
     issues = quick_validate_facts(facts, evidence, meta)
     if issues:
-        facts = llm.call_json(system + _build_repair_hint(issues), payload, max_tokens=4096)
+        print(f"[analyzer] facts quick_validate found {len(issues)} issues; repairing")
+        facts = llm.call_json(
+            system + _build_repair_hint(issues), payload,
+            max_tokens=4096, label="facts_repair",
+        )
     return facts
 
 
@@ -243,11 +247,15 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict) -> dict:
     llm = get_llm()
     system = load_prompt("analyzer_derivations")
     payload = {"analysis_meta": meta, "raw_evidence": evidence, "facts": facts}
-    der = llm.call_json(system, payload, max_tokens=3072)
+    der = llm.call_json(system, payload, max_tokens=3072, label="derivations")
 
     issues = quick_validate_derivations(der, facts, evidence)
     if issues:
-        der = llm.call_json(system + _build_repair_hint(issues), payload, max_tokens=3072)
+        print(f"[analyzer] derivations quick_validate found {len(issues)} issues; repairing")
+        der = llm.call_json(
+            system + _build_repair_hint(issues), payload,
+            max_tokens=3072, label="derivations_repair",
+        )
     return der
 
 

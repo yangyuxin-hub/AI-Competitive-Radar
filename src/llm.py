@@ -10,12 +10,43 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SAMPLE_REPORT_PATH = _ROOT / "data" / "sample_report.json"
+_LOGS_DIR = _ROOT / "logs"
+
+# 匹配 ```json ... ``` 或 ``` ... ``` 围栏
+_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _strip_json(text: str) -> str:
+    """从 LLM 输出中提取 JSON 文本:支持 ```json 围栏、纯 JSON、混杂前后缀文字"""
+    text = text.strip()
+    if not text:
+        return "{}"
+    m = _FENCE_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    # 取首个 { 到末个 } 之间内容
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        return text[start:end + 1]
+    return text
+
+
+def _save_raw(label: str, content: str) -> Path:
+    _LOGS_DIR.mkdir(exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    path = _LOGS_DIR / f"llm_raw_{label}_{ts}.txt"
+    path.write_text(content, encoding="utf-8")
+    return path
 
 
 def is_mock_mode() -> bool:
@@ -63,8 +94,15 @@ class LLMClient:
         user_payload: dict,
         model: Optional[str] = None,
         max_tokens: int = 4096,
+        label: str = "call",
     ) -> dict:
-        """调用 LLM,要求返回 JSON 对象。Mock 模式下不实际调用。"""
+        """调用 LLM,要求返回 JSON 对象。Mock 模式下不实际调用。
+
+        策略:
+        1. 先尝试 response_format=json_object(豆包大部分模型支持)
+        2. 若服务端拒绝,降级为普通文本调用 + _strip_json 抽取
+        3. JSON 解析失败时,把原始输出落盘到 logs/ 便于排查
+        """
         if is_mock_mode():
             raise RuntimeError(
                 "Mock 模式下不应直接调用 call_json,Analyzer 应该走 load_sample_report"
@@ -72,19 +110,54 @@ class LLMClient:
 
         client = self._ensure()
         model = model or os.environ.get("ARK_EP", "doubao-seed-2-0-lite")
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        ]
 
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-            ],
-            temperature=0.2,
-            max_tokens=max_tokens,
-            response_format={"type": "json_object"},
+        t0 = time.time()
+        resp = None
+        used_json_mode = False
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.2,
+                max_tokens=max_tokens,
+                response_format={"type": "json_object"},
+            )
+            used_json_mode = True
+        except Exception as e:
+            # json_object 不支持等情况,降级
+            print(f"[llm] json_object mode rejected ({type(e).__name__}: {e}); falling back to text")
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.2,
+                max_tokens=max_tokens,
+            )
+
+        elapsed = time.time() - t0
+        raw = resp.choices[0].message.content or "{}"
+        usage = getattr(resp, "usage", None)
+        usage_text = (
+            f"prompt={usage.prompt_tokens} completion={usage.completion_tokens} total={usage.total_tokens}"
+            if usage else "usage=?"
         )
-        content = resp.choices[0].message.content or "{}"
-        return json.loads(content)
+        print(f"[llm] {label}: {elapsed:.1f}s · json_mode={used_json_mode} · {usage_text}")
+
+        # 解析
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            cleaned = _strip_json(raw)
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError as e:
+                path = _save_raw(label, raw)
+                raise RuntimeError(
+                    f"LLM 输出无法解析为 JSON: {e}; 原始输出已保存到 {path}"
+                ) from e
 
 
 # 单例
