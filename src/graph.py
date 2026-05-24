@@ -84,14 +84,42 @@ def build_app(llm: Optional[object] = None, reviewer_mode: Optional[str] = None)
 # Main runner
 # ────────────────────────────────────────────────────────────────────────────
 
+def _load_domain_config() -> Optional[dict]:
+    """读取 config/domains.yaml,按 DOMAIN env 选行业。返回 None 表示走 ai_coding 默认"""
+    import os
+    domain = os.environ.get("DOMAIN", "").strip()
+    if not domain:
+        return None
+    try:
+        import yaml
+        with (_ROOT / "config" / "domains.yaml").open(encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        return (cfg.get("domains") or {}).get(domain)
+    except Exception as e:
+        print(f"[graph] WARN: DOMAIN={domain} 读取失败,回退默认: {e}")
+        return None
+
+
 def run_demo(
-    target_product: str = "Cursor",
+    target_product: Optional[str] = None,
     competitors: Optional[list[str]] = None,
     analysis_focus: Optional[list[str]] = None,
+    analysis_purpose: Optional[str] = None,
     user_input: Optional[str] = None,
 ) -> AgentState:
+    # DOMAIN 优先级:函数参数 > env DOMAIN > 默认 ai_coding
+    dom = _load_domain_config()
+    if dom:
+        target_product = target_product or dom.get("target_product")
+        competitors = competitors or dom.get("competitors")
+        analysis_focus = analysis_focus or dom.get("analysis_focus")
+        analysis_purpose = analysis_purpose or dom.get("analysis_purpose")
+        print(f"[graph] 使用行业域: {dom.get('name', '?')} (target={target_product})")
+
+    target_product = target_product or "Cursor"
     competitors = competitors or ["Windsurf", "GitHubCopilot"]
     analysis_focus = analysis_focus or ["代码补全体验"]
+    analysis_purpose = analysis_purpose or "学习竞品优点,优化自身产品"
     user_input = user_input or f"分析 {target_product} 与 {', '.join(competitors)} 在 {analysis_focus[0]} 上的差距"
 
     app = build_app()
@@ -100,6 +128,7 @@ def run_demo(
         target_product=target_product,
         competitors=competitors,
         analysis_focus=analysis_focus,
+        analysis_purpose=analysis_purpose,
     )
     # LangGraph 0.2 默认 recursion_limit=25,我们最多 collector1+analyzer2+writer1 = 4 轮重试,
     # 每轮 5 节点,理论上限 ~25。给个 50 留余量。
@@ -114,9 +143,11 @@ def main() -> int:
 
     final = run_demo()
 
-    # 写报告
-    out_dir = _ROOT / "out"
-    out_dir.mkdir(exist_ok=True)
+    # 写报告 — 按 DOMAIN 分子目录,避免覆盖
+    import os
+    domain_tag = os.environ.get("DOMAIN", "").strip() or "ai_coding"
+    out_dir = _ROOT / "out" / domain_tag
+    out_dir.mkdir(parents=True, exist_ok=True)
     report_path = out_dir / "report.md"
     qr_path = out_dir / "quality_report.json"
     schema_path = out_dir / "schema_draft.json"

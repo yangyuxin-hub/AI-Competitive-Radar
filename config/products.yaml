@@ -21,3 +21,25 @@ products:
       - https://github.com/features/copilot
     pricing_pages:
       - https://github.com/features/copilot/plans
+
+  # ─── 项目协作工具 ──────────────────────────────────────────
+  Notion:
+    aliases: ["Notion AI", "Notion workspace"]
+    official_pages:
+      - https://www.notion.so/product
+    pricing_pages:
+      - https://www.notion.so/pricing
+
+  Asana:
+    aliases: ["Asana", "Asana Premium"]
+    official_pages:
+      - https://asana.com/product
+    pricing_pages:
+      - https://asana.com/pricing
+
+  Linear:
+    aliases: ["Linear App", "Linear.app"]
+    official_pages:
+      - https://linear.app/features
+    pricing_pages:
+      - https://linear.app/pricing

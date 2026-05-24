@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
@@ -16,7 +17,26 @@ from .state import AgentState
 
 
 _ROOT = Path(__file__).resolve().parent.parent
-_SAMPLE_SOURCES_PATH = _ROOT / "data" / "sample_sources.json"
+
+
+def _resolve_sample_path() -> Path:
+    """优先级: SAMPLE_SOURCES_PATH 环境变量 > config/domains.yaml[DOMAIN] > 默认 sample_sources.json"""
+    env_path = os.environ.get("SAMPLE_SOURCES_PATH")
+    if env_path:
+        return Path(env_path)
+
+    domain = os.environ.get("DOMAIN", "").strip()
+    if domain:
+        try:
+            import yaml  # 延迟导入,避免 yaml 不装时也能跑默认
+            with (_ROOT / "config" / "domains.yaml").open(encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            entry = (cfg.get("domains") or {}).get(domain)
+            if entry and entry.get("sample_path"):
+                return _ROOT / entry["sample_path"]
+        except Exception as e:
+            print(f"[collector] WARN: failed to resolve DOMAIN={domain}: {e}")
+    return _ROOT / "data" / "sample_sources.json"
 
 REQUIRED_CLAIM_TYPES = {
     "feature_existence",
@@ -82,7 +102,7 @@ class MockAdapter(SourceAdapter):
     """从 data/sample_sources.json 读取证据 — Demo 兜底"""
 
     def __init__(self, path: Optional[Path] = None) -> None:
-        self.path = path or _SAMPLE_SOURCES_PATH
+        self.path = path or _resolve_sample_path()
         self._cache: Optional[list[dict]] = None
 
     def _load(self) -> list[dict]:
