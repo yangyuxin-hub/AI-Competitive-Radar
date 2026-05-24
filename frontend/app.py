@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import html
 import os
 import re
 import sys
@@ -43,11 +44,580 @@ _NODE_ICONS = {
     "degraded_writer": "⚠️",
 }
 
+_NODE_LABELS = {
+    "collector": "收集证据",
+    "analyzer": "分析结论",
+    "writer": "生成报告",
+    "reviewer": "规则质检",
+    "degraded_writer": "降级输出",
+}
+
+_RULE_NAMES = {
+    "R1": "引用完整",
+    "R2": "证据类型",
+    "R3": "聚合一致",
+    "R4": "推理链",
+    "R5": "结构冲突",
+    "R6": "语义落地",
+    "R7": "时效置信",
+}
+
+_STATUS_STYLE = {
+    "passed": ("通过", "ok"),
+    "warning": ("预警", "warn"),
+    "failed": ("失败", "bad"),
+    "running": ("运行中", "run"),
+    "degraded": ("降级", "warn"),
+}
+
 
 @st.cache_data
 def load_domains() -> dict:
     with (_ROOT / "config" / "domains.yaml").open(encoding="utf-8") as f:
         return (yaml.safe_load(f) or {}).get("domains", {})
+
+
+def inject_design_system() -> None:
+    st.markdown(
+        """
+<style>
+:root {
+  --ca-bg: #f6f7f4;
+  --ca-panel: #ffffff;
+  --ca-panel-soft: #f0f4ef;
+  --ca-ink: #151914;
+  --ca-muted: #667064;
+  --ca-line: #d9dfd6;
+  --ca-green: #1f7a4d;
+  --ca-blue: #245d8f;
+  --ca-amber: #a76112;
+  --ca-red: #b33c35;
+  --ca-shadow: 0 12px 34px rgba(24, 31, 23, .08);
+}
+
+.stApp {
+  background:
+    linear-gradient(180deg, rgba(246, 247, 244, .95), rgba(246, 247, 244, .98)),
+    repeating-linear-gradient(90deg, rgba(21, 25, 20, .025) 0 1px, transparent 1px 36px);
+  color: var(--ca-ink);
+}
+
+.block-container {
+  max-width: 1480px;
+  padding-top: 1.4rem;
+  padding-bottom: 3rem;
+}
+
+[data-testid="stSidebar"] {
+  background: #eef2ec;
+  border-right: 1px solid var(--ca-line);
+}
+
+[data-testid="stSidebar"] * {
+  letter-spacing: 0;
+}
+
+h1, h2, h3, h4 {
+  color: var(--ca-ink);
+  letter-spacing: 0;
+}
+
+div[data-testid="stMarkdownContainer"] h1 {
+  font-size: 34px;
+  line-height: 1.18;
+  letter-spacing: 0;
+}
+
+div[data-testid="stMarkdownContainer"] h2 {
+  font-size: 24px;
+  line-height: 1.25;
+  margin-top: 1.8rem;
+  padding-top: .7rem;
+  border-top: 2px solid #273128;
+}
+
+div[data-testid="stMarkdownContainer"] h3 {
+  font-size: 18px;
+}
+
+div[data-testid="stMarkdownContainer"] blockquote {
+  border-left: 4px solid var(--ca-green);
+  background: #f3f7f2;
+  padding: 12px 14px;
+  color: #263027;
+}
+
+div[data-testid="stMarkdownContainer"] table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+div[data-testid="stMarkdownContainer"] th {
+  background: #eef2ec;
+  color: #263027;
+  font-weight: 800;
+}
+
+div[data-testid="stMarkdownContainer"] th,
+div[data-testid="stMarkdownContainer"] td {
+  border: 1px solid var(--ca-line);
+  padding: 8px 10px;
+}
+
+.ca-topbar {
+  border: 1px solid var(--ca-line);
+  background: rgba(255, 255, 255, .82);
+  box-shadow: var(--ca-shadow);
+  padding: 22px 24px;
+  margin-bottom: 18px;
+}
+
+.ca-kicker {
+  color: var(--ca-green);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.ca-title {
+  font-size: clamp(30px, 4vw, 52px);
+  line-height: 1;
+  font-weight: 850;
+  letter-spacing: 0;
+  margin: 0 0 10px 0;
+}
+
+.ca-subtitle {
+  max-width: 920px;
+  color: var(--ca-muted);
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.ca-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.ca-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid var(--ca-line);
+  background: #fff;
+  color: var(--ca-ink);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.ca-pill.ok { border-color: rgba(31, 122, 77, .26); background: #e8f4ee; color: var(--ca-green); }
+.ca-pill.warn { border-color: rgba(167, 97, 18, .28); background: #fff4df; color: var(--ca-amber); }
+.ca-pill.bad { border-color: rgba(179, 60, 53, .25); background: #fff0ee; color: var(--ca-red); }
+.ca-pill.run { border-color: rgba(36, 93, 143, .26); background: #e9f2fb; color: var(--ca-blue); }
+
+.ca-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  margin: 14px 0 18px;
+}
+
+.ca-card {
+  border: 1px solid var(--ca-line);
+  background: rgba(255, 255, 255, .88);
+  box-shadow: 0 8px 24px rgba(24, 31, 23, .055);
+  padding: 16px;
+}
+
+.ca-card-title {
+  color: var(--ca-muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.ca-card-value {
+  color: var(--ca-ink);
+  font-size: 28px;
+  font-weight: 850;
+  line-height: 1.05;
+}
+
+.ca-card-note {
+  color: var(--ca-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  margin-top: 8px;
+}
+
+.ca-section {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--ca-line);
+  padding-bottom: 8px;
+  margin: 18px 0 12px;
+}
+
+.ca-section h3 {
+  font-size: 18px;
+  margin: 0;
+}
+
+.ca-section span {
+  color: var(--ca-muted);
+  font-size: 12px;
+}
+
+.ca-timeline {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.ca-step {
+  border: 1px solid var(--ca-line);
+  background: #fff;
+  padding: 12px;
+  min-height: 84px;
+}
+
+.ca-step.ok { border-left: 4px solid var(--ca-green); }
+.ca-step.warn { border-left: 4px solid var(--ca-amber); }
+.ca-step.run { border-left: 4px solid var(--ca-blue); }
+.ca-step.wait { border-left: 4px solid #a9b2a5; }
+
+.ca-step-name {
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.ca-step-meta {
+  color: var(--ca-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  margin-top: 8px;
+}
+
+.ca-report-shell {
+  border: 1px solid var(--ca-line);
+  background: #fff;
+  padding: 24px 28px;
+  box-shadow: var(--ca-shadow);
+}
+
+.ca-report-shell h1 {
+  font-size: 30px;
+  line-height: 1.14;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--ca-line);
+}
+
+.ca-report-shell h2 {
+  margin-top: 34px;
+  padding-top: 10px;
+  border-top: 2px solid #273128;
+  font-size: 22px;
+}
+
+.ca-report-shell h3 {
+  margin-top: 22px;
+  font-size: 17px;
+}
+
+.ca-report-shell blockquote {
+  border-left: 4px solid var(--ca-green);
+  background: #f3f7f2;
+  padding: 12px 14px;
+  margin: 14px 0;
+  color: #263027;
+}
+
+.ca-report-shell table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.ca-report-shell th {
+  background: #eef2ec;
+  color: #263027;
+  font-weight: 800;
+}
+
+.ca-report-shell th, .ca-report-shell td {
+  border: 1px solid var(--ca-line);
+  padding: 8px 10px;
+}
+
+.ca-evidence-head {
+  border: 1px solid var(--ca-line);
+  background: #ffffff;
+  padding: 14px;
+  margin-bottom: 10px;
+}
+
+.ca-muted {
+  color: var(--ca-muted);
+}
+
+.ca-empty {
+  border: 1px dashed #b7c0b2;
+  background: rgba(255, 255, 255, .65);
+  padding: 28px;
+  color: var(--ca-muted);
+}
+
+div[data-testid="stMetric"] {
+  background: #fff;
+  border: 1px solid var(--ca-line);
+  padding: 12px 14px;
+  box-shadow: 0 8px 18px rgba(24, 31, 23, .045);
+}
+
+div[data-testid="stTabs"] button {
+  font-weight: 750;
+}
+
+.stButton > button {
+  border-radius: 4px;
+  min-height: 44px;
+  font-weight: 800;
+  background: var(--ca-green);
+  color: #fff;
+  border: 1px solid var(--ca-green);
+}
+
+.stButton > button:hover {
+  background: #185f3c;
+  border-color: #185f3c;
+  color: #fff;
+}
+
+/* ─── 证据 chip 与跳转目标 ─────────────────────────── */
+html { scroll-behavior: smooth; }
+
+.ca-chip {
+  display: inline-block;
+  font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+  font-size: 11px;
+  padding: 0 6px;
+  margin: 0 2px;
+  border: 1px solid rgba(36, 93, 143, .28);
+  background: #e9f2fb;
+  color: var(--ca-blue);
+  text-decoration: none;
+  border-radius: 3px;
+  vertical-align: baseline;
+  transition: background .15s, color .15s;
+}
+.ca-chip:hover {
+  background: var(--ca-blue);
+  color: #fff;
+  border-color: var(--ca-blue);
+}
+.ca-chip.miss {
+  background: #fff0ee;
+  border-color: rgba(179, 60, 53, .35);
+  color: var(--ca-red);
+}
+
+.ca-evidence-card {
+  border: 1px solid var(--ca-line);
+  background: #fff;
+  padding: 0;
+  margin-bottom: 10px;
+  scroll-margin-top: 90px;
+  transition: box-shadow .2s, border-color .2s;
+}
+.ca-evidence-card[open] {
+  border-color: rgba(36, 93, 143, .35);
+  box-shadow: 0 4px 14px rgba(24, 31, 23, .07);
+}
+.ca-evidence-card:target {
+  border-color: var(--ca-green);
+  animation: ca-flash 1.4s ease;
+}
+@keyframes ca-flash {
+  0%   { background: #fff4df; }
+  60%  { background: #fffaef; }
+  100% { background: #fff; }
+}
+.ca-evidence-card summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 12px 14px;
+  font-weight: 720;
+  font-size: 13px;
+  color: var(--ca-ink);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.ca-evidence-card summary::-webkit-details-marker { display: none; }
+.ca-evidence-card summary::after {
+  content: "▾";
+  margin-left: auto;
+  color: var(--ca-muted);
+  font-size: 11px;
+}
+.ca-evidence-card[open] summary::after { content: "▴"; }
+.ca-evidence-card .ca-ev-body {
+  padding: 0 14px 14px;
+  font-size: 13px;
+  color: var(--ca-ink);
+  line-height: 1.55;
+}
+.ca-evidence-card .ca-ev-snippet {
+  background: #f8faf7;
+  border: 1px solid var(--ca-line);
+  padding: 10px 12px;
+  margin: 8px 0;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ca-evidence-card .ca-ev-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--ca-muted);
+}
+.ca-evidence-card .ca-ev-meta b {
+  color: var(--ca-ink);
+  font-weight: 720;
+  margin-right: 3px;
+}
+
+/* ─── 一键演示预设按钮 ─────────────────────────── */
+.ca-preset-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 14px 0 24px;
+}
+.ca-preset {
+  border: 1px solid var(--ca-line);
+  background: #fff;
+  padding: 16px 18px;
+  box-shadow: 0 6px 16px rgba(24, 31, 23, .04);
+  transition: border-color .15s, box-shadow .2s;
+}
+.ca-preset:hover { border-color: var(--ca-green); box-shadow: 0 10px 28px rgba(24, 31, 23, .08); }
+.ca-preset-name {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--ca-ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ca-preset-desc {
+  font-size: 12px;
+  color: var(--ca-muted);
+  line-height: 1.5;
+  min-height: 36px;
+}
+
+/* ─── 子步骤进度 ─────────────────────────── */
+.ca-substep {
+  border: 1px solid var(--ca-line);
+  border-left: 4px solid var(--ca-blue);
+  background: rgba(36, 93, 143, .04);
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--ca-ink);
+  margin-top: 6px;
+  font-family: ui-monospace, monospace;
+}
+.ca-substep.done {
+  border-left-color: var(--ca-green);
+  background: rgba(31, 122, 77, .05);
+}
+.ca-substep.repair {
+  border-left-color: var(--ca-amber);
+  background: rgba(167, 97, 18, .05);
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def esc(value: object) -> str:
+    return html.escape(str(value if value is not None else ""))
+
+
+def section(title: str, note: str = "") -> None:
+    st.markdown(
+        f"""
+<div class="ca-section">
+  <h3>{esc(title)}</h3>
+  <span>{esc(note)}</span>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def metric_grid(items: list[tuple[str, object, str, str]]) -> None:
+    cards = []
+    for label, value, note, style in items:
+        cards.append(
+            f"""
+<div class="ca-card">
+  <div class="ca-card-title">{esc(label)}</div>
+  <div class="ca-card-value">{esc(value)}</div>
+  <div class="ca-card-note">{esc(note)}</div>
+</div>
+            """
+        )
+    st.markdown(f"<div class='ca-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
+
+
+def topbar() -> None:
+    st.markdown(
+        """
+<div class="ca-topbar">
+  <div class="ca-kicker">Competitive Intelligence Agent</div>
+  <div class="ca-title">竞品分析工作台</div>
+  <div class="ca-subtitle">
+    面向 PM 与分析师的多 Agent 协作系统。自动收集证据、生成结构化竞品报告，并用 Reviewer 检查引用完整性、推理链和结论可信度。
+  </div>
+  <div class="ca-strip">
+    <span class="ca-pill">Collector</span>
+    <span class="ca-pill">Analyzer</span>
+    <span class="ca-pill">Writer</span>
+    <span class="ca-pill">Reviewer</span>
+    <span class="ca-pill ok">Evidence Traceable</span>
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def step_html(node: str, status_class: str, meta: str) -> str:
+    return f"""
+<div class="ca-step {status_class}">
+  <div class="ca-step-name">{_NODE_ICONS.get(node, "▶️")} {esc(_NODE_LABELS.get(node, node))}</div>
+  <div class="ca-step-meta">{esc(meta)}</div>
+</div>
+    """
 
 
 def extract_evidence_ids(text: str) -> list[str]:
@@ -62,76 +632,133 @@ def extract_evidence_ids(text: str) -> list[str]:
     return out
 
 
+def rewrite_chips(text: str, valid_ids: set[str]) -> str:
+    """把 [SXXXXXXX] 替换为可点击 anchor 链接;未命中 raw_evidence 的标 miss 样式"""
+    def repl(m: re.Match) -> str:
+        eid = m.group(1)
+        cls = "ca-chip" if eid in valid_ids else "ca-chip miss"
+        return f'<a href="#ev-{eid}" class="{cls}">[{eid}]</a>'
+    return _CHIP_RE.sub(repl, text or "")
+
+
 def render_evidence_panel(evidence_ids: list[str], evidence_pool: list[dict]) -> None:
+    """证据列表用原生 HTML <details>,带 id=ev-XXX 锚点供 chip 跳转;
+    第一项默认展开,其余折叠 — 但 chip 点击会触发 :target 闪光 + scroll-into-view。"""
     by_id = {e["evidence_id"]: e for e in evidence_pool}
-    st.markdown(f"#### 证据库({len(evidence_ids)} 条被引用)")
-    st.caption("按报告中首次出现顺序排列,点击展开看原文 snippet")
-    for eid in evidence_ids:
+    st.markdown(
+        f"""
+<div class="ca-evidence-head">
+  <div class="ca-card-title">Evidence Library</div>
+  <div class="ca-card-value">{len(evidence_ids)} 条</div>
+  <div class="ca-card-note">点击左侧报告里的 <span class="ca-chip">[SXXXXXXX]</span> chip,会自动滚动到对应证据并闪烁一下。</div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    cards_html: list[str] = []
+    for idx, eid in enumerate(evidence_ids):
         ev = by_id.get(eid)
         if not ev:
-            st.warning(f"`{eid}` 未在 raw_evidence 中找到")
+            cards_html.append(
+                f"""
+<details class="ca-evidence-card" id="ev-{esc(eid)}" open>
+  <summary><span class="ca-chip miss">{esc(eid)}</span> 未在 raw_evidence 中找到</summary>
+  <div class="ca-ev-body">
+    <p class="ca-muted">Reviewer R1 会把这条标记为 evidence_id_not_found 错误。</p>
+  </div>
+</details>
+                """
+            )
             continue
-        label = f"`{eid}` · **{ev['product']}** · {ev['claim_type']} · {ev['source_bias']}"
-        with st.expander(label):
-            st.markdown(f"**Claim**:{ev.get('claim', '')}")
-            st.markdown(f"**Snippet**:")
-            st.code(ev.get("extracted_snippet", ""), language=None)
-            cols = st.columns(4)
-            cols[0].metric("可信度", f"{ev.get('source_reliability', 0):.2f}")
-            cols[1].metric("相关性", f"{ev.get('claim_relevance', 0):.2f}")
-            cols[2].metric("综合", f"{ev.get('evidence_confidence', 0):.2f}")
-            cols[3].metric("时效", ev.get("source_freshness", "?"))
-            st.caption(f"📅 {ev.get('observed_at', '?')} · 🔗 [{ev.get('source_url', '')}]({ev.get('source_url', '')})")
+        open_attr = "open" if idx == 0 else ""
+        url = esc(ev.get("source_url", ""))
+        cards_html.append(
+            f"""
+<details class="ca-evidence-card" id="ev-{esc(eid)}" {open_attr}>
+  <summary>
+    <span class="ca-chip">{esc(eid)}</span>
+    <span><b>{esc(ev.get('product', ''))}</b> · {esc(ev.get('claim_type', ''))} · {esc(ev.get('source_bias', ''))}</span>
+  </summary>
+  <div class="ca-ev-body">
+    <div><b>Claim</b>:{esc(ev.get('claim', ''))}</div>
+    <div class="ca-ev-snippet">{esc(ev.get('extracted_snippet', ''))}</div>
+    <div class="ca-ev-meta">
+      <span><b>可信度</b>{esc(f"{ev.get('source_reliability', 0):.2f}")}</span>
+      <span><b>相关性</b>{esc(f"{ev.get('claim_relevance', 0):.2f}")}</span>
+      <span><b>综合</b>{esc(f"{ev.get('evidence_confidence', 0):.2f}")}</span>
+      <span><b>时效</b>{esc(ev.get('source_freshness', '?'))}</span>
+      <span><b>观测</b>{esc(ev.get('observed_at', '?'))}</span>
+      <span><b>来源</b><a href="{url}" target="_blank" rel="noopener">{url}</a></span>
+    </div>
+  </div>
+</details>
+            """
+        )
+    st.markdown("".join(cards_html), unsafe_allow_html=True)
 
 
 def render_quality_report(qr: dict) -> None:
     if not qr:
         st.info("尚无质检报告")
         return
-    cols = st.columns(4)
-    cols[0].metric("总分", f"{qr.get('quality_score', '?')}/100")
-    cols[1].metric("模式", qr.get("mode", "?"))
-    cols[2].metric("错误数", len(qr.get("errors", [])))
-    cols[3].metric("警告数", len(qr.get("warnings", [])))
+    errors = qr.get("errors", [])
+    warnings = qr.get("warnings", [])
+    score = qr.get("quality_score", "?")
+    metric_grid([
+        ("质量分", f"{score}/100", "Reviewer 规则综合评分", "ok"),
+        ("模式", qr.get("mode", "?"), "minimal 适合演示，full 适合答辩", "run"),
+        ("错误", len(errors), "会触发打回或降级", "bad"),
+        ("警告", len(warnings), "不阻断当前输出", "warn"),
+    ])
 
-    st.markdown("#### 规则状态")
+    section("规则状态", "R1-R7")
     pass_set = set(qr.get("passed_rules", []))
     warn_set = set(qr.get("warning_rules", []))
     fail_set = set(qr.get("failed_rules", []))
-    all_rules = {
-        "R1": "evidence_reference_integrity",
-        "R2": "claim_type_compatibility",
-        "R3": "aggregation_integrity",
-        "R4": "reasoning_chain_integrity",
-        "R5": "structured_contradiction",
-        "R6": "semantic_grounding",
-        "R7": "freshness_and_confidence",
-    }
-    rcols = st.columns(7)
-    for col, (rid, name) in zip(rcols, all_rules.items()):
+    rule_cards = []
+    for rid, name in _RULE_NAMES.items():
         if rid in fail_set:
-            col.markdown(f"❌ **{rid}**\n\n{name}")
+            cls, label = "bad", "失败"
         elif rid in warn_set:
-            col.markdown(f"⚠️ **{rid}**\n\n{name}")
+            cls, label = "warn", "预警"
         elif rid in pass_set:
-            col.markdown(f"✅ **{rid}**\n\n{name}")
+            cls, label = "ok", "通过"
         else:
-            col.markdown(f"⬜ {rid}\n\n{name}")
+            cls, label = "", "未执行"
+        rule_cards.append(
+            f"""
+<div class="ca-card">
+  <div class="ca-card-title">{rid}</div>
+  <div class="ca-card-value" style="font-size:18px">{esc(name)}</div>
+  <div class="ca-card-note"><span class="ca-pill {cls}">{esc(label)}</span></div>
+</div>
+            """
+        )
+    st.markdown(f"<div class='ca-grid'>{''.join(rule_cards)}</div>", unsafe_allow_html=True)
 
-    st.markdown("#### 模块状态")
+    section("模块状态", "每个产物分区的健康度")
     ms = qr.get("module_status", {})
-    mcols = st.columns(len(ms) or 1)
-    for col, (mod, status) in zip(mcols, ms.items()):
-        icon = {"passed": "✅", "warning": "⚠️", "failed": "❌"}.get(status, "❓")
-        col.markdown(f"{icon} **{mod}**\n\n{status}")
+    mod_cards = []
+    for mod, status in ms.items():
+        label, cls = _STATUS_STYLE.get(status, (status, ""))
+        mod_cards.append(
+            f"""
+<div class="ca-card">
+  <div class="ca-card-title">{esc(mod)}</div>
+  <div class="ca-card-note"><span class="ca-pill {esc(cls)}">{esc(label)}</span></div>
+</div>
+            """
+        )
+    st.markdown(f"<div class='ca-grid'>{''.join(mod_cards)}</div>", unsafe_allow_html=True)
 
-    if qr.get("warnings"):
-        with st.expander(f"⚠️ {len(qr['warnings'])} 条 warnings"):
-            for w in qr["warnings"]:
+    if warnings:
+        with st.expander(f"⚠️ {len(warnings)} 条 warnings"):
+            for w in warnings:
                 st.markdown(f"- **[{w['rule']}]** `{w['location']}` · {w.get('detail', '')}")
-    if qr.get("errors"):
-        with st.expander(f"❌ {len(qr['errors'])} 条 errors"):
-            for e in qr["errors"]:
+    if errors:
+        with st.expander(f"❌ {len(errors)} 条 errors"):
+            for e in errors:
                 st.markdown(f"- **[{e['rule']}]** `{e['location']}` · {e.get('detail', '')}")
 
 
@@ -146,63 +773,94 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-st.title("🔍 竞品分析 Agent 协作系统")
-st.caption(
-    "多 Agent · LangGraph · 豆包 Lite · 4 个专职 Agent (Collector / Analyzer / Writer / Reviewer) "
-    "+ 自动打回闭环 · 全链路证据可溯源 — 设计 v2.2.1"
-)
+inject_design_system()
+topbar()
 
 domains = load_domains()
 
+# ─── 应用一键预设(session_state 注入需在 widget 渲染前发生)───────
+PRESETS = {
+    "ai_coding_mock": {
+        "label": "💻 AI 编程演示", "domain": "ai_coding",
+        "mock": True, "loop": False, "mode": "minimal",
+        "desc": "Cursor vs Windsurf vs GitHubCopilot,Mock 模式秒级跑完",
+    },
+    "pm_mock": {
+        "label": "📋 PM 工具演示", "domain": "pm",
+        "mock": True, "loop": False, "mode": "minimal",
+        "desc": "Notion vs Asana vs Linear,验证零代码切换行业",
+    },
+    "loop_demo": {
+        "label": "🔄 打回闭环演示", "domain": "ai_coding",
+        "mock": True, "loop": True, "mode": "minimal",
+        "desc": "Analyzer 首轮注入 3 错误 → Reviewer 打回 → 重试通过",
+    },
+}
+
+_pending = st.session_state.pop("_preset_pending", None)
+if _pending:
+    p = PRESETS[_pending]
+    st.session_state["sb_domain"] = p["domain"]
+    st.session_state["sb_mock"] = p["mock"]
+    st.session_state["sb_loop"] = p["loop"]
+    st.session_state["sb_mode"] = p["mode"]
+    st.session_state["_auto_run"] = True
+    dom_default = domains.get(p["domain"], {})
+    st.session_state["sb_target"] = dom_default.get("target_product", "")
+    st.session_state["sb_competitors"] = "\n".join(dom_default.get("competitors", []))
+    st.session_state["sb_focus"] = (dom_default.get("analysis_focus") or [""])[0]
+
 with st.sidebar:
-    st.markdown("### 🌐 行业域")
+    st.markdown("### 行业域")
     domain_key = st.selectbox(
         "选择行业",
         list(domains.keys()),
-        format_func=lambda k: f"{k} — {domains[k].get('name', '')}",
+        format_func=lambda k: f"{domains[k].get('name', '')} · {k}",
         help="domains.yaml 配置;切换 = 改一行 env DOMAIN=xxx,不改代码",
+        key="sb_domain",
     )
     dom_cfg = domains.get(domain_key, {})
 
-    st.markdown("### 🎯 分析对象")
-    target = st.text_input("目标产品", value=dom_cfg.get("target_product", ""))
-    competitors_text = st.text_area(
-        "竞品(每行一个)",
-        value="\n".join(dom_cfg.get("competitors", [])),
-        height=80,
-    )
-    focus = st.text_input(
-        "分析焦点",
-        value=(dom_cfg.get("analysis_focus") or [""])[0],
-    )
+    st.markdown("### 分析对象")
+    if "sb_target" not in st.session_state:
+        st.session_state["sb_target"] = dom_cfg.get("target_product", "")
+    if "sb_competitors" not in st.session_state:
+        st.session_state["sb_competitors"] = "\n".join(dom_cfg.get("competitors", []))
+    if "sb_focus" not in st.session_state:
+        st.session_state["sb_focus"] = (dom_cfg.get("analysis_focus") or [""])[0]
 
-    st.markdown("### ⚙️ Agent 配置")
+    target = st.text_input("目标产品", key="sb_target")
+    competitors_text = st.text_area("竞品(每行一个)", height=80, key="sb_competitors")
+    focus = st.text_input("分析焦点", key="sb_focus")
+
+    st.markdown("### Agent 配置")
     reviewer_mode = st.radio(
         "Reviewer 模式",
         ["minimal", "full"],
         index=0,
         horizontal=True,
         help="minimal: R1/R4/R5 当 error,其余 warning;full: R1-R5 都是 error,R6 终轮启用",
+        key="sb_mode",
     )
 
     use_mock = st.toggle(
         "🧪 Mock 模式(跳过真实 LLM)",
-        value=False,
         help="开启后 Analyzer 直接返回 sample_report.json,用于评委演示时省 API 调用",
+        key="sb_mock",
     )
 
     demo_loop = st.toggle(
         "🔄 演示打回闭环",
-        value=False,
         help=(
             "开启后(仅 Mock 模式生效)Analyzer 首轮故意输出含 R1+R5+R4 错误的 schema,"
             "Reviewer 检出 → reject_target=analyzer → 重试 → 第二轮干净通过。"
             "用于演示评分维度 1 的「反馈闭环真实可触发,且重做后输出有改善」。"
         ),
+        key="sb_loop",
     )
 
     if not use_mock:
-        st.markdown("### 🔑 ARK API")
+        st.markdown("### ARK API")
         api_key = st.text_input(
             "ARK_API_KEY",
             value=os.environ.get("ARK_API_KEY", ""),
@@ -236,7 +894,10 @@ if "final_state" not in st.session_state:
 if "node_log" not in st.session_state:
     st.session_state.node_log = []
 
-if run_btn:
+auto_run = st.session_state.pop("_auto_run", False)
+should_run = run_btn or auto_run
+
+if should_run:
     # 注入环境变量
     os.environ["DOMAIN"] = domain_key
     os.environ["REVIEWER_MODE"] = reviewer_mode
@@ -259,21 +920,71 @@ if run_btn:
 
     competitors_list = [c.strip() for c in competitors_text.splitlines() if c.strip()]
 
-    st.markdown(f"#### ⏱️ 正在运行:**{target}** vs {', '.join(competitors_list)} — {focus}")
+    metric_grid([
+        ("目标产品", target, "本轮分析的主产品", ""),
+        ("竞品数量", len(competitors_list), ", ".join(competitors_list), ""),
+        ("分析焦点", focus, "报告会围绕该维度展开", ""),
+        ("运行模式", "Mock" if use_mock else "LLM", reviewer_mode, ""),
+    ])
+    section("Agent 运行进度", f"{target} vs {', '.join(competitors_list)}")
     progress_box = st.container()
+    substep_box = st.empty()  # Analyzer 子步骤实时刷新(消灭 80s 静默)
     log_box = st.empty()
 
     try:
         from src.graph import run_demo_streaming
+        from src.analyzer import set_progress_callback
+        from src.llm import set_llm_callback
+
+        # ─── 注册子步骤回调,Analyzer / LLM 调用期间实时刷新 ──────────
+        substep_state = {"current": "", "tokens": 0}
+
+        def _render_substep():
+            line = substep_state["current"]
+            tok = substep_state["tokens"]
+            tok_text = f" · 累计 {tok:,} token" if tok else ""
+            cls = substep_state.get("cls", "")
+            substep_box.markdown(
+                f"<div class='ca-substep {cls}'>{esc(line)}{esc(tok_text)}</div>",
+                unsafe_allow_html=True,
+            )
+
+        def on_analyzer(evt):
+            step = evt.get("step", "?")
+            phase = evt.get("phase", "?")
+            attempt = evt.get("attempt", 1)
+            label = {"facts": "Step 1/2 事实层(features + pricing + persona)",
+                     "derivations": "Step 2/2 推导层(swot + recommendations)"}.get(step, step)
+            if phase == "start":
+                substep_state["current"] = f"📡 调用中:{label} · 第 {attempt} 次"
+                substep_state["cls"] = ""
+            elif phase == "done":
+                substep_state["current"] = f"✅ 完成:{label} · 第 {attempt} 次"
+                substep_state["cls"] = "done"
+            elif phase == "repair":
+                substep_state["current"] = f"🔧 自修复:{label} 检出 {evt.get('issues', 0)} issue,重新调用 LLM"
+                substep_state["cls"] = "repair"
+            _render_substep()
+
+        def on_llm(evt):
+            if evt.get("phase") == "done":
+                substep_state["tokens"] += evt.get("prompt_tokens", 0) + evt.get("completion_tokens", 0)
+                substep_state["current"] += f" · {evt.get('duration', 0):.1f}s"
+                _render_substep()
+
+        set_progress_callback(on_analyzer)
+        set_llm_callback(on_llm)
 
         # 节点活动指示(带 pass 计数,允许重复出现)
         node_counts = {"collector": 0, "analyzer": 0, "writer": 0, "reviewer": 0}
         with progress_box:
             placeholders = {}
             for node in node_counts:
-                icon = _NODE_ICONS[node]
                 placeholders[node] = st.empty()
-                placeholders[node].markdown(f"⬜ {icon} **{node}** — 等待中")
+                placeholders[node].markdown(
+                    step_html(node, "wait", "等待调度"),
+                    unsafe_allow_html=True,
+                )
 
         t0 = time.time()
         final_state = None
@@ -303,22 +1014,31 @@ if run_btn:
                     qr = state_after.get("quality_report") or {}
                     err_n = len(qr.get("errors") or [])
                     placeholders[node_name].markdown(
-                        f"🔁 {icon} **reviewer · 第 {pass_n} 次** — "
-                        f"检出 **{err_n} 个 error**, 打回 `{reject}` ({step_duration:.1f}s)"
+                        step_html(
+                            node_name,
+                            "warn",
+                            f"第 {pass_n} 次，检出 {err_n} 个 error，打回 {_NODE_LABELS.get(reject, reject)}，耗时 {step_duration:.1f}s",
+                        ),
+                        unsafe_allow_html=True,
                     )
                 elif node_name == "reviewer" and status == "passed":
                     placeholders[node_name].markdown(
-                        f"✅ {icon} **reviewer · 第 {pass_n} 次** — **PASSED** ({step_duration:.1f}s)"
+                        step_html(node_name, "ok", f"第 {pass_n} 次，通过质检，耗时 {step_duration:.1f}s"),
+                        unsafe_allow_html=True,
                     )
                 else:
                     suffix = f"· 第 {pass_n} 次" if pass_n > 1 else ""
                     placeholders[node_name].markdown(
-                        f"✅ {icon} **{node_name}** {suffix} — 完成 ({step_duration:.1f}s)"
+                        step_html(node_name, "ok", f"完成 {suffix}，耗时 {step_duration:.1f}s"),
+                        unsafe_allow_html=True,
                     )
             else:
                 # 例如 degraded_writer
                 with progress_box:
-                    st.markdown(f"⚠️ {icon} **{node_name}** — 完成 ({step_duration:.1f}s)")
+                    st.markdown(
+                        step_html(node_name, "warn", f"完成，耗时 {step_duration:.1f}s"),
+                        unsafe_allow_html=True,
+                    )
 
             final_state = state_after
 
@@ -335,7 +1055,9 @@ if run_btn:
             if retry_text:
                 line += f" retry={{{retry_text}}}"
             events_text.append(line)
-            log_box.code("\n".join(events_text[-16:]), language=None)
+            with log_box.container():
+                with st.expander("查看节点日志", expanded=False):
+                    st.code("\n".join(events_text[-16:]), language=None)
 
         st.session_state.final_state = final_state
         st.session_state.completed = True
@@ -363,79 +1085,126 @@ if st.session_state.completed and st.session_state.final_state:
     report_md = fs.get("report_draft") or ""
     raw_ev = fs.get("raw_evidence") or []
     qr = fs.get("quality_report") or {}
+    eids = extract_evidence_ids(report_md)
+    status = fs.get("status", "?")
+    status_label, status_cls = _STATUS_STYLE.get(status, (status, ""))
+
+    st.markdown(
+        f"""
+<div class="ca-strip">
+  <span class="ca-pill {esc(status_cls)}">状态：{esc(status_label)}</span>
+  <span class="ca-pill">质量分：{esc(qr.get('quality_score', '?'))}/100</span>
+  <span class="ca-pill">证据：{len(raw_ev)} 条</span>
+  <span class="ca-pill">引用：{len(eids)} 条</span>
+  <span class="ca-pill">Reviewer：{esc(qr.get('mode', '?'))}</span>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     tab_report, tab_quality, tab_schema, tab_raw = st.tabs([
-        "📄 报告与证据",
-        "🧪 质检详情",
-        "🗂️ schema_draft",
-        "📚 原始 evidence",
+        "报告与证据",
+        "质检详情",
+        "结构化结果",
+        "原始证据",
     ])
 
     with tab_report:
         left, right = st.columns([3, 2], gap="medium")
         with left:
-            st.markdown(report_md, unsafe_allow_html=False)
+            section("竞品报告", "带证据 chip 的 Markdown 输出 · 点击 chip 跳右侧证据")
+            valid_ids = {e["evidence_id"] for e in raw_ev}
+            rewritten = rewrite_chips(report_md, valid_ids)
+            st.markdown(f"<div class='ca-report-shell'>\n\n{rewritten}\n\n</div>",
+                        unsafe_allow_html=True)
         with right:
-            eids = extract_evidence_ids(report_md)
             render_evidence_panel(eids, raw_ev)
 
     with tab_quality:
         render_quality_report(qr)
-        st.markdown("#### 节点执行日志")
+        section("节点执行日志", "LangGraph 事件序列")
         st.code("\n".join(st.session_state.node_log), language=None)
-        st.markdown("#### 重试明细")
+        section("重试明细", "按 target 分桶")
         st.json(fs.get("retry_count", {}))
 
     with tab_schema:
-        st.caption("Analyzer 两步式输出的完整 schema_draft(feature_tree + pricing_model + user_persona + swot + recommendations)")
+        section("schema_draft", "Analyzer 两步式输出")
+        st.caption("包含 feature_tree、pricing_model、user_persona、swot、recommendations。")
         st.json(fs.get("schema_draft") or {}, expanded=False)
 
     with tab_raw:
-        st.caption(f"Collector 抓取并去重后的 raw_evidence — {len(raw_ev)} 条")
+        section("raw_evidence", f"Collector 抓取并去重后的 {len(raw_ev)} 条证据")
         for ev in raw_ev:
             label = f"`{ev['evidence_id']}` · **{ev['product']}** · {ev['claim_type']} · {ev['source_bias']}"
             with st.expander(label):
                 st.json(ev, expanded=False)
 
-elif not run_btn:
-    # 首屏:简介
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("""
-### 🔧 这套系统能做什么
+elif not should_run:
+    # 首屏:一键演示 + 简介
+    section("一键演示", "点击下面任意场景,系统会自动填写配置并立刻开始分析")
 
-- **多 Agent 协作**:Collector 抓证据 → Analyzer 两步出结构化 schema → Writer 渲染报告 → Reviewer 7 条规则质检
-- **失败可降级**:Reviewer 打回 Collector/Analyzer/Writer,按 target 分桶配额(`{collector:1, analyzer:2, writer:1}`),配额耗尽走降级报告
-- **证据全溯源**:每条结论后缀 `[SXXXXXXX]` chip,可在右侧证据库展开看原文 snippet
-- **零代码切行业**:`config/domains.yaml` 加一个 entry 即可切换(本 demo 已含 AI 编程 + 项目协作工具两个域)
-        """)
-    with col2:
-        st.markdown("""
-### 📋 怎么用
+    preset_cols = st.columns(len(PRESETS))
+    for col, (key, cfg) in zip(preset_cols, PRESETS.items()):
+        with col:
+            st.markdown(
+                f"""
+<div class="ca-preset">
+  <div class="ca-preset-name">{esc(cfg['label'])}</div>
+  <div class="ca-preset-desc">{esc(cfg['desc'])}</div>
+</div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button(f"启动 {cfg['label']}", key=f"preset_btn_{key}", use_container_width=True):
+                st.session_state["_preset_pending"] = key
+                st.rerun()
 
-1. **左侧侧栏** 选行业域,默认参数会自动填好
-2. 可改 target / competitors / focus 自定义场景
-3. **Reviewer 模式**:`minimal` 适合 demo(R1/R4/R5 当 error),`full` 答辩展示(R1-R5 全 error)
-4. **Mock 模式**:无 API key 时跳过真实 LLM,直接拿 `sample_report.json` 走完 graph
-5. 配好后点 **🚀 开始分析**,实时看 Agent 进度
-        """)
-        st.info("提示:豆包真实调用约 2-5 分钟(Analyzer 两步各 60-90s);demo 时建议先开 Mock 跑一次熟悉界面")
+    metric_grid([
+        ("输入", "一句话", "分析 X 和 Y 在 Z 维度的差距", ""),
+        ("流程", "4 Agent", "Collector → Analyzer → Writer → Reviewer", ""),
+        ("质量", "R1-R7", "证据、推理链、结构一致性检查", ""),
+        ("输出", "可溯源", "点 chip 跳证据,看原文 snippet 与可信度", ""),
+    ])
 
-    st.markdown("---")
+    section("自定义演示路径", "或者从侧栏自己配,启动 Mock 模式无需 API key")
     st.markdown(
         """
-### 🔄 演示打回闭环(评分维度 1 硬指标)
+<div class="ca-grid">
+  <div class="ca-card">
+    <div class="ca-card-title">Step 1</div>
+    <div class="ca-card-value" style="font-size:20px">选择行业域</div>
+    <div class="ca-card-note">左侧会自动填入目标产品、竞品和分析焦点。</div>
+  </div>
+  <div class="ca-card">
+    <div class="ca-card-title">Step 2</div>
+    <div class="ca-card-value" style="font-size:20px">开启 Mock</div>
+    <div class="ca-card-note">没有 API key 也能完整跑完图编排和报告展示。</div>
+  </div>
+  <div class="ca-card">
+    <div class="ca-card-title">Step 3</div>
+    <div class="ca-card-value" style="font-size:20px">开始分析</div>
+    <div class="ca-card-note">实时观察每个 Agent 的状态、打回和质检结果。</div>
+  </div>
+  <div class="ca-card">
+    <div class="ca-card-title">Step 4</div>
+    <div class="ca-card-value" style="font-size:20px">展开证据</div>
+    <div class="ca-card-note">报告中的证据 chip 会映射到右侧原始 snippet。</div>
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-侧栏勾选 **🔄 演示打回闭环**(需先开 Mock 模式),Analyzer 首轮会故意输出含 3 个错误的 schema:
-
-- **R1** evidence_id `SDEMOFAK` 不存在于 raw_evidence
-- **R5** R001.priority_score.final_score = 9.99,与公式计算 4.15 矛盾
-- **R002** 的 source_feature_ids / source_pain_ids 都被清空 → **R4** 推理链断裂
-
-Reviewer 检出 3 个 error → `reject_target=analyzer` → 回路打回 → 第二轮 Analyzer 输出干净版 →
-Reviewer 通过 → 完整 **7 步事件序列**:
-`collector → analyzer(污染) → writer → reviewer(打回) → analyzer(干净) → writer → reviewer(passed)`
-
-最终 `retry_count={'analyzer': 1}`,errors 从 3 → 0,**重做后输出有改善**。
+    section("打回闭环演示", "评分维度 1 的关键看点")
+    st.markdown(
         """
+<div class="ca-card">
+  <div class="ca-card-value" style="font-size:22px">Analyzer 首轮故意犯错，Reviewer 发现后打回，第二轮修复通过。</div>
+  <div class="ca-card-note">
+    勾选“演示打回闭环”后，系统会触发 R1 引用不存在、R5 分数公式冲突、R4 推理链断裂。
+    最终事件序列为 collector → analyzer → writer → reviewer → analyzer → writer → reviewer，能清楚展示“发现问题、定位目标、重做变好”的闭环。
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
     )

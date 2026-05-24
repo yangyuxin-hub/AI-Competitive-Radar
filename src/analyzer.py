@@ -21,6 +21,30 @@ def _is_demo_loop() -> bool:
     return os.environ.get("DEMO_LOOP", "").strip() in ("1", "true", "True")
 
 
+# ───────────────────────────────────────────────────────────────────────
+# 进度回调
+# ───────────────────────────────────────────────────────────────────────
+
+_PROGRESS_CALLBACK = None  # type: Optional[callable]
+
+
+def set_progress_callback(cb) -> None:
+    """注册 Analyzer 进度事件回调。事件字典:
+    {step: 'facts'|'derivations', phase: 'start'|'done'|'repair', issues?, attempt?}
+    回调失败不影响主流程。"""
+    global _PROGRESS_CALLBACK
+    _PROGRESS_CALLBACK = cb
+
+
+def _emit_progress(**evt) -> None:
+    if _PROGRESS_CALLBACK is None:
+        return
+    try:
+        _PROGRESS_CALLBACK(evt)
+    except Exception:
+        pass
+
+
 def _corrupt_facts_for_demo(facts: dict) -> dict:
     """注入一个 R1 错误(evidence_id 不存在)演示打回。深拷贝后修改,不污染原 sample。"""
     out = copy.deepcopy(facts)
@@ -260,15 +284,19 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0) -> d
     llm = get_llm()
     system = load_prompt("analyzer_facts")
     payload = {"analysis_meta": meta, "raw_evidence": evidence}
+    _emit_progress(step="facts", phase="start", attempt=1)
     facts = llm.call_json(system, payload, max_tokens=8192, label="facts")
+    _emit_progress(step="facts", phase="done", attempt=1)
 
     issues = quick_validate_facts(facts, evidence, meta)
     if issues:
         print(f"[analyzer] facts quick_validate found {len(issues)} issues; repairing")
+        _emit_progress(step="facts", phase="repair", issues=len(issues))
         facts = llm.call_json(
             system + _build_repair_hint(issues), payload,
             max_tokens=4096, label="facts_repair",
         )
+        _emit_progress(step="facts", phase="done", attempt=2)
     return facts
 
 
@@ -289,15 +317,19 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
     llm = get_llm()
     system = load_prompt("analyzer_derivations")
     payload = {"analysis_meta": meta, "raw_evidence": evidence, "facts": facts}
+    _emit_progress(step="derivations", phase="start", attempt=1)
     der = llm.call_json(system, payload, max_tokens=3072, label="derivations")
+    _emit_progress(step="derivations", phase="done", attempt=1)
 
     issues = quick_validate_derivations(der, facts, evidence)
     if issues:
         print(f"[analyzer] derivations quick_validate found {len(issues)} issues; repairing")
+        _emit_progress(step="derivations", phase="repair", issues=len(issues))
         der = llm.call_json(
             system + _build_repair_hint(issues), payload,
             max_tokens=3072, label="derivations_repair",
         )
+        _emit_progress(step="derivations", phase="done", attempt=2)
     return der
 
 

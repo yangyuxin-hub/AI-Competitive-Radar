@@ -49,6 +49,30 @@ def _save_raw(label: str, content: str) -> Path:
     return path
 
 
+# ───────────────────────────────────────────────────────────────────────
+# 进度回调(UI 实时刷新用)
+# ───────────────────────────────────────────────────────────────────────
+
+_LLM_CALLBACK = None  # type: Optional[callable]
+
+
+def set_llm_callback(cb) -> None:
+    """注册 LLM 调用事件回调。事件字典字段:
+    {label, phase: 'start'|'done', duration, prompt_tokens, completion_tokens, json_mode}
+    回调失败不影响主流程。"""
+    global _LLM_CALLBACK
+    _LLM_CALLBACK = cb
+
+
+def _emit_llm(**evt) -> None:
+    if _LLM_CALLBACK is None:
+        return
+    try:
+        _LLM_CALLBACK(evt)
+    except Exception:
+        pass
+
+
 def is_mock_mode() -> bool:
     return os.environ.get("ANALYZER_MOCK", "").strip() in ("1", "true", "True")
 
@@ -116,6 +140,7 @@ class LLMClient:
         ]
 
         t0 = time.time()
+        _emit_llm(label=label, phase="start")
         resp = None
         used_json_mode = False
         try:
@@ -140,11 +165,18 @@ class LLMClient:
         elapsed = time.time() - t0
         raw = resp.choices[0].message.content or "{}"
         usage = getattr(resp, "usage", None)
+        prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
+        completion_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
         usage_text = (
-            f"prompt={usage.prompt_tokens} completion={usage.completion_tokens} total={usage.total_tokens}"
+            f"prompt={prompt_tokens} completion={completion_tokens} total={prompt_tokens + completion_tokens}"
             if usage else "usage=?"
         )
         print(f"[llm] {label}: {elapsed:.1f}s · json_mode={used_json_mode} · {usage_text}")
+        _emit_llm(
+            label=label, phase="done",
+            duration=elapsed, json_mode=used_json_mode,
+            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+        )
 
         # 解析
         try:
