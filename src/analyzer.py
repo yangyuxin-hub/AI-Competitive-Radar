@@ -1,0 +1,266 @@
+"""Analyzer 节点(两步式) — 见 docs/design-v2.2.md §六
+
+Step 1: facts (feature_tree + pricing_model + user_persona)
+Step 2: derivations (swot + recommendations)
+
+每步带一次 quick_validate 本地自修复。
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Optional
+
+from .llm import get_llm, is_mock_mode, load_sample_report
+from .state import AgentState
+
+
+_ROOT = Path(__file__).resolve().parent.parent
+_PROMPTS_DIR = _ROOT / "prompts"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Prompt 加载
+# ────────────────────────────────────────────────────────────────────────────
+
+_prompt_cache: dict[str, str] = {}
+
+
+def load_prompt(name: str) -> str:
+    if name in _prompt_cache:
+        return _prompt_cache[name]
+    path = _PROMPTS_DIR / f"{name}.md"
+    _prompt_cache[name] = path.read_text(encoding="utf-8")
+    return _prompt_cache[name]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# evidence 引用遍历(Analyzer 自校验 + Reviewer R1 共用)
+# ────────────────────────────────────────────────────────────────────────────
+
+def collect_all_evidence_refs(
+    schema: dict,
+) -> list[tuple[str, list[str], list[str]]]:
+    """返回 [(path, evidence_ids, allowed_claim_types), ...]"""
+    refs: list[tuple[str, list[str], list[str]]] = []
+
+    # feature_tree
+    for f in schema.get("feature_tree", {}).get("features", []):
+        fid = f.get("feature_id", "?")
+        for pname, pdata in (f.get("products") or {}).items():
+            refs.append((
+                f"feature_tree.{fid}.{pname}.support_evidence_ids",
+                pdata.get("support_evidence_ids") or [],
+                ["feature_existence"],
+            ))
+            qs = pdata.get("quality_score") or {}
+            refs.append((
+                f"feature_tree.{fid}.{pname}.quality_score.evidence_ids",
+                qs.get("evidence_ids") or [],
+                ["performance_quality", "user_pain"],
+            ))
+            agg = qs.get("aggregation") or {}
+            refs.append((
+                f"feature_tree.{fid}.{pname}.aggregation.representative_evidence_ids",
+                agg.get("representative_evidence_ids") or [],
+                ["performance_quality", "user_pain", "feature_existence"],
+            ))
+        refs.append((
+            f"feature_tree.{fid}.gap.evidence_ids",
+            (f.get("gap") or {}).get("evidence_ids") or [],
+            ["feature_existence", "performance_quality", "user_pain"],
+        ))
+
+    # pricing_model
+    for p in schema.get("pricing_model", {}).get("products", []):
+        for i, tier in enumerate(p.get("tiers") or []):
+            refs.append((
+                f"pricing_model.{p.get('name')}.tiers[{i}].evidence_ids",
+                tier.get("evidence_ids") or [],
+                ["pricing"],
+            ))
+    refs.append((
+        "pricing_model.pricing_gap.evidence_ids",
+        (schema.get("pricing_model", {}).get("pricing_gap") or {}).get("evidence_ids") or [],
+        ["pricing", "market_signal"],
+    ))
+
+    # user_persona
+    for u in schema.get("user_persona", {}).get("user_segments", []):
+        refs.append((
+            f"user_persona.user_segments.{u.get('segment_id', '?')}.evidence_ids",
+            u.get("evidence_ids") or [],
+            ["user_pain", "market_signal", "performance_quality"],
+        ))
+    for pp in schema.get("user_persona", {}).get("pain_points", []):
+        refs.append((
+            f"user_persona.{pp.get('pain_id', '?')}.frequency.evidence_ids",
+            (pp.get("frequency") or {}).get("evidence_ids") or [],
+            ["user_pain", "performance_quality"],
+        ))
+
+    # recommendations
+    for r in schema.get("recommendations", []):
+        refs.append((
+            f"recommendations.{r.get('rec_id', '?')}.evidence_ids",
+            r.get("evidence_ids") or [],
+            ["feature_existence", "user_pain", "performance_quality", "pricing", "market_signal"],
+        ))
+
+    # swot
+    for dim in ("strengths", "weaknesses", "opportunities", "threats"):
+        for i, item in enumerate(schema.get("swot", {}).get(dim) or []):
+            refs.append((
+                f"swot.{dim}[{i}].evidence_ids",
+                item.get("evidence_ids") or [],
+                ["feature_existence", "pricing", "user_pain", "performance_quality", "market_signal"],
+            ))
+
+    return refs
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# quick_validate
+# ────────────────────────────────────────────────────────────────────────────
+
+def quick_validate_facts(facts: dict, evidence: list[dict], meta: dict) -> list[str]:
+    issues: list[str] = []
+    valid_ids = {e["evidence_id"] for e in evidence}
+
+    # (a) evidence_id 必须存在
+    for path, eids, _allowed in collect_all_evidence_refs(facts):
+        for eid in eids:
+            if eid not in valid_ids:
+                issues.append(f"{path}: 引用了不存在的 evidence_id {eid}")
+
+    # (b) gap 覆盖检查
+    target = meta["target_product"]
+    competitors = set(meta["competitors"])
+    for feat in facts.get("feature_tree", {}).get("features", []):
+        covered = set((feat.get("products") or {}).keys())
+        if target not in covered:
+            issues.append(f"feature {feat.get('feature_id')}: 未覆盖 target product {target}")
+        if not (covered & competitors):
+            issues.append(
+                f"feature {feat.get('feature_id')}: 未覆盖任何 competitor"
+                f"(competitors={sorted(competitors)}, got={sorted(covered)})"
+            )
+    return issues
+
+
+def quick_validate_derivations(
+    derivations: dict,
+    facts: dict,
+    evidence: list[dict],
+) -> list[str]:
+    issues: list[str] = []
+    valid_ids = {e["evidence_id"] for e in evidence}
+    valid_fids = {
+        f["feature_id"] for f in facts.get("feature_tree", {}).get("features", [])
+    }
+    valid_pids = {
+        p["pain_id"] for p in facts.get("user_persona", {}).get("pain_points", [])
+    }
+
+    # evidence_id 校验(覆盖 swot + rec)
+    for path, eids, _allowed in collect_all_evidence_refs({**facts, **derivations}):
+        if not path.startswith(("swot", "recommendations")):
+            continue
+        for eid in eids:
+            if eid not in valid_ids:
+                issues.append(f"{path}: 引用了不存在的 evidence_id {eid}")
+
+    for rec in derivations.get("recommendations", []):
+        rid = rec.get("rec_id", "?")
+        fids = set(rec.get("source_feature_ids") or [])
+        pids = set(rec.get("source_pain_ids") or [])
+
+        # (c) 至少 1 个有效引用
+        if not (fids & valid_fids) and not (pids & valid_pids):
+            issues.append(f"{rid}: 未引用任何有效 feature_id / pain_id")
+
+        # (d) priority_score 公式自洽
+        ps = rec.get("priority_score") or {}
+        weights = ps.get("weights") or {}
+        if weights and "final_score" in ps:
+            try:
+                expected = sum(
+                    float(ps.get(k, 0)) * float(w) for k, w in weights.items()
+                )
+                if abs(expected - float(ps["final_score"])) > 0.011:
+                    issues.append(
+                        f"{rid}: priority final_score={ps['final_score']} 与公式"
+                        f"={expected:.3f} 不一致"
+                    )
+            except (TypeError, ValueError):
+                issues.append(f"{rid}: priority_score 字段类型异常")
+    return issues
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Node
+# ────────────────────────────────────────────────────────────────────────────
+
+def _build_repair_hint(issues: list[str]) -> str:
+    issues_text = "\n".join(f"- {i}" for i in issues)
+    return (
+        "\n\n---\n\n## REPAIR\n\n你上一次输出存在以下问题,请仅修正这些问题后重新输出完整 JSON:\n"
+        f"{issues_text}\n\n要求:\n- 单一 JSON 对象,无 markdown 包裹\n- 不要修改无问题的字段\n"
+    )
+
+
+def _step1_facts(evidence: list[dict], meta: dict) -> dict:
+    """Step 1 — 事实层"""
+    if is_mock_mode():
+        # Mock: 从 sample_report 抽出 facts 部分
+        sr = load_sample_report()
+        return {
+            "feature_tree": sr["feature_tree"],
+            "pricing_model": sr["pricing_model"],
+            "user_persona": sr["user_persona"],
+        }
+
+    llm = get_llm()
+    system = load_prompt("analyzer_facts")
+    payload = {"analysis_meta": meta, "raw_evidence": evidence}
+    facts = llm.call_json(system, payload, max_tokens=4096)
+
+    issues = quick_validate_facts(facts, evidence, meta)
+    if issues:
+        facts = llm.call_json(system + _build_repair_hint(issues), payload, max_tokens=4096)
+    return facts
+
+
+def _step2_derivations(facts: dict, evidence: list[dict], meta: dict) -> dict:
+    """Step 2 — 推导层"""
+    if is_mock_mode():
+        sr = load_sample_report()
+        return {
+            "swot": sr["swot"],
+            "recommendations": sr["recommendations"],
+        }
+
+    llm = get_llm()
+    system = load_prompt("analyzer_derivations")
+    payload = {"analysis_meta": meta, "raw_evidence": evidence, "facts": facts}
+    der = llm.call_json(system, payload, max_tokens=3072)
+
+    issues = quick_validate_derivations(der, facts, evidence)
+    if issues:
+        der = llm.call_json(system + _build_repair_hint(issues), payload, max_tokens=3072)
+    return der
+
+
+def analyzer_node(state: AgentState) -> AgentState:
+    evidence = state["raw_evidence"] or []
+    meta = state["analysis_meta"]
+
+    facts = _step1_facts(evidence, meta)
+    derivations = _step2_derivations(facts, evidence, meta)
+
+    schema_draft = {
+        "analysis_meta": meta,
+        **facts,
+        **derivations,
+    }
+    return {**state, "schema_draft": schema_draft}
