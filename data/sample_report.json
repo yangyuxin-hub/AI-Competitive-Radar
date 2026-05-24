@@ -1,0 +1,546 @@
+{
+  "_meta": {
+    "purpose": "Analyzer 期望输出标杆 — 基于 sample_sources.json 的 34 条 evidence,人工构造的理想 schema_draft。用途:(1) 写 Analyzer Prompt 时的 few-shot 参考;(2) Reviewer 规则单测的正样本;(3) 端到端 Mock 跑通后的对比基线",
+    "validated_against": "v2.2.1 schema",
+    "evidence_source": "data/sample_sources.json",
+    "notes": [
+      "所有 evidence_ids 必须存在于 raw_evidence",
+      "feature_tree 每个 feature 至少覆盖 target(Cursor) + 1 个 competitor",
+      "每条 recommendation 至少引用 1 feature 或 1 pain",
+      "priority_score.final_score 由 weights 公式计算,误差 <= 0.01",
+      "aggregation 用代表模式: 不含 sample_evidence_ids 字段,只有 sample_size + representative_evidence_ids + method"
+    ]
+  },
+
+  "analysis_meta": {
+    "report_id": "CR-20260524-001",
+    "schema_version": "2.1",
+    "target_product": "Cursor",
+    "competitors": ["Windsurf", "GitHubCopilot"],
+    "analysis_focus": ["代码补全体验"],
+    "analysis_purpose": "学习竞品优点,优化 Cursor 的产品策略",
+    "generated_at": "2026-05-24T10:00:00Z",
+    "data_cutoff": "2026-05-24",
+    "agent_trace_id": "trace_sample_001"
+  },
+
+  "feature_tree": {
+    "category": "代码补全",
+    "features": [
+
+      {
+        "feature_id": "F001",
+        "name": "多行 / 跨文件补全",
+        "products": {
+          "Cursor": {
+            "support_status": "supported",
+            "support_evidence_ids": ["SCABE001", "SCABE002"],
+            "quality_score": {
+              "score": 4,
+              "scale": 5,
+              "basis": "用户反馈跨文件类型召回率约 80%(SCABE005),重构任务略优于 Windsurf(SCABE007);存在 ~5% 编造 import 的问题(SCABE00D)",
+              "aggregation": {
+                "aggregation_type": "sampled_evidence",
+                "positive_mentions": 3,
+                "negative_mentions": 1,
+                "neutral_mentions": 0,
+                "sample_size": 4,
+                "representative_evidence_ids": ["SCABE005", "SCABE00D"],
+                "method": "manual analysis of 4 collected Reddit/HN posts on Cursor cross-file completion accuracy"
+              },
+              "evidence_ids": ["SCABE005", "SCABE007", "SCABE00D"]
+            }
+          },
+          "Windsurf": {
+            "support_status": "supported",
+            "support_evidence_ids": ["SDEAD002"],
+            "quality_score": {
+              "score": 3,
+              "scale": 5,
+              "basis": "Supercomplete 基于近期编辑历史预测;单文件任务与 Cursor 相当,多文件重构略差(SDEAD005)",
+              "aggregation": {
+                "aggregation_type": "sampled_evidence",
+                "positive_mentions": 1,
+                "negative_mentions": 1,
+                "neutral_mentions": 0,
+                "sample_size": 2,
+                "representative_evidence_ids": ["SDEAD005"],
+                "method": "manual analysis of 2 collected user reviews comparing Windsurf to Cursor"
+              },
+              "evidence_ids": ["SDEAD005"]
+            }
+          },
+          "GitHubCopilot": {
+            "support_status": "supported",
+            "support_evidence_ids": ["SFACE001"],
+            "quality_score": {
+              "score": 2,
+              "scale": 5,
+              "basis": "基础补全广覆盖(SFACE004),但跨文件场景显著弱:约半数情况忽略其他文件类型(SFACE008),复杂 TS 泛型常无法通过类型检查(SFACE009)",
+              "aggregation": {
+                "aggregation_type": "sampled_evidence",
+                "positive_mentions": 1,
+                "negative_mentions": 3,
+                "neutral_mentions": 0,
+                "sample_size": 4,
+                "representative_evidence_ids": ["SFACE008", "SFACE009"],
+                "method": "manual analysis of 4 collected reviews on Copilot cross-file/multi-file quality"
+              },
+              "evidence_ids": ["SFACE005", "SFACE008", "SFACE009"]
+            }
+          }
+        },
+        "gap": {
+          "winner": "Cursor",
+          "gap_type": "accuracy",
+          "reason": "Cursor 在跨文件类型召回与多文件重构准确性上显著优于 Copilot,与 Windsurf 拉开小幅但稳定的优势;Copilot 的弱项在用户反馈中被反复提及",
+          "evidence_ids": ["SCABE005", "SCABE007", "SDEAD005", "SFACE008", "SFACE009"],
+          "confidence": 0.82
+        }
+      },
+
+      {
+        "feature_id": "F002",
+        "name": "Agent / 端到端任务执行",
+        "products": {
+          "Cursor": {
+            "support_status": "supported",
+            "support_evidence_ids": ["SCABE002"],
+            "quality_score": {
+              "score": 4,
+              "scale": 5,
+              "basis": "Agent 模式可端到端执行任务,跨文件编辑 + 终端命令;延迟 5-15s/step 可接受(SCABE006)",
+              "aggregation": {
+                "aggregation_type": "sampled_evidence",
+                "positive_mentions": 2,
+                "negative_mentions": 0,
+                "neutral_mentions": 0,
+                "sample_size": 2,
+                "representative_evidence_ids": ["SCABE002", "SCABE006"],
+                "method": "vendor claim + 1 HN third-party latency note"
+              },
+              "evidence_ids": ["SCABE002", "SCABE006"]
+            }
+          },
+          "Windsurf": {
+            "support_status": "supported",
+            "support_evidence_ids": ["SDEAD001"],
+            "quality_score": {
+              "score": 4,
+              "scale": 5,
+              "basis": "Cascade 实时协作 Agent,自研推理栈速度感知优于 Cursor(SDEAD004)",
+              "aggregation": {
+                "aggregation_type": "sampled_evidence",
+                "positive_mentions": 2,
+                "negative_mentions": 0,
+                "neutral_mentions": 0,
+                "sample_size": 2,
+                "representative_evidence_ids": ["SDEAD004"],
+                "method": "vendor claim + 1 HN performance note"
+              },
+              "evidence_ids": ["SDEAD001", "SDEAD004"]
+            }
+          },
+          "GitHubCopilot": {
+            "support_status": "partially_supported",
+            "support_evidence_ids": ["SFACE003"],
+            "quality_score": {
+              "score": 2,
+              "scale": 5,
+              "basis": "Copilot Workspace 自 2024 年发布至 2026 年仍在 beta(SFACE00A);用户反馈 Agentic 场景显著落后于 Cursor/Windsurf(SFACE005)",
+              "aggregation": {
+                "aggregation_type": "sampled_evidence",
+                "positive_mentions": 0,
+                "negative_mentions": 2,
+                "neutral_mentions": 1,
+                "sample_size": 3,
+                "representative_evidence_ids": ["SFACE005", "SFACE00A"],
+                "method": "vendor beta note + 2 user/HN comments on lag"
+              },
+              "evidence_ids": ["SFACE003", "SFACE005", "SFACE00A"]
+            }
+          }
+        },
+        "gap": {
+          "winner": "Cursor",
+          "gap_type": "maturity",
+          "reason": "Cursor 与 Windsurf 的 Agent 均已 GA 并被实战使用;Copilot Workspace 长期处于 beta,Agentic 能力落后市场 12+ 个月",
+          "evidence_ids": ["SCABE002", "SDEAD001", "SFACE003", "SFACE00A"],
+          "confidence": 0.85
+        }
+      },
+
+      {
+        "feature_id": "F003",
+        "name": "代码库索引 / 上下文检索",
+        "products": {
+          "Cursor": {
+            "support_status": "supported",
+            "support_evidence_ids": ["SCABE003"],
+            "quality_score": {
+              "score": 3,
+              "scale": 5,
+              "basis": "@Codebase 自动索引并检索;但 20 万行规模时偶发漏召回(SCABE00B),首次索引耗时长达 40 分钟(SCABE00C)",
+              "aggregation": {
+                "aggregation_type": "sampled_evidence",
+                "positive_mentions": 1,
+                "negative_mentions": 2,
+                "neutral_mentions": 0,
+                "sample_size": 3,
+                "representative_evidence_ids": ["SCABE00B", "SCABE00C"],
+                "method": "vendor doc + 2 user pain reports on large-codebase indexing"
+              },
+              "evidence_ids": ["SCABE003", "SCABE00B", "SCABE00C"]
+            }
+          },
+          "GitHubCopilot": {
+            "support_status": "partially_supported",
+            "support_evidence_ids": ["SFACE002"],
+            "quality_score": {
+              "score": 2,
+              "scale": 5,
+              "basis": "Copilot Chat 可引用文件/终端/issue,但跨文件类型上下文召回弱(SFACE008)",
+              "aggregation": {
+                "aggregation_type": "sampled_evidence",
+                "positive_mentions": 1,
+                "negative_mentions": 1,
+                "neutral_mentions": 0,
+                "sample_size": 2,
+                "representative_evidence_ids": ["SFACE008"],
+                "method": "vendor doc + 1 strong user pain report"
+              },
+              "evidence_ids": ["SFACE002", "SFACE008"]
+            }
+          }
+        },
+        "gap": {
+          "winner": "Cursor",
+          "gap_type": "feature_completeness",
+          "reason": "Cursor 的 @Codebase 显式索引能力强于 Copilot 的隐式上下文,但在超大仓库下两者都暴露问题",
+          "evidence_ids": ["SCABE003", "SCABE00B", "SFACE002", "SFACE008"],
+          "confidence": 0.72
+        }
+      }
+
+    ]
+  },
+
+  "pricing_model": {
+    "products": [
+      {
+        "name": "Cursor",
+        "tiers": [
+          {
+            "tier_name": "Pro",
+            "billing_cycle": "monthly",
+            "price": {"amount": 20, "currency": "USD", "normalized_usd_month": 20},
+            "limits": [
+              {"limit_name": "completions", "limit_value": "unlimited", "unit": "requests_per_month"},
+              {"limit_name": "fast_premium_requests", "limit_value": 500, "unit": "requests_per_month"}
+            ],
+            "display_limits": "无限补全 + 500 次快速高级请求",
+            "observed_at": "2026-05-22",
+            "source_freshness": "current",
+            "evidence_ids": ["SCABE008"]
+          },
+          {
+            "tier_name": "Business",
+            "billing_cycle": "monthly",
+            "price": {"amount": 40, "currency": "USD", "normalized_usd_month": 40},
+            "limits": [
+              {"limit_name": "users", "limit_value": "per_seat", "unit": "user"}
+            ],
+            "display_limits": "Pro 全部能力 + SSO + 集中计费",
+            "observed_at": "2026-05-22",
+            "source_freshness": "current",
+            "evidence_ids": ["SCABE009"]
+          }
+        ]
+      },
+      {
+        "name": "Windsurf",
+        "tiers": [
+          {
+            "tier_name": "Pro",
+            "billing_cycle": "monthly",
+            "price": {"amount": 15, "currency": "USD", "normalized_usd_month": 15},
+            "limits": [
+              {"limit_name": "fast_tier", "limit_value": "unlimited", "unit": "requests_per_month"}
+            ],
+            "display_limits": "无限快速档 + 峰值优先",
+            "observed_at": "2026-05-22",
+            "source_freshness": "current",
+            "evidence_ids": ["SDEAD006"]
+          },
+          {
+            "tier_name": "Free",
+            "billing_cycle": "monthly",
+            "price": {"amount": 0, "currency": "USD", "normalized_usd_month": 0},
+            "limits": [
+              {"limit_name": "cascade_credits", "limit_value": "limited", "unit": "credits_per_month"}
+            ],
+            "display_limits": "有限 Cascade 额度 + 完整自动补全",
+            "observed_at": "2026-05-22",
+            "source_freshness": "current",
+            "evidence_ids": ["SDEAD007"]
+          }
+        ]
+      },
+      {
+        "name": "GitHubCopilot",
+        "tiers": [
+          {
+            "tier_name": "Individual",
+            "billing_cycle": "monthly",
+            "price": {"amount": 10, "currency": "USD", "normalized_usd_month": 10},
+            "limits": [],
+            "display_limits": "IDE Copilot + Chat;学生/教师/OSS 免费",
+            "observed_at": "2026-05-22",
+            "source_freshness": "current",
+            "evidence_ids": ["SFACE006"]
+          },
+          {
+            "tier_name": "Business",
+            "billing_cycle": "monthly",
+            "price": {"amount": 19, "currency": "USD", "normalized_usd_month": 19},
+            "limits": [
+              {"limit_name": "users", "limit_value": "per_seat", "unit": "user"}
+            ],
+            "display_limits": "组织策略 + 审计日志 + IP 赔付",
+            "observed_at": "2026-05-22",
+            "source_freshness": "current",
+            "evidence_ids": ["SFACE007"]
+          }
+        ]
+      }
+    ],
+    "pricing_gap": {
+      "target_position": "more_expensive",
+      "summary": "Cursor Pro $20/月明显高于 Windsurf $15 与 Copilot $10;企业档 Cursor $40 高于 Copilot $19;用户已就此明确抱怨(SCABE00A)",
+      "evidence_ids": ["SCABE008", "SCABE009", "SDEAD006", "SFACE006", "SFACE007", "SCABE00A"],
+      "confidence": 0.88
+    }
+  },
+
+  "user_persona": {
+    "user_segments": [
+      {
+        "segment_id": "U001",
+        "name": "独立开发者 / 重度用户",
+        "description": "日常深度使用 AI 编程工具,愿意为顶级体验付费;关注准确性、跨文件能力、Agent 成熟度",
+        "evidence_ids": ["SCABE005", "SCABE007", "SDEAD005"],
+        "confidence": 0.78
+      },
+      {
+        "segment_id": "U002",
+        "name": "中小团队负责人 / 采购决策者",
+        "description": "全员推广需算成本账;对价格敏感,倾向 Copilot;高级体验仅给关键成员",
+        "evidence_ids": ["SCABE00A"],
+        "confidence": 0.72
+      },
+      {
+        "segment_id": "U003",
+        "name": "大型代码库 / 单体仓库工程师",
+        "description": "项目规模 100k+ LOC,对索引性能、跨文件检索敏感",
+        "evidence_ids": ["SCABE00B", "SCABE00C"],
+        "confidence": 0.75
+      }
+    ],
+    "pain_points": [
+      {
+        "pain_id": "P001",
+        "description": "跨文件类型上下文召回不稳定,生成代码引用错误的字段或方法",
+        "frequency": {
+          "level": "high",
+          "count": "4 条用户评论中 4 条明确提及(Copilot 主因,Cursor 大仓库下也有)",
+          "sample_size": 4,
+          "evidence_ids": ["SFACE008", "SFACE009", "SCABE00B", "SFACE005"]
+        },
+        "affected_products": ["GitHubCopilot", "Cursor"],
+        "affected_segments": ["U001", "U003"],
+        "user_expectation": "补全应理解当前项目跨文件依赖,在大仓库下不退化",
+        "confidence": 0.85
+      },
+      {
+        "pain_id": "P002",
+        "description": "大型代码库首次索引慢(40 分钟+),期间编辑器半残;后续仍偶发漏召回",
+        "frequency": {
+          "level": "medium",
+          "count": "2 条 Cursor 专属用户反馈",
+          "sample_size": 2,
+          "evidence_ids": ["SCABE00B", "SCABE00C"]
+        },
+        "affected_products": ["Cursor"],
+        "affected_segments": ["U003"],
+        "user_expectation": "首次索引后台进行不阻塞编辑;支持增量与按需索引",
+        "confidence": 0.80
+      },
+      {
+        "pain_id": "P003",
+        "description": "Cursor Pro 价格 $20/月对中小团队推广阻力大,Copilot $10/月更易全员采购",
+        "frequency": {
+          "level": "medium",
+          "count": "1 条明确反馈 + 定价差距可量化",
+          "sample_size": 1,
+          "evidence_ids": ["SCABE00A"]
+        },
+        "affected_products": ["Cursor"],
+        "affected_segments": ["U002"],
+        "user_expectation": "中间价位档(如 $10-15)或团队折扣,降低全员采购门槛",
+        "confidence": 0.70
+      },
+      {
+        "pain_id": "P004",
+        "description": "Cursor 偶发编造不存在的 import(约 5%),Windows 平台日均崩溃 1 次",
+        "frequency": {
+          "level": "low",
+          "count": "2 条独立反馈",
+          "sample_size": 2,
+          "evidence_ids": ["SCABE00D", "SCABE00E"]
+        },
+        "affected_products": ["Cursor"],
+        "affected_segments": ["U001"],
+        "user_expectation": "import 引用前需校验存在性;Windows 平台稳定性对齐 Mac",
+        "confidence": 0.72
+      },
+      {
+        "pain_id": "P005",
+        "description": "Copilot Agentic 功能(Workspace)长期 beta,严重落后 Cursor/Windsurf",
+        "frequency": {
+          "level": "medium",
+          "count": "2 条用户/HN 评论指明",
+          "sample_size": 2,
+          "evidence_ids": ["SFACE005", "SFACE00A"]
+        },
+        "affected_products": ["GitHubCopilot"],
+        "affected_segments": ["U001"],
+        "user_expectation": "Agent 能力 GA 化,与 Cursor/Windsurf 缩短至 1 个 minor 周期内",
+        "confidence": 0.80
+      }
+    ]
+  },
+
+  "swot": {
+    "target": "Cursor",
+    "note": "核心结论以 feature_tree.gap 与 recommendations 为准,SWOT 仅作高管视角补充",
+    "strengths": [
+      {"point": "跨文件补全准确性领先,用户主观估计 80% 召回",
+       "evidence_ids": ["SCABE005", "SCABE007"], "confidence": 0.80},
+      {"point": "Agent 模式已 GA,可端到端执行多文件任务 + 终端命令",
+       "evidence_ids": ["SCABE002"], "confidence": 0.82},
+      {"point": "@Codebase 提供显式仓库索引能力,中等规模下显著强于 Copilot",
+       "evidence_ids": ["SCABE003", "SFACE008"], "confidence": 0.75}
+    ],
+    "weaknesses": [
+      {"point": "Pro $20/月明显高于竞品(Windsurf $15 / Copilot $10),团队采购阻力大",
+       "evidence_ids": ["SCABE008", "SDEAD006", "SFACE006", "SCABE00A"], "confidence": 0.85},
+      {"point": "大仓库索引性能差,首次 40 分钟+ 且后续召回不稳",
+       "evidence_ids": ["SCABE00B", "SCABE00C"], "confidence": 0.78},
+      {"point": "Windows 平台稳定性落后于 Mac",
+       "evidence_ids": ["SCABE00E"], "confidence": 0.60}
+    ],
+    "opportunities": [
+      {"point": "Copilot Agentic 长期滞后,留出 12+ 月窗口扩大 Agent 心智占领",
+       "evidence_ids": ["SFACE005", "SFACE00A"], "confidence": 0.78},
+      {"point": "复杂 TypeScript 泛型场景 Copilot 表现差,可针对该用户群强化营销",
+       "evidence_ids": ["SFACE009"], "confidence": 0.65}
+    ],
+    "threats": [
+      {"point": "Windsurf Supercomplete + 自研推理栈速度感知更快,可能侵蚀注重响应的用户",
+       "evidence_ids": ["SDEAD002", "SDEAD004"], "confidence": 0.72},
+      {"point": "Copilot 价格优势 + Microsoft 渠道,持续锁定企业基础市场",
+       "evidence_ids": ["SFACE006", "SFACE007"], "confidence": 0.70}
+    ]
+  },
+
+  "recommendations": [
+    {
+      "rec_id": "R001",
+      "action": "推出中端价位档(建议 $12-15/月)或团队折扣套餐,降低全员采购门槛",
+      "rationale": "P003 已明确表达定价阻力(SCABE00A);竞品 Windsurf $15 / Copilot $10 形成压制(SDEAD006, SFACE006);中端档可保留 Pro 利润同时争取 U002 中小团队",
+      "source_feature_ids": [],
+      "source_pain_ids": ["P003"],
+      "evidence_ids": ["SCABE00A", "SCABE008", "SDEAD006", "SFACE006"],
+      "priority_score": {
+        "pain_frequency": 4,
+        "business_impact": 5,
+        "implementation_feasibility": 4,
+        "evidence_confidence": 3,
+        "weights": {
+          "pain_frequency": 0.35,
+          "business_impact": 0.30,
+          "implementation_feasibility": 0.20,
+          "evidence_confidence": 0.15
+        },
+        "final_score": 4.15,
+        "priority": "P1"
+      }
+    },
+    {
+      "rec_id": "R002",
+      "action": "优化大型代码库索引性能,目标:100k+ LOC 仓库首次索引 < 10 分钟、检索召回率 > 90%",
+      "rationale": "P002 是 Cursor 的差异化优势(F003)正在退化的根因;影响 U003 大仓库用户群,该群体留存价值高;Copilot 在此场景同样弱(SFACE008),修好可拉大领先",
+      "source_feature_ids": ["F003"],
+      "source_pain_ids": ["P002", "P001"],
+      "evidence_ids": ["SCABE00B", "SCABE00C", "SCABE003"],
+      "priority_score": {
+        "pain_frequency": 4,
+        "business_impact": 5,
+        "implementation_feasibility": 3,
+        "evidence_confidence": 4,
+        "weights": {
+          "pain_frequency": 0.35,
+          "business_impact": 0.30,
+          "implementation_feasibility": 0.20,
+          "evidence_confidence": 0.15
+        },
+        "final_score": 4.10,
+        "priority": "P1"
+      }
+    },
+    {
+      "rec_id": "R003",
+      "action": "强化补全引用前校验(import 存在性检查),目标将编造率从 ~5% 降至 < 1%",
+      "rationale": "P004 中 SCABE00D 提及 Cursor 偶发编造 import,虽频率不高但影响开发流;此为 F001 优势项的尾部风险,修复可巩固准确性叙事",
+      "source_feature_ids": ["F001"],
+      "source_pain_ids": ["P004"],
+      "evidence_ids": ["SCABE00D"],
+      "priority_score": {
+        "pain_frequency": 3,
+        "business_impact": 3,
+        "implementation_feasibility": 4,
+        "evidence_confidence": 4,
+        "weights": {
+          "pain_frequency": 0.35,
+          "business_impact": 0.30,
+          "implementation_feasibility": 0.20,
+          "evidence_confidence": 0.15
+        },
+        "final_score": 3.35,
+        "priority": "P2"
+      }
+    },
+    {
+      "rec_id": "R004",
+      "action": "Windows 平台稳定性专项,目标日均崩溃 < 0.1 次,对齐 Mac 体验",
+      "rationale": "SCABE00E 表明 Windows 用户体验明显落后;该群体规模在企业市场重要,且与 R001 团队推广目标协同",
+      "source_feature_ids": [],
+      "source_pain_ids": ["P004"],
+      "evidence_ids": ["SCABE00E"],
+      "priority_score": {
+        "pain_frequency": 3,
+        "business_impact": 3,
+        "implementation_feasibility": 3,
+        "evidence_confidence": 3,
+        "weights": {
+          "pain_frequency": 0.35,
+          "business_impact": 0.30,
+          "implementation_feasibility": 0.20,
+          "evidence_confidence": 0.15
+        },
+        "final_score": 3.00,
+        "priority": "P2"
+      }
+    }
+  ]
+}
