@@ -191,6 +191,16 @@ with st.sidebar:
         help="开启后 Analyzer 直接返回 sample_report.json,用于评委演示时省 API 调用",
     )
 
+    demo_loop = st.toggle(
+        "🔄 演示打回闭环",
+        value=False,
+        help=(
+            "开启后(仅 Mock 模式生效)Analyzer 首轮故意输出含 R1+R5+R4 错误的 schema,"
+            "Reviewer 检出 → reject_target=analyzer → 重试 → 第二轮干净通过。"
+            "用于演示评分维度 1 的「反馈闭环真实可触发,且重做后输出有改善」。"
+        ),
+    )
+
     if not use_mock:
         st.markdown("### 🔑 ARK API")
         api_key = st.text_input(
@@ -238,6 +248,10 @@ if run_btn:
             os.environ["ARK_API_KEY"] = api_key
         if ep:
             os.environ["ARK_EP"] = ep
+    if demo_loop:
+        os.environ["DEMO_LOOP"] = "1"
+    else:
+        os.environ.pop("DEMO_LOOP", None)
 
     st.session_state.completed = False
     st.session_state.final_state = None
@@ -252,44 +266,76 @@ if run_btn:
     try:
         from src.graph import run_demo_streaming
 
-        # 4 个节点的固定状态占位
+        # 节点活动指示(带 pass 计数,允许重复出现)
+        node_counts = {"collector": 0, "analyzer": 0, "writer": 0, "reviewer": 0}
         with progress_box:
             placeholders = {}
-            for node in ("collector", "analyzer", "writer", "reviewer"):
+            for node in node_counts:
                 icon = _NODE_ICONS[node]
                 placeholders[node] = st.empty()
                 placeholders[node].markdown(f"⬜ {icon} **{node}** — 等待中")
 
         t0 = time.time()
         final_state = None
-        seen_nodes = set()
         events_text: list[str] = []
+        last_t = t0
 
         for node_name, state_after in run_demo_streaming(
             target_product=target,
             competitors=competitors_list,
             analysis_focus=[focus],
         ):
-            elapsed = time.time() - t0
+            now = time.time()
+            step_duration = now - last_t
+            last_t = now
+            elapsed = now - t0
             icon = _NODE_ICONS.get(node_name, "▶️")
-            # 主节点状态行
-            ph = placeholders.get(node_name)
-            if ph is not None:
-                ph.markdown(f"✅ {icon} **{node_name}** — 完成 ({elapsed:.1f}s)")
+
+            # 节点 pass 计数 + 状态
+            if node_name in node_counts:
+                node_counts[node_name] += 1
+                pass_n = node_counts[node_name]
+                status = state_after.get("status", "?")
+                reject = state_after.get("reject_target")
+
+                # Reviewer 打回的特殊提示
+                if node_name == "reviewer" and reject and status == "running":
+                    qr = state_after.get("quality_report") or {}
+                    err_n = len(qr.get("errors") or [])
+                    placeholders[node_name].markdown(
+                        f"🔁 {icon} **reviewer · 第 {pass_n} 次** — "
+                        f"检出 **{err_n} 个 error**, 打回 `{reject}` ({step_duration:.1f}s)"
+                    )
+                elif node_name == "reviewer" and status == "passed":
+                    placeholders[node_name].markdown(
+                        f"✅ {icon} **reviewer · 第 {pass_n} 次** — **PASSED** ({step_duration:.1f}s)"
+                    )
+                else:
+                    suffix = f"· 第 {pass_n} 次" if pass_n > 1 else ""
+                    placeholders[node_name].markdown(
+                        f"✅ {icon} **{node_name}** {suffix} — 完成 ({step_duration:.1f}s)"
+                    )
             else:
                 # 例如 degraded_writer
                 with progress_box:
-                    st.markdown(f"⚠️ {icon} **{node_name}** — 完成 ({elapsed:.1f}s)")
+                    st.markdown(f"⚠️ {icon} **{node_name}** — 完成 ({step_duration:.1f}s)")
 
-            seen_nodes.add(node_name)
             final_state = state_after
+
+            # 完整事件日志
             retry_info = state_after.get("retry_count") or {}
-            retry_text = " · ".join(f"{k}:{v}" for k, v in retry_info.items() if v)
-            line = f"[{elapsed:6.1f}s] {icon} {node_name} → status={state_after.get('status', '?')}"
+            retry_text = " ".join(f"{k}:{v}" for k, v in retry_info.items() if v)
+            qr = state_after.get("quality_report") or {}
+            err_n = len(qr.get("errors") or [])
+            line = f"[{elapsed:6.1f}s] {icon} {node_name:9s} status={state_after.get('status', '?'):9s}"
+            if state_after.get("reject_target"):
+                line += f" → reject={state_after['reject_target']}"
+            if err_n:
+                line += f" errors={err_n}"
             if retry_text:
-                line += f"  retry={{{retry_text}}}"
+                line += f" retry={{{retry_text}}}"
             events_text.append(line)
-            log_box.code("\n".join(events_text[-12:]), language=None)
+            log_box.code("\n".join(events_text[-16:]), language=None)
 
         st.session_state.final_state = final_state
         st.session_state.completed = True
@@ -374,3 +420,22 @@ elif not run_btn:
 5. 配好后点 **🚀 开始分析**,实时看 Agent 进度
         """)
         st.info("提示:豆包真实调用约 2-5 分钟(Analyzer 两步各 60-90s);demo 时建议先开 Mock 跑一次熟悉界面")
+
+    st.markdown("---")
+    st.markdown(
+        """
+### 🔄 演示打回闭环(评分维度 1 硬指标)
+
+侧栏勾选 **🔄 演示打回闭环**(需先开 Mock 模式),Analyzer 首轮会故意输出含 3 个错误的 schema:
+
+- **R1** evidence_id `SDEMOFAK` 不存在于 raw_evidence
+- **R5** R001.priority_score.final_score = 9.99,与公式计算 4.15 矛盾
+- **R002** 的 source_feature_ids / source_pain_ids 都被清空 → **R4** 推理链断裂
+
+Reviewer 检出 3 个 error → `reject_target=analyzer` → 回路打回 → 第二轮 Analyzer 输出干净版 →
+Reviewer 通过 → 完整 **7 步事件序列**:
+`collector → analyzer(污染) → writer → reviewer(打回) → analyzer(干净) → writer → reviewer(passed)`
+
+最终 `retry_count={'analyzer': 1}`,errors 从 3 → 0,**重做后输出有改善**。
+        """
+    )

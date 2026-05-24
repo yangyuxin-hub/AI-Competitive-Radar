@@ -7,12 +7,44 @@ Step 2: derivations (swot + recommendations)
 """
 from __future__ import annotations
 
+import copy
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
 from .llm import get_llm, is_mock_mode, load_sample_report
 from .state import AgentState
+
+
+def _is_demo_loop() -> bool:
+    return os.environ.get("DEMO_LOOP", "").strip() in ("1", "true", "True")
+
+
+def _corrupt_facts_for_demo(facts: dict) -> dict:
+    """注入一个 R1 错误(evidence_id 不存在)演示打回。深拷贝后修改,不污染原 sample。"""
+    out = copy.deepcopy(facts)
+    feats = out.get("feature_tree", {}).get("features") or []
+    if feats:
+        # 在第一个 feature 的 Cursor.support_evidence_ids 末尾塞一个伪造 ID
+        cursor = feats[0].get("products", {}).get("Cursor") or {}
+        cursor.setdefault("support_evidence_ids", []).append("SDEMOFAK")
+    return out
+
+
+def _corrupt_derivations_for_demo(derivations: dict) -> dict:
+    """注入一个 R5 错误(priority_score 公式不一致)演示打回。"""
+    out = copy.deepcopy(derivations)
+    recs = out.get("recommendations") or []
+    if recs:
+        ps = recs[0].setdefault("priority_score", {})
+        # 把 final_score 改成与公式不符的值
+        ps["final_score"] = 9.99
+        # 顺便把第二条 rec 的 source refs 清空触发 R4
+        if len(recs) > 1:
+            recs[1]["source_feature_ids"] = []
+            recs[1]["source_pain_ids"] = []
+    return out
 
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -209,16 +241,21 @@ def _build_repair_hint(issues: list[str]) -> str:
     )
 
 
-def _step1_facts(evidence: list[dict], meta: dict) -> dict:
+def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0) -> dict:
     """Step 1 — 事实层"""
     if is_mock_mode():
         # Mock: 从 sample_report 抽出 facts 部分
         sr = load_sample_report()
-        return {
+        facts = {
             "feature_tree": sr["feature_tree"],
             "pricing_model": sr["pricing_model"],
             "user_persona": sr["user_persona"],
         }
+        # DEMO_LOOP: 首轮注入 R1 错误(伪造 evidence_id),retry 后恢复干净
+        if _is_demo_loop() and analyzer_retry == 0:
+            print("[analyzer] DEMO_LOOP: 注入 R1 错误(SDEMOFAK)到 facts")
+            facts = _corrupt_facts_for_demo(facts)
+        return facts
 
     llm = get_llm()
     system = load_prompt("analyzer_facts")
@@ -235,14 +272,19 @@ def _step1_facts(evidence: list[dict], meta: dict) -> dict:
     return facts
 
 
-def _step2_derivations(facts: dict, evidence: list[dict], meta: dict) -> dict:
+def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_retry: int = 0) -> dict:
     """Step 2 — 推导层"""
     if is_mock_mode():
         sr = load_sample_report()
-        return {
+        der = {
             "swot": sr["swot"],
             "recommendations": sr["recommendations"],
         }
+        # DEMO_LOOP: 首轮额外注入 R5(priority 公式)和 R4(无 source_refs)错误
+        if _is_demo_loop() and analyzer_retry == 0:
+            print("[analyzer] DEMO_LOOP: 注入 R5/R4 错误到 derivations")
+            der = _corrupt_derivations_for_demo(der)
+        return der
 
     llm = get_llm()
     system = load_prompt("analyzer_derivations")
@@ -262,9 +304,10 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict) -> dict:
 def analyzer_node(state: AgentState) -> AgentState:
     evidence = state["raw_evidence"] or []
     meta = state["analysis_meta"]
+    analyzer_retry = (state.get("retry_count") or {}).get("analyzer", 0)
 
-    facts = _step1_facts(evidence, meta)
-    derivations = _step2_derivations(facts, evidence, meta)
+    facts = _step1_facts(evidence, meta, analyzer_retry=analyzer_retry)
+    derivations = _step2_derivations(facts, evidence, meta, analyzer_retry=analyzer_retry)
 
     schema_draft = {
         "analysis_meta": meta,
