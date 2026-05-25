@@ -157,6 +157,32 @@
 
 ---
 
+## Q13 · "你这个报告和普通搜索摘要有什么区别?"
+
+**核心点**:我们不是按关键词堆资料,而是走 `Plan -> Evidence -> Fact -> Claim -> Insight -> Recommendation`。
+
+> 普通搜索摘要通常是"Cursor 有补全、Copilot 有补全、Windsurf 有补全",最后变成功能清单。我们的目标是找出**竞争逻辑**。
+>
+> 以 Cursor 代码补全为例,我们先限定边界:不泛泛分析完整 Agent,只分析即时补全、Tab 触发、上下文理解、延迟、下一处修改预测、企业代码库适配。然后按来源分层:官网和文档只证明官方事实,Reddit/HN 只证明用户感知,第三方评测只是补充,不会混用。
+>
+> 最后不是问"谁有 autocomplete",而是问"谁在抢什么入口":Cursor 抢 AI 原生开发入口,Copilot 抢 GitHub/IDE 分发,Windsurf 抢 AI 编辑流,Supermaven 抢低延迟和大上下文,JetBrains 抢专业 IDE 语义,Tabnine 抢企业安全采购。
+>
+> 所以我们的报告核心不是文章,而是一条可审计链路:**Evidence -> Fact -> Claim -> Insight -> Recommendation**。每条重要结论都要有 evidence_id,没证据的只能标 hypothesis,不能进入最终 conclusion。
+
+---
+
+## Q14 · "如果 Cursor 补全体验领先,为什么还要看 Supermaven、JetBrains、Tabnine?"
+
+**核心点**:竞品不是"功能一样"才算竞品,而是会在某个场景抢走同一类用户决策。
+
+> Cursor 的代码补全优势不只是"下一行补得准",而是往 predictive editing 走:预测开发者下一步要改哪里、改什么。Windsurf 是最像 Cursor 的直接对手,因为它也把 Tab 做成多动作入口。
+>
+> 但用户决策不只看这个。Copilot 的优势是不用换 IDE,GitHub 生态和企业采购强;Supermaven 是速度和大上下文尖刀,会抢"只要补全不要 Agent"的用户;JetBrains AI 依托专业 IDE 静态分析和重构能力,会守住 Java/Kotlin/后端用户;Tabnine 不一定体验最酷,但私有化、合规、air-gapped 部署更容易过大企业安全审查。
+>
+> 所以我们的结论是:Cursor 不该把补全叙事停留在 autocomplete,而要升级成 predictive editing,让 Tab 从"接受代码"变成"接受下一步开发动作"。
+
+---
+
 ## 应对"我没听懂"型问题(Bonus)
 
 如果评委提问含混,**先反问澄清**而不是猜:

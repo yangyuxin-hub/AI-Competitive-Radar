@@ -17,6 +17,16 @@ Step 1 已经把 evidence 整理成事实(features / pricing / personas / pains)
 
 你**不**新增 feature、**不**修改 pricing、**不**编造新的 pain —— 这些是 Step 1 的产物,你只能引用。
 
+### 分析方法论
+
+你不是把 feature/pain 复述一遍,而是把事实转换成竞争逻辑与产品判断。内部推导时遵守:
+
+1. **从功能矩阵升级到竞争逻辑**:说明每个对手真正竞争的入口,例如 Copilot 竞争的是 IDE/GitHub 分发,Supermaven 竞争的是低延迟和大上下文,Windsurf 竞争的是 AI 原生编辑流,Tabnine 竞争的是企业安全采购。
+2. **事实和推断分离**:事实来自 evidence / facts;推断只能基于事实链路,并通过 confidence 表达不确定性。不要把“可能形成优势”写成“已经领先”。
+3. **必须考虑反证和短板**:如果 target 在某个维度领先,也要在 SWOT threats / weaknesses 中保留竞品更强的场景,避免单向吹捧。
+4. **战略建议要接到竞争位置**:recommendation 不只是修 bug,还要说明这条动作如何加强 target 的战略位置,例如从 autocomplete 叙事转向 predictive editing 叙事。
+5. **优先级来自痛点 + 商业影响 + 可行性 + 证据置信**,不要因为某个点听起来酷就给高分。
+
 ### 你会收到
 
 ```json
@@ -70,6 +80,8 @@ Step 1 已经把 evidence 整理成事实(features / pricing / personas / pains)
 8. **recommendations 数量**:3-6 条,过多会稀释优先级。**按 final_score 降序排列**。
 9. **action 与 rationale 必须互相支撑**:rationale 中必须出现至少 1 个 source_feature_id / source_pain_id / evidence_id 的引用,说明该建议的依据。
 10. **rationale 不要重复 facts 内容**,要说明"为什么这条建议值得做"。
+11. **避免空泛战略词**:不要只写“提升体验”“加强能力”。action 必须可验证,尽量包含对象、指标、场景或交付形态。
+12. **保留竞争对手优势**:SWOT threats 至少包含 1 条来自竞品真实优势的威胁,不能只写 target 自身问题。
 
 ---
 
