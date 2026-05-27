@@ -30,6 +30,8 @@ try:
 except ImportError:
     pass
 
+from src import intake  # noqa: E402  意图问询复用层
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # 工具
@@ -611,6 +613,90 @@ def topbar() -> None:
     )
 
 
+def intake_panel(domains: dict) -> None:
+    """「一句话智能填写」:agent 主动把决策点做成选择题,用户点选后回填侧栏配置。
+
+    交互分两步(都靠 session_state + rerun,保证回填发生在侧栏 widget 渲染前):
+      1. 输入一句话意图 → 生成选择题(LLM 优先,启发式兜底)
+      2. 点选答案 → 「应用」→ 写 _intake_pending,下一轮注入 sb_*
+    """
+    with st.expander("🧭 一句话智能填写(让 Agent 帮你对齐分析背景)", expanded=False):
+        st.caption(
+            "不确定 target / 竞品 / 焦点怎么填?用一句话描述需求,Agent 会把要决策的点"
+            "做成选择题(含推荐),你点选即可,无需手填字段。"
+        )
+        seed = st.text_input(
+            "用一句话描述你想分析什么",
+            placeholder="例:想看看 Notion 和同类项目协作工具在任务管理上的差距",
+            key="intake_seed",
+        )
+        col_gen, col_clear = st.columns([1, 1])
+        with col_gen:
+            gen = st.button("🤖 生成问题", use_container_width=True)
+        with col_clear:
+            if st.button("清空", use_container_width=True):
+                st.session_state.pop("intake_qs", None)
+                st.rerun()
+
+        if gen:
+            # 用侧栏当前选中的行业作为推荐提示,让候选更贴合
+            domain_hint = st.session_state.get("sb_domain")
+            with st.spinner("Agent 正在拆解意图、推荐候选…"):
+                qs = [c.to_dict() for c in intake.intake_questions(seed or "", domain_hint)]
+            st.session_state["intake_qs"] = qs
+            st.rerun()
+
+        qs = st.session_state.get("intake_qs")
+        if not qs:
+            return
+
+        st.divider()
+        answers: dict = {}
+        for q in qs:
+            opts = list(q["options"])
+            sug = q.get("suggested") or []
+            label = q["question"]
+            if q["multi"]:
+                answers[q["key"]] = st.multiselect(
+                    label, opts, default=[s for s in sug if s in opts],
+                    key=f"intake_{q['key']}",
+                )
+            else:
+                idx = opts.index(sug[0]) if (sug and sug[0] in opts) else 0
+                answers[q["key"]] = st.selectbox(
+                    label, opts, index=idx if opts else 0,
+                    key=f"intake_{q['key']}",
+                ) if opts else ""
+            if q.get("allow_custom"):
+                custom = st.text_input(
+                    f"↳ 或自定义「{label}」(留空则用上面所选)",
+                    key=f"intake_custom_{q['key']}",
+                )
+                if custom.strip():
+                    answers[q["key"]] = (
+                        [c.strip() for c in custom.split(",") if c.strip()]
+                        if q["multi"] else custom.strip()
+                    )
+
+        if st.button("✅ 应用到分析配置", type="primary", use_container_width=True):
+            meta = intake.assemble_meta(answers, user_input=seed or None)
+            pending = {
+                "target_product": meta["target_product"],
+                "competitors": meta["competitors"],
+                "analysis_focus": meta["analysis_focus"],
+            }
+            if intake.wants_persist(answers):
+                key = intake.persist_domain(meta)
+                pending["domain_key"] = key
+                st.success(
+                    f"已保存为新行业 `{key}`。记得补 data/sample_sources_{key}.json,"
+                    "或开启实时抓取(ENABLE_LIVE_FETCH=1)。"
+                )
+            st.session_state["_intake_pending"] = pending
+            st.session_state.pop("intake_qs", None)
+            st.rerun()
+
+
 def step_html(node: str, status_class: str, meta: str) -> str:
     return f"""
 <div class="ca-step {status_class}">
@@ -778,6 +864,17 @@ topbar()
 
 domains = load_domains()
 
+# ─── 应用 intake「智能填写」结果(同样需在 widget 渲染前注入 session_state)──
+_intake_pending = st.session_state.pop("_intake_pending", None)
+if _intake_pending:
+    if _intake_pending.get("domain_key"):
+        load_domains.clear()
+        domains = load_domains()
+        st.session_state["sb_domain"] = _intake_pending["domain_key"]
+    st.session_state["sb_target"] = _intake_pending["target_product"]
+    st.session_state["sb_competitors"] = "\n".join(_intake_pending.get("competitors", []))
+    st.session_state["sb_focus"] = (_intake_pending.get("analysis_focus") or [""])[0]
+
 # ─── 应用一键预设(session_state 注入需在 widget 渲染前发生)───────
 PRESETS = {
     "ai_coding_mock": {
@@ -880,6 +977,10 @@ with st.sidebar:
         use_container_width=True,
         disabled=not target or not focus,
     )
+
+
+# ─── 一句话智能填写面板(主区顶部,回填上面的侧栏配置)────────────
+intake_panel(domains)
 
 
 # ────────────────────────────────────────────────────────────────────────────
