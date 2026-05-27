@@ -181,13 +181,21 @@ def collect_all_evidence_refs(
 
 def quick_validate_facts(facts: dict, evidence: list[dict], meta: dict) -> list[str]:
     issues: list[str] = []
-    valid_ids = {e["evidence_id"] for e in evidence}
+    by_id = {e["evidence_id"]: e for e in evidence}
 
-    # (a) evidence_id 必须存在
-    for path, eids, _allowed in collect_all_evidence_refs(facts):
+    # (a) evidence_id 必须存在,且 claim_type 必须匹配字段语义。
+    for path, eids, allowed in collect_all_evidence_refs(facts):
         for eid in eids:
-            if eid not in valid_ids:
+            ev = by_id.get(eid)
+            if not ev:
                 issues.append(f"{path}: 引用了不存在的 evidence_id {eid}")
+                continue
+            ct = ev.get("claim_type")
+            if allowed and ct not in allowed:
+                issues.append(
+                    f"{path}: evidence_id {eid} claim_type={ct} 不在允许集 {allowed}; "
+                    "请替换为允许 claim_type 的证据,或把该 evidence_id 移到匹配字段"
+                )
 
     # (b) gap 覆盖检查
     target = meta["target_product"]
@@ -202,6 +210,66 @@ def quick_validate_facts(facts: dict, evidence: list[dict], meta: dict) -> list[
                 f"(competitors={sorted(competitors)}, got={sorted(covered)})"
             )
     return issues
+
+
+def _filter_evidence_ids(
+    evidence_ids: list[str],
+    evidence_by_id: dict[str, dict],
+    allowed_claim_types: set[str],
+) -> tuple[list[str], int]:
+    kept: list[str] = []
+    dropped = 0
+    for eid in evidence_ids or []:
+        ev = evidence_by_id.get(eid)
+        if ev and ev.get("claim_type") in allowed_claim_types:
+            kept.append(eid)
+        else:
+            dropped += 1
+    return kept, dropped
+
+
+def sanitize_facts_evidence_refs(facts: dict, evidence: list[dict]) -> tuple[dict, int]:
+    """Drop evidence refs whose claim_type cannot satisfy the target schema field.
+
+    This is a deterministic last line of defense for Reviewer R2. LLM repair gets
+    the first chance to replace IDs with better ones; this function removes any
+    remaining incompatible IDs so full mode does not fail on avoidable type drift.
+    """
+    evidence_by_id = {e["evidence_id"]: e for e in evidence}
+    dropped = 0
+
+    def apply(obj: dict, key: str, allowed: set[str]) -> None:
+        nonlocal dropped
+        filtered, n = _filter_evidence_ids(obj.get(key) or [], evidence_by_id, allowed)
+        obj[key] = filtered
+        dropped += n
+
+    for feat in facts.get("feature_tree", {}).get("features", []):
+        for pdata in (feat.get("products") or {}).values():
+            apply(pdata, "support_evidence_ids", {"feature_existence"})
+            qs = pdata.get("quality_score") or {}
+            apply(qs, "evidence_ids", {"performance_quality", "user_pain"})
+            agg = qs.get("aggregation") or {}
+            apply(agg, "representative_evidence_ids", {
+                "performance_quality", "user_pain", "feature_existence",
+            })
+        gap = feat.get("gap") or {}
+        apply(gap, "evidence_ids", {"feature_existence", "performance_quality", "user_pain"})
+
+    pricing = facts.get("pricing_model") or {}
+    for product in pricing.get("products", []):
+        for tier in product.get("tiers") or []:
+            apply(tier, "evidence_ids", {"pricing"})
+    apply(pricing.get("pricing_gap") or {}, "evidence_ids", {"pricing", "user_pain", "market_signal"})
+
+    persona = facts.get("user_persona") or {}
+    for segment in persona.get("user_segments", []):
+        apply(segment, "evidence_ids", {"user_pain", "market_signal", "performance_quality"})
+    for pain in persona.get("pain_points", []):
+        freq = pain.get("frequency") or {}
+        apply(freq, "evidence_ids", {"user_pain", "performance_quality"})
+
+    return facts, dropped
 
 
 def quick_validate_derivations(
@@ -267,6 +335,12 @@ def _build_repair_hint(issues: list[str]) -> str:
         "- 若 gap 未覆盖 target 或 competitor:补充对应的 products 条目,证据不足用 support_status: unknown\n"
         "- 若 aggregation.sample_size 不等于 pos+neg+neu:重新核算并修正 sample_size\n"
         "- 若 support_status 使用了未定义的值:改为 supported/partially_supported/not_supported/unknown 之一\n"
+        "- 若 claim_type 不在允许集:不要为了保留 evidence_id 硬塞字段;按下面字段规则移动或删除该 ID\n"
+        "  * support_evidence_ids 只允许 feature_existence\n"
+        "  * quality_score.evidence_ids 只允许 performance_quality / user_pain\n"
+        "  * pricing_model.products[].tiers[].evidence_ids 只允许 pricing\n"
+        "  * pricing_gap.evidence_ids 允许 pricing / user_pain / market_signal\n"
+        "  * user_segments.evidence_ids 只允许 user_pain / market_signal / performance_quality;不要用官方功能页或定价页推断用户画像\n"
         "- 若 source_feature_ids 中某个 ID 不在 facts.feature_tree:删掉无效 ID\n"
         "- 若 final_score 与公式不一致:重新计算 sum(评分项 * weights),保留两位小数\n\n"
         "要求:\n- 单一 JSON 对象,无 markdown 包裹\n- 不要修改无问题的字段\n"
@@ -300,11 +374,20 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0) -> d
     if issues:
         print(f"[analyzer] facts quick_validate found {len(issues)} issues; repairing")
         _emit_progress(step="facts", phase="repair", issues=len(issues))
-        facts = llm.call_json(
-            system + _build_repair_hint(issues), payload,
-            max_tokens=4096, label="facts_repair",
-        )
-        _emit_progress(step="facts", phase="done", attempt=2)
+        try:
+            facts = llm.call_json(
+                system + _build_repair_hint(issues), payload,
+                max_tokens=8192, label="facts_repair",
+            )
+            _emit_progress(step="facts", phase="done", attempt=2)
+        except Exception as e:
+            print(f"[analyzer] facts repair failed; applying deterministic sanitize: {e}")
+
+        remaining = quick_validate_facts(facts, evidence, meta)
+        if remaining:
+            facts, dropped = sanitize_facts_evidence_refs(facts, evidence)
+            if dropped:
+                print(f"[analyzer] facts deterministic sanitize dropped {dropped} invalid evidence refs")
     return facts
 
 
@@ -333,11 +416,14 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
     if issues:
         print(f"[analyzer] derivations quick_validate found {len(issues)} issues; repairing")
         _emit_progress(step="derivations", phase="repair", issues=len(issues))
-        der = llm.call_json(
-            system + _build_repair_hint(issues), payload,
-            max_tokens=3072, label="derivations_repair",
-        )
-        _emit_progress(step="derivations", phase="done", attempt=2)
+        try:
+            der = llm.call_json(
+                system + _build_repair_hint(issues), payload,
+                max_tokens=3072, label="derivations_repair",
+            )
+            _emit_progress(step="derivations", phase="done", attempt=2)
+        except Exception as e:
+            print(f"[analyzer] derivations repair failed; reviewer will handle remaining issues: {e}")
     return der
 
 

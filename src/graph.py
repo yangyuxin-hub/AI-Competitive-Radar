@@ -43,7 +43,18 @@ def build_app(llm: Optional[object] = None, reviewer_mode: Optional[str] = None)
             "langgraph 未安装。pip install -r requirements.txt"
         ) from e
 
-    reviewer_node = make_reviewer_node(llm=llm, mode=reviewer_mode)
+    import os
+
+    mode = reviewer_mode or os.environ.get("REVIEWER_MODE", "minimal")
+    if llm is None and mode == "full":
+        try:
+            from .llm import get_llm, is_mock_mode
+            if not is_mock_mode() and os.environ.get("ARK_API_KEY"):
+                llm = get_llm()
+        except Exception as e:
+            print(f"[graph] WARN: R6 LLM 注入失败,Reviewer 将记录 warning: {e}")
+
+    reviewer_node = make_reviewer_node(llm=llm, mode=mode)
 
     graph = StateGraph(AgentState)
     graph.add_node("collector", collector_node)

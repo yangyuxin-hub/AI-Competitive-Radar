@@ -46,6 +46,8 @@ ISSUE_TYPE_TO_TARGET = {
     "aggregation_method_missing": "analyzer",
     "broken_reasoning_chain": "analyzer",
     "structured_contradiction": "analyzer",
+    "semantic_grounding_fail": "analyzer",
+    "semantic_grounding_unavailable": "analyzer",
     "freshness_stale": "collector",
 }
 
@@ -209,6 +211,268 @@ RULE_RUNNERS = {
 }
 
 
+# R6 is intentionally one LLM call over a compact claim/evidence packet.
+# It runs only after deterministic structural checks pass.
+_R6_MAX_CLAIMS = 28
+_R6_MAX_CLAIM_CHARS = 520
+_R6_MAX_SNIPPET_CHARS = 420
+
+
+def _clip(text: object, limit: int) -> str:
+    s = str(text or "").strip()
+    if len(s) <= limit:
+        return s
+    return s[:limit - 3].rstrip() + "..."
+
+
+def _norm_eids(evidence_ids) -> list[str]:
+    if not evidence_ids:
+        return []
+    return [str(e) for e in evidence_ids if e]
+
+
+def _collect_semantic_claims(schema: dict) -> list[dict]:
+    """Collect high-value claims for R6 semantic grounding.
+
+    R6 focuses on interpretive or user-facing conclusions, not every schema field.
+    Deterministic R1-R5 already handle existence, type compatibility and formulas.
+    """
+    claims: list[dict] = []
+
+    def add(location: str, claim_kind: str, claim_text: str, evidence_ids) -> None:
+        text = _clip(claim_text, _R6_MAX_CLAIM_CHARS)
+        if not text:
+            return
+        claims.append({
+            "location": location,
+            "claim_kind": claim_kind,
+            "claim_text": text,
+            "evidence_ids": _norm_eids(evidence_ids),
+        })
+
+    # Feature quality and gaps.
+    for feat in schema.get("feature_tree", {}).get("features", []):
+        fid = feat.get("feature_id", "?")
+        fname = feat.get("name", "")
+        for pname, pdata in (feat.get("products") or {}).items():
+            qs = pdata.get("quality_score") or {}
+            basis = qs.get("basis")
+            if basis:
+                add(
+                    f"feature_tree.{fid}.{pname}.quality_score.basis",
+                    "feature_quality",
+                    f"{pname} / {fname}: {basis}",
+                    qs.get("evidence_ids") or [],
+                )
+        gap = feat.get("gap") or {}
+        if gap.get("reason"):
+            add(
+                f"feature_tree.{fid}.gap",
+                "feature_gap",
+                (
+                    f"{fname}: winner={gap.get('winner', 'unknown')}; "
+                    f"gap_type={gap.get('gap_type', 'unknown')}; "
+                    f"reason={gap.get('reason')}"
+                ),
+                gap.get("evidence_ids") or [],
+            )
+
+    # Pricing interpretation.
+    pricing_gap = (schema.get("pricing_model") or {}).get("pricing_gap") or {}
+    if pricing_gap.get("summary"):
+        add(
+            "pricing_model.pricing_gap",
+            "pricing_gap",
+            (
+                f"target_position={pricing_gap.get('target_position', 'unknown')}; "
+                f"summary={pricing_gap.get('summary')}"
+            ),
+            pricing_gap.get("evidence_ids") or [],
+        )
+
+    # Personas and pain points.
+    for seg in (schema.get("user_persona") or {}).get("user_segments", []):
+        sid = seg.get("segment_id", "?")
+        add(
+            f"user_persona.user_segments.{sid}",
+            "user_segment",
+            f"{seg.get('name', '')}: {seg.get('description', '')}",
+            seg.get("evidence_ids") or [],
+        )
+    for pain in (schema.get("user_persona") or {}).get("pain_points", []):
+        pid = pain.get("pain_id", "?")
+        freq = pain.get("frequency") or {}
+        add(
+            f"user_persona.{pid}",
+            "pain_point",
+            (
+                f"{pain.get('description', '')}; frequency={freq.get('level', 'unknown')} "
+                f"({freq.get('count', '')}); affected={pain.get('affected_products', [])}"
+            ),
+            freq.get("evidence_ids") or [],
+        )
+
+    # Recommendations.
+    for rec in schema.get("recommendations", []):
+        rid = rec.get("rec_id", "?")
+        add(
+            f"recommendations.{rid}",
+            "recommendation",
+            f"action={rec.get('action', '')}; rationale={rec.get('rationale', '')}",
+            rec.get("evidence_ids") or [],
+        )
+
+    # SWOT.
+    for dim in ("strengths", "weaknesses", "opportunities", "threats"):
+        for i, item in enumerate((schema.get("swot") or {}).get(dim) or []):
+            add(
+                f"swot.{dim}[{i}]",
+                f"swot_{dim}",
+                item.get("point", ""),
+                item.get("evidence_ids") or [],
+            )
+
+    return claims
+
+
+def _r6_system_prompt() -> str:
+    return """你是竞品分析系统的 Reviewer R6: semantic grounding。
+
+任务:判断每条 claim_text 是否被它列出的 evidence_ids 的 extracted_snippet 直接支撑。
+
+严格规则:
+1. 只能使用输入中的 evidence.snippet / claim_type / source_bias,不能使用外部知识。
+2. 若证据只支持较弱结论,但 claim 写成强比较、全称判断、精确数字或因果判断,判为 overclaim。
+3. vendor_claim 可以支撑功能存在和定价,但不能单独支撑真实体验质量或用户痛点。
+4. user_generated 可以支撑用户痛点或个体体验,但不能支撑市场总体结论,除非 snippet 明确给出样本或统计。
+5. 证据之间相互矛盾且 claim 没有解释冲突时,判为 contradicted。
+6. 没问题的 claim 不要输出。
+
+只返回 JSON:
+{
+  "issues": [
+    {
+      "location": "必须等于输入 claims[].location",
+      "issue_type": "unsupported|overclaim|contradicted",
+      "severity": "error|warning",
+      "detail": "简短说明为什么证据不支撑",
+      "unsupported_text": "claim 中不被支撑的最小片段",
+      "evidence_ids": ["SXXXXXXX"],
+      "confidence": 0.0
+    }
+  ]
+}
+"""
+
+
+def _resolve_r6_location(location: str, valid_locations: set[str]) -> Optional[str]:
+    if location in valid_locations:
+        return location
+    matches = [loc for loc in valid_locations if loc.endswith(location) or location in loc]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _r6_unavailable(detail: str) -> list[dict]:
+    issue = _mk_issue(
+        "R6",
+        "semantic_grounding_unavailable",
+        "reviewer.R6",
+        detail,
+    )
+    issue["severity"] = "warning"
+    return [issue]
+
+
+def check_semantic_grounding(schema: dict, evidence: list[dict], llm) -> list[dict]:
+    """R6: LLM checks whether extracted snippets really ground schema claims."""
+    if llm is None:
+        return _r6_unavailable("R6 已启用,但未注入 LLM client;跳过语义落地校验")
+
+    claims = _collect_semantic_claims(schema)
+    if not claims:
+        return []
+
+    selected_claims = claims[:_R6_MAX_CLAIMS]
+    by_id = {e.get("evidence_id"): e for e in evidence if e.get("evidence_id")}
+    needed_ids: list[str] = []
+    for c in selected_claims:
+        for eid in c["evidence_ids"]:
+            if eid in by_id and eid not in needed_ids:
+                needed_ids.append(eid)
+
+    evidence_pack = [
+        {
+            "evidence_id": eid,
+            "product": by_id[eid].get("product"),
+            "claim_type": by_id[eid].get("claim_type"),
+            "source_bias": by_id[eid].get("source_bias"),
+            "claim": _clip(by_id[eid].get("claim"), 180),
+            "snippet": _clip(by_id[eid].get("extracted_snippet"), _R6_MAX_SNIPPET_CHARS),
+        }
+        for eid in needed_ids
+    ]
+
+    payload = {
+        "claims": selected_claims,
+        "evidence": evidence_pack,
+        "review_policy": {
+            "return_only_issues": True,
+            "location_must_match_claims": True,
+            "error_means_reject_target_analyzer": True,
+        },
+    }
+
+    try:
+        raw = llm.call_json(
+            _r6_system_prompt(),
+            payload,
+            max_tokens=3072,
+            label="reviewer_r6",
+        )
+    except Exception as e:
+        return _r6_unavailable(f"R6 LLM 调用失败:{type(e).__name__}: {e}")
+
+    if isinstance(raw, list):
+        raw_issues = raw
+    elif isinstance(raw, dict):
+        raw_issues = raw.get("issues") or []
+    else:
+        return _r6_unavailable("R6 LLM 返回格式不是 JSON object/list")
+
+    valid_locations = {c["location"] for c in selected_claims}
+    valid_eids = set(by_id)
+    issues: list[dict] = []
+
+    for item in raw_issues[:20]:
+        if not isinstance(item, dict):
+            continue
+        loc = _resolve_r6_location(str(item.get("location", "")).strip(), valid_locations)
+        if not loc:
+            continue
+
+        detail = str(item.get("detail") or item.get("reason") or "claim 未被证据充分支撑").strip()
+        unsupported = str(item.get("unsupported_text") or "").strip()
+        if unsupported:
+            detail = f"{detail}; unsupported_text={unsupported}"
+
+        issue = _mk_issue("R6", "semantic_grounding_fail", loc, detail)
+        issue["semantic_issue_type"] = item.get("issue_type") or "unsupported"
+        issue["evidence_ids"] = [eid for eid in _norm_eids(item.get("evidence_ids")) if eid in valid_eids]
+
+        try:
+            conf = float(item.get("confidence", 1.0))
+        except (TypeError, ValueError):
+            conf = 1.0
+        issue["confidence"] = max(0.0, min(1.0, conf))
+
+        sev = str(item.get("severity") or "error").lower()
+        # Low-confidence semantic findings should inform, not block.
+        issue["severity"] = "warning" if sev == "warning" or issue["confidence"] < 0.65 else "error"
+        issues.append(issue)
+
+    return issues
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Node
 # ────────────────────────────────────────────────────────────────────────────
@@ -222,7 +486,10 @@ def make_reviewer_node(llm=None, mode: Optional[str] = None):
         evidence = state.get("raw_evidence") or []
 
         all_issues: list[dict] = []
+        executed_rules: set[str] = set()
+        skipped_rules: set[str] = set()
         for rule_id, runner in RULE_RUNNERS.items():
+            executed_rules.add(rule_id)
             for issue in runner(schema, evidence):
                 if rule_id in cfg["hard_gate"]:
                     issue["severity"] = "error"
@@ -233,18 +500,22 @@ def make_reviewer_node(llm=None, mode: Optional[str] = None):
 
         errors_pre = [i for i in all_issues if i["severity"] == "error"]
 
-        # R6 仅在 full 模式 + 结构通过后跑一次(骨架阶段未实装)
-        if cfg["llm"] and not errors_pre and llm is not None:
-            # TODO: check_semantic_grounding(schema, llm)
-            pass
+        # R6 仅在 full 模式 + 结构通过后跑一次。
+        if cfg["llm"]:
+            if errors_pre:
+                skipped_rules.add("R6")
+            else:
+                executed_rules.add("R6")
+                all_issues += check_semantic_grounding(schema, evidence, llm)
+        else:
+            skipped_rules.add("R6")
 
         errors = [i for i in all_issues if i["severity"] == "error"]
         warnings = [i for i in all_issues if i["severity"] == "warning"]
 
-        all_rule_ids = set(REVIEWER_RULES.keys())
         failed_rules = {i["rule"] for i in errors}
         warning_rules = {i["rule"] for i in warnings}
-        passed_rules = sorted(all_rule_ids - failed_rules - warning_rules)
+        passed_rules = sorted(executed_rules - failed_rules - warning_rules)
 
         module_status = {}
         for module in ("raw_evidence", "feature_tree", "pricing_model",
@@ -261,6 +532,7 @@ def make_reviewer_node(llm=None, mode: Optional[str] = None):
             "passed_rules": passed_rules,
             "failed_rules": sorted(failed_rules),
             "warning_rules": sorted(warning_rules),
+            "skipped_rules": sorted(skipped_rules),
             "module_status": module_status,
             "errors": errors,
             "warnings": warnings,

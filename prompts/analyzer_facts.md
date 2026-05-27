@@ -62,10 +62,17 @@
 6. **quality_score**:`score` 1-5 整数,`scale: 5`;`basis` 用中文说明依据并引用 evidence_id
 7. **pricing 必须含 `observed_at` 和 `source_freshness`**(从 evidence 同步,默认 `current`)
 8. **pain_points.frequency.level** 取值:`high` / `medium` / `low`
+9. **字段与 claim_type 必须匹配(R2 hard gate in full mode)**:
+   - `support_evidence_ids` 只允许引用 `feature_existence`
+   - `quality_score.evidence_ids` 只允许引用 `performance_quality` / `user_pain`
+   - `quality_score.aggregation.representative_evidence_ids` 优先引用 `performance_quality` / `user_pain`;只有在没有用户体验证据时才可用少量 `feature_existence` 作为 neutral 样本,且 score 必须保守(≤3)
+   - `pricing_model.products[].tiers[].evidence_ids` 只允许引用 `pricing`
+   - `pricing_gap.evidence_ids` 允许引用 `pricing` / `user_pain` / `market_signal`
+   - `user_segments[].evidence_ids` 只允许引用 `user_pain` / `market_signal` / `performance_quality`;不要用官方功能页或定价页推断用户画像
+   - `pain_points[].frequency.evidence_ids` 只允许引用 `user_pain` / `performance_quality`
 
 > 补充约束(不触发打回但强烈建议遵守):
 > - 每个引用点列 1-5 个最相关的 ID,不是越多越好
-> - vendor_claim 优先放 `support_evidence_ids`,user_generated 优先放 `quality_score.evidence_ids` 或 pain_points
 > - 如果某功能只有 vendor_claim 没有用户反馈,quality 取保守值(≤3),不要据此推断真实体验领先
 
 ---
@@ -78,10 +85,11 @@
 |----------|------|------|
 | `feature_tree.features[].feature_id` | str | F + 三位数字(F001, F002...) |
 | `feature_tree.features[].products.<Name>.support_status` | enum | supported/partially_supported/not_supported/unknown |
-| `feature_tree.features[].products.<Name>.support_evidence_ids` | list[str] | 1-5 个真实 evidence_id |
+| `feature_tree.features[].products.<Name>.support_evidence_ids` | list[str] | 1-5 个真实 evidence_id;只允许 `feature_existence` |
 | `feature_tree.features[].products.<Name>.quality_score.score` | int | 1-5,scale=5 |
 | `feature_tree.features[].products.<Name>.quality_score.aggregation.sample_size` | int | **必须等于** pos+neg+neu 之和 |
-| `feature_tree.features[].products.<Name>.quality_score.aggregation.representative_evidence_ids` | list[str] | 真实 evidence_id |
+| `feature_tree.features[].products.<Name>.quality_score.aggregation.representative_evidence_ids` | list[str] | 真实 evidence_id;优先 `performance_quality/user_pain` |
+| `feature_tree.features[].products.<Name>.quality_score.evidence_ids` | list[str] | 只允许 `performance_quality/user_pain` |
 | `feature_tree.features[].gap.winner` | str | 必须在 products 列表中 |
 | `feature_tree.features[].gap.gap_type` | enum | accuracy/maturity/feature_completeness/usability/performance |
 | `feature_tree.features[].gap.confidence` | float | 0.0-1.0 |
@@ -89,11 +97,45 @@
 | `pricing_model.products[].tiers[].observed_at` | str | YYYY-MM-DD |
 | `pricing_model.products[].tiers[].source_freshness` | enum | current/stale/unknown |
 | `pricing_model.pricing_gap.target_position` | enum | similar/cheaper/more_expensive/unknown |
-| `pricing_model.pricing_gap.evidence_ids` | list[str] | 可引用 pricing + user_pain(market_signal 辅助) |
+| `pricing_model.products[].tiers[].evidence_ids` | list[str] | 只允许 `pricing` |
+| `pricing_model.pricing_gap.evidence_ids` | list[str] | 可引用 `pricing` + `user_pain`(`market_signal` 辅助) |
 | `user_persona.user_segments[].segment_id` | str | U + 三位数字 |
+| `user_persona.user_segments[].evidence_ids` | list[str] | 只允许 `user_pain/market_signal/performance_quality` |
 | `user_persona.pain_points[].pain_id` | str | P + 三位数字 |
+| `user_persona.pain_points[].frequency.evidence_ids` | list[str] | 只允许 `user_pain/performance_quality` |
 | `user_persona.pain_points[].frequency.level` | enum | high/medium/low |
 | `user_persona.pain_points[].confidence` | float | 0.0-1.0 |
+
+### R2 反例与修复方式
+
+如果 raw_evidence 中:
+```json
+[
+  {"evidence_id": "S1", "claim_type": "feature_existence", "claim": "产品支持 Tab 补全"},
+  {"evidence_id": "S2", "claim_type": "user_pain", "claim": "用户抱怨补全经常忽略跨文件类型"},
+  {"evidence_id": "S3", "claim_type": "pricing", "claim": "Pro 定价 $20/月"}
+]
+```
+
+错误写法:
+```json
+{
+  "support_evidence_ids": ["S2"],
+  "quality_score": {"evidence_ids": ["S1"]},
+  "tiers": [{"evidence_ids": ["S2"]}]
+}
+```
+
+正确修复:
+```json
+{
+  "support_evidence_ids": ["S1"],
+  "quality_score": {"evidence_ids": ["S2"]},
+  "tiers": [{"evidence_ids": ["S3"]}]
+}
+```
+
+如果找不到匹配 claim_type 的 evidence_id,宁可留空并把状态/置信度降为 unknown/低分,也不要把错误类型的 evidence_id 塞进字段。
 
 ### JSON 骨架
 
@@ -406,6 +448,7 @@
 - 若 gap 未覆盖 target 或 competitor:补充对应的 products 条目,证据不足用 support_status: unknown
 - 若 aggregation.sample_size 不等于 pos+neg+neu:重新核算并修正 sample_size
 - 若 support_status 使用了未定义的值:改为 supported/partially_supported/not_supported/unknown 之一
+- 若 claim_type 不在允许集:按 R2 字段映射移动 evidence_id;找不到匹配类型就删除该 ID 并降低 score/confidence
 
 要求:
 - 单一 JSON 对象,无 markdown 包裹
