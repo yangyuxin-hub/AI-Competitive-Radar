@@ -119,7 +119,7 @@
                 "representative_evidence_ids": ["SCABE002", "SCABE006"],
                 "method": "vendor claim + 1 HN third-party latency note"
               },
-              "evidence_ids": ["SCABE002", "SCABE006"]
+              "evidence_ids": ["SCABE006"]
             }
           },
           "Windsurf": {
@@ -138,7 +138,7 @@
                 "representative_evidence_ids": ["SDEAD004"],
                 "method": "vendor claim + 1 HN performance note"
               },
-              "evidence_ids": ["SDEAD001", "SDEAD004"]
+              "evidence_ids": ["SDEAD004"]
             }
           },
           "GitHubCopilot": {
@@ -157,7 +157,7 @@
                 "representative_evidence_ids": ["SFACE005", "SFACE00A"],
                 "method": "vendor beta note + 2 user/HN comments on lag"
               },
-              "evidence_ids": ["SFACE003", "SFACE005", "SFACE00A"]
+              "evidence_ids": ["SFACE005", "SFACE00A"]
             }
           }
         },
@@ -190,7 +190,7 @@
                 "representative_evidence_ids": ["SCABE00B", "SCABE00C"],
                 "method": "vendor doc + 2 user pain reports on large-codebase indexing"
               },
-              "evidence_ids": ["SCABE003", "SCABE00B", "SCABE00C"]
+              "evidence_ids": ["SCABE00B", "SCABE00C"]
             }
           },
           "GitHubCopilot": {
@@ -209,7 +209,7 @@
                 "representative_evidence_ids": ["SFACE008"],
                 "method": "vendor doc + 1 strong user pain report"
               },
-              "evidence_ids": ["SFACE002", "SFACE008"]
+              "evidence_ids": ["SFACE008"]
             }
           }
         },

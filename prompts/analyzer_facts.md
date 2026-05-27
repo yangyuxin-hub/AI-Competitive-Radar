@@ -137,7 +137,7 @@
     ],
     "pricing_gap": {
       "target_position": "similar | cheaper | more_expensive | unknown",
-      "summary": "string  // 中文,陈述价格事实",
+      "summary": "string  // 中文,陈述价格事实;可用 user_pain 作为价格感知/采购阻力的辅助证据",
       "evidence_ids": ["S........", ...],
       "confidence": 0.0-1.0
     }

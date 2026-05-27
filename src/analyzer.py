@@ -138,7 +138,7 @@ def collect_all_evidence_refs(
     refs.append((
         "pricing_model.pricing_gap.evidence_ids",
         (schema.get("pricing_model", {}).get("pricing_gap") or {}).get("evidence_ids") or [],
-        ["pricing", "market_signal"],
+        ["pricing", "market_signal", "user_pain"],
     ))
 
     # user_persona

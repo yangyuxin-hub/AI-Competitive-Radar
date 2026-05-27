@@ -1,0 +1,58 @@
+# LLM-as-Judge 报告质量评分 rubric
+# 定位:R1-R7 查「内部自洽」,judge 查「是不是一份好分析」。详见 docs/quality-judge-design.md
+# 4 维 1-5 锚定量表;每维配确定性量化信号压方差;权重随 analysis_purpose 浮动。
+scale: 5
+
+dimensions:
+  accuracy:
+    name: 准确性
+    desc: 结论是否真被证据 snippet 支持,无过度断言 / 幻觉,区分 vendor 与用户实测
+    anchors:
+      "1": 多处结论无证据或与证据矛盾;把官网营销当客观事实
+      "3": 多数结论有证据支撑,个别过度断言或未区分 vendor / 第三方
+      "5": 每条结论可溯源且 snippet 真支持,明确区分 vendor_claim 与用户实测
+
+  insight:
+    name: 洞察力
+    desc: 超越功能对照,点出竞争逻辑 / 根因 / 非显然模式
+    anchors:
+      "1": 仅功能矩阵罗列,无任何高层结论
+      "3": 有 SWOT 但偏表面,竞争逻辑零散
+      "5": 清晰指出各竞品的竞争逻辑与 target 的真实位置,且有根因
+
+  actionability:
+    name: 实用性
+    desc: 建议能否被 PM 直接执行(动作 / 收益 / 验收指标 / 风险 / 周期)
+    anchors:
+      "1": “提升体验”式空话,无优先级
+      "3": 有明确动作和优先级,但缺收益 / 指标 / 风险 / 周期
+      "5": 每条建议含动作 + 收益 + 验收指标 + 风险 + 周期,可直接立项
+
+  focus:
+    name: 聚焦度
+    desc: 是否紧扣 analysis_focus,不被无关能力稀释
+    anchors:
+      "1": 大幅跑题,焦点维度覆盖不足
+      "3": 基本贴合,混入少量焦点外内容
+      "5": 紧扣 analysis_focus 各子维度,无稀释
+
+# 不同分析目的下的维度权重(每组求和 = 1)。按 purpose 子串匹配,命中不到用 default。
+purpose_weights:
+  default:
+    accuracy: 0.30
+    insight: 0.30
+    actionability: 0.25
+    focus: 0.15
+  定价:
+    accuracy: 0.40
+    insight: 0.20
+    actionability: 0.25
+    focus: 0.15
+  差异化:
+    accuracy: 0.20
+    insight: 0.40
+    actionability: 0.25
+    focus: 0.15
+
+# 软门限:某维 < 此分,harness 仅 warning(离线评测不打回,只提示该改 prompt 的方向)
+warn_threshold: 3
