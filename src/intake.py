@@ -106,20 +106,23 @@ def _all_focus_options() -> list[str]:
 # 意图草拟:LLM 优先,启发式兜底
 # ────────────────────────────────────────────────────────────────────────────
 
-_PROPOSE_SYSTEM = """你是竞品分析的需求澄清助手。
-用户会给一句话分析意图。请推断:目标产品(target)、同类竞品、分析焦点、分析目的,
-并为每一项给出 2-5 个可选项(候选要真实存在、属于同一品类)。
-只输出 JSON,字段如下,不要多余文字:
-{
-  "domain_name": "该品类的中文名,如 AI 编程工具",
-  "target_candidates": ["最可能的目标产品在最前"],
-  "competitors_candidates": ["同类竞品候选,尽量覆盖不同竞争逻辑"],
-  "competitors_suggested": ["推荐先选的 2-3 个"],
-  "focus_candidates": ["分析焦点候选"],
-  "focus_suggested": "最贴合用户意图的一个焦点",
-  "purpose_candidates": ["分析目的候选"],
-  "purpose_suggested": "最可能的目的"
-}"""
+_PROMPTS_DIR = _ROOT / "prompts"
+
+_prompt_cache: dict[str, str] = {}
+
+
+def _load_prompt(name: str) -> str:
+    if name in _prompt_cache:
+        return _prompt_cache[name]
+    path = _PROMPTS_DIR / f"{name}.md"
+    # 从 .md prompt 文件中提取 ## SYSTEM 之后的内容作为 system prompt
+    text = path.read_text(encoding="utf-8")
+    marker = "## SYSTEM"
+    idx = text.find(marker)
+    if idx >= 0:
+        text = text[idx + len(marker):].strip()
+    _prompt_cache[name] = text
+    return text
 
 
 def _llm_available() -> bool:
@@ -136,7 +139,7 @@ def _propose_via_llm(user_input: str) -> Optional[dict]:
     try:
         from .llm import get_llm
         draft = get_llm().call_json(
-            system_prompt=_PROPOSE_SYSTEM,
+            system_prompt=_load_prompt("intake"),
             user_payload={
                 "user_input": user_input,
                 "known_products": _known_product_names(),

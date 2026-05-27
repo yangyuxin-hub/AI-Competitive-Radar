@@ -261,7 +261,15 @@ def _build_repair_hint(issues: list[str]) -> str:
     issues_text = "\n".join(f"- {i}" for i in issues)
     return (
         "\n\n---\n\n## REPAIR\n\n你上一次输出存在以下问题,请仅修正这些问题后重新输出完整 JSON:\n"
-        f"{issues_text}\n\n要求:\n- 单一 JSON 对象,无 markdown 包裹\n- 不要修改无问题的字段\n"
+        f"{issues_text}\n\n"
+        "常见修复指引:\n"
+        "- 若 evidence_id 不存在:从 raw_evidence 中找一条 claim 最匹配的合法 ID 替换\n"
+        "- 若 gap 未覆盖 target 或 competitor:补充对应的 products 条目,证据不足用 support_status: unknown\n"
+        "- 若 aggregation.sample_size 不等于 pos+neg+neu:重新核算并修正 sample_size\n"
+        "- 若 support_status 使用了未定义的值:改为 supported/partially_supported/not_supported/unknown 之一\n"
+        "- 若 source_feature_ids 中某个 ID 不在 facts.feature_tree:删掉无效 ID\n"
+        "- 若 final_score 与公式不一致:重新计算 sum(评分项 * weights),保留两位小数\n\n"
+        "要求:\n- 单一 JSON 对象,无 markdown 包裹\n- 不要修改无问题的字段\n"
     )
 
 

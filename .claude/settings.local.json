@@ -16,7 +16,14 @@
       "Bash(git commit *)",
       "Bash(git merge *)",
       "Bash(git checkout *)",
-      "Bash(git pull *)"
+      "Bash(git pull *)",
+      "Bash(python *)",
+      "Bash(ANALYZER_MOCK=1 DOMAIN=ai_coding python -m src.graph)",
+      "Bash(ANALYZER_MOCK=1 python -m src.graph)",
+      "Bash(streamlit run *)",
+      "Bash(STREAMLIT_EMAIL=noreply@example.com streamlit run frontend/app.py --server.headless true --server.port 8501)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8501)",
+      "WebFetch(domain:localhost)"
     ]
   }
 }
