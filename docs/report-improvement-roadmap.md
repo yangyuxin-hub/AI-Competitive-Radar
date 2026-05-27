@@ -109,6 +109,11 @@ Cursor 的代码补全优势不只是“补下一行代码”,而是 AI 原生�
 
 ## 5. P1:增加“分析质量 Rubric”
 
+> ✅ 已落地为 **LLM-as-Judge 离线 harness**:`src/judge.py` + `config/quality_rubric.yaml`,
+> 设计见 `docs/quality-judge-design.md`。4 维(准确/洞察/实用/聚焦)1-5 锚定打分 +
+> 确定性信号压方差 + 按 purpose 加权。当前为离线评测(优化 prompt 用),未接入 graph 打回。
+> 下方原 AQ1-AQ7 设想为更早的草案,judge 取其交集并收敛到 4 维。
+
 现在 Reviewer 的分数主要是工程质量分。建议新增一组 soft checks,不要一开始 hard gate。
 
 | 编号 | 维度 | 检查点 | 失败表现 |
