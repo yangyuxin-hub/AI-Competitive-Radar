@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Secrets — 不要 commit API key
+.env
+.env.*
+!.env.example
+*.key
+secrets/
+
+# 运行产物
+logs/
+data/cache/
+out/
+*.log
+agent_trace.jsonl
+
+# 前端
+node_modules/
+.next/
+dist/
+.turbo/
+
+# Jupyter
+.ipynb_checkpoints/

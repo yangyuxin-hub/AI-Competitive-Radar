@@ -1,0 +1,19 @@
+# 行业域配置 — 通过 DOMAIN 环境变量选择
+# 用法:DOMAIN=pm python -m src.graph
+# 默认 ai_coding。换行业 = 新增一个 entry,无需改代码。
+domains:
+  ai_coding:
+    name: "AI 编程工具"
+    sample_path: "data/sample_sources.json"
+    target_product: "Cursor"
+    competitors: ["Windsurf", "GitHubCopilot"]
+    analysis_focus: ["代码补全体验"]
+    analysis_purpose: "学习竞品优点,优化 Cursor 的产品策略"
+
+  pm:
+    name: "项目协作工具"
+    sample_path: "data/sample_sources_pm.json"
+    target_product: "Notion"
+    competitors: ["Asana", "Linear"]
+    analysis_focus: ["团队任务管理体验"]
+    analysis_purpose: "学习竞品优势,优化 Notion 的项目协作能力"

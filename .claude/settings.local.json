@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(unset ANALYZER_MOCK)",
+      "Bash(python -m src.graph)",
+      "Bash(python -c \"from src.collector import discover_urls, discover_all_urls; print\\('import OK'\\)\")",
+      "Bash(python -c \"from src.graph import discover_only; print\\('import OK'\\)\")",
+      "Bash(python -c \"from src.collector import reset_registry; print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/collector.py', encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(git init *)",
+      "Bash(git remote *)",
+      "Bash(git fetch *)",
+      "Bash(git config *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
+    ]
+  }
+}

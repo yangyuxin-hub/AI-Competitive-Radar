@@ -1,0 +1,45 @@
+# 产品配置 — 与 analysis_meta.competitors 的命名一致(去空格 PascalCase)
+# 详细规约见 docs/design-v2.2.md §5.2
+products:
+  Cursor:
+    aliases: ["Cursor AI", "Cursor editor"]
+    official_pages:
+      - https://cursor.com/features
+    pricing_pages:
+      - https://cursor.com/pricing
+
+  Windsurf:
+    aliases: ["Windsurf", "Codeium Windsurf"]
+    official_pages:
+      - https://codeium.com/windsurf
+    pricing_pages:
+      - https://codeium.com/pricing
+
+  GitHubCopilot:
+    aliases: ["GitHub Copilot", "Copilot"]
+    official_pages:
+      - https://github.com/features/copilot
+    pricing_pages:
+      - https://github.com/features/copilot/plans
+
+  # ─── 项目协作工具 ──────────────────────────────────────────
+  Notion:
+    aliases: ["Notion AI", "Notion workspace"]
+    official_pages:
+      - https://www.notion.so/product
+    pricing_pages:
+      - https://www.notion.so/pricing
+
+  Asana:
+    aliases: ["Asana", "Asana Premium"]
+    official_pages:
+      - https://asana.com/product
+    pricing_pages:
+      - https://asana.com/pricing
+
+  Linear:
+    aliases: ["Linear App", "Linear.app"]
+    official_pages:
+      - https://linear.app/features
+    pricing_pages:
+      - https://linear.app/pricing
