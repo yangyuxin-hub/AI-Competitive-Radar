@@ -1,0 +1,11 @@
+import { chromium } from "playwright";
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+await page.goto(`http://localhost:3000/report/${process.argv[2]}`, { waitUntil: "networkidle" });
+await page.getByText("功能对比矩阵").waitFor({ timeout: 20000 });
+await page.waitForTimeout(600);
+await page.locator("table button").first().hover();
+await page.waitForTimeout(500);
+await page.screenshot({ path: "shots/m4-citation-hover.png" });
+console.log("DONE");
+await browser.close();
