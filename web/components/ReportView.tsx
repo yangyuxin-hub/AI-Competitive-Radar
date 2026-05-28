@@ -110,6 +110,23 @@ export default function ReportView({ report }: { report: Report }) {
               <Chips ids={s.pricing_model.pricing_gap.evidence_ids} />
             </p>
           )}
+          {report.stage_timings && report.stage_timings.length > 0 && (
+            <details className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-sm">
+              <summary className="cursor-pointer text-neutral-400">
+                生成过程 · 共 {report.stage_timings.reduce((a, t) => a + (t.duration_sec || 0), 0)}s
+              </summary>
+              <div className="mt-2 space-y-1.5">
+                {report.stage_timings.map((t, i) => (
+                  <div key={i} className="flex items-start gap-2 text-xs">
+                    <span className="shrink-0">{t.icon ?? "•"}</span>
+                    <span className="shrink-0 text-neutral-300">{t.label}</span>
+                    <span className="shrink-0 font-mono text-emerald-400">{t.duration_sec}s</span>
+                    {t.result && <span className="text-neutral-500">· {t.result}</span>}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
         </section>
 
         {/* Feature matrix — hero */}

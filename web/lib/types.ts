@@ -52,6 +52,13 @@ export interface Report {
   quality_report: QualityReport | null;
   raw_evidence: Evidence[];
   status: string;
+  stage_timings?: {
+    node: string;
+    icon?: string;
+    label: string;
+    duration_sec: number;
+    result?: string | null;
+  }[];
   created_at: string;
 }
 

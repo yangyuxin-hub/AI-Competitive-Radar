@@ -474,6 +474,8 @@ def _run_stream(args: dict):
     last_completed: Optional[str] = None
     current_node = "collector"
     last_hb = 0.0
+    stage_timings: list[dict] = []  # 各环节耗时 + 成果(持久化进报告供档案复盘)
+    prev_end = 0
     try:
         yield _sse(_status_event("collector", "开始运行，多 Agent 流程已启动", elapsed()))
 
@@ -497,6 +499,17 @@ def _run_stream(args: dict):
                 state = item["state"]
                 last_completed = node_name
                 last_state = state
+                # 记录本环节耗时 + 成果
+                now = elapsed()
+                icon, label = _NODE_META.get(node_name, ("•", node_name))
+                stage_timings.append({
+                    "node": node_name,
+                    "icon": icon,
+                    "label": label,
+                    "duration_sec": max(0, now - prev_end),
+                    "result": _result_summary(node_name, state),
+                })
+                prev_end = now
                 current_node = _next_node_after(last_completed, state)
                 last_hb = elapsed()  # 进入新节点，重置心跳计时
                 yield _sse(_progress_event(node_name, state))
@@ -510,7 +523,7 @@ def _run_stream(args: dict):
             if kind == "finished":
                 break
 
-        report = _persist_report(final_state)
+        report = _persist_report(final_state, stage_timings)
         yield _sse({"type": "done", "report_id": report["report_id"], "report": report})
     except Exception as e:  # noqa: BLE001
         yield _sse({"type": "error", "message": str(e)})
@@ -543,7 +556,7 @@ def _load_index() -> list[dict]:
     return []
 
 
-def _persist_report(state: dict) -> dict:
+def _persist_report(state: dict, stage_timings: Optional[list[dict]] = None) -> dict:
     _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     meta = state.get("analysis_meta") or {}
     now = datetime.now(timezone.utc)
@@ -558,6 +571,7 @@ def _persist_report(state: dict) -> dict:
         "quality_report": state.get("quality_report"),
         "raw_evidence": state.get("raw_evidence") or [],
         "status": state.get("status"),
+        "stage_timings": stage_timings or [],
         "created_at": now.isoformat(),
     }
     (_REPORTS_DIR / f"{report_id}.json").write_text(
