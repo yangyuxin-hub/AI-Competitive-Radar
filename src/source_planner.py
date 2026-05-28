@@ -4,7 +4,8 @@
 参考:config/sources.yaml 的推荐源（用户长期复用 + LLM 模仿其形式补充）。
 输出:搜索计划 list[dict]，每条可直接投给 Tavily 检索。
 
-LLM 优先（prompts/source_discovery.md），失败回退纯 config 启发式。
+Demo 默认走 config 启发式；设置 SOURCE_PLANNER_LLM=1 时启用
+prompts/source_discovery.md 的 LLM 规划，失败回退 config 启发式。
 """
 from __future__ import annotations
 
@@ -101,11 +102,16 @@ def plan_sources(
     max_per_claim = int((cfg.get("defaults") or {}).get("max_queries_per_claim", 2))
     recs = recommended_for(domain, missing)
 
-    if not llm.is_mock_mode() and _has_llm():
+    if _llm_planning_enabled() and not llm.is_mock_mode() and _has_llm():
         plan = _plan_via_llm(product, competitors, analysis_focus, missing, recs, max_per_claim)
         if plan:
             return plan
     return _heuristic_plan(product, analysis_focus, missing, recs, max_per_claim)
+
+
+def _llm_planning_enabled() -> bool:
+    import os
+    return os.environ.get("SOURCE_PLANNER_LLM", "").strip() in ("1", "true", "True")
 
 
 def _has_llm() -> bool:

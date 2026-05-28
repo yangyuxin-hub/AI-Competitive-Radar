@@ -95,7 +95,7 @@ def _load_products_config() -> dict:
         return {}
 
 
-def discover_urls(product: str, products_config: Optional[dict] = None) -> dict:
+def discover_urls(product: str, products_config: Optional[dict] = None, allow_llm: bool = True) -> dict:
     """为单个产品发现官网 URL。
 
     Mock 模式:从 products.yaml 读取已配置的 URL。
@@ -111,8 +111,8 @@ def discover_urls(product: str, products_config: Optional[dict] = None) -> dict:
         return {**cfg[product], "source": "config"}
 
     # Mock 模式:没有配置就返回空，让 MockAdapter 兜底
-    if is_mock_mode():
-        return {"official_pages": [], "pricing_pages": [], "source": "mock"}
+    if is_mock_mode() or not allow_llm:
+        return {"official_pages": [], "pricing_pages": [], "source": "skipped"}
 
     # 真实模式:调用 LLM 发现 URL
     from .llm import get_llm
@@ -142,7 +142,7 @@ def discover_urls(product: str, products_config: Optional[dict] = None) -> dict:
         return {"official_pages": [], "pricing_pages": [], "source": "error", "error": str(e)}
 
 
-def discover_all_urls(products: list[str]) -> dict[str, dict]:
+def discover_all_urls(products: list[str], allow_llm: bool = True) -> dict[str, dict]:
     """批量发现多个产品的 URL。返回 {product: {official_pages, pricing_pages, source}}
 
     使用 ThreadPoolExecutor 并发执行。
@@ -151,7 +151,7 @@ def discover_all_urls(products: list[str]) -> dict[str, dict]:
     results: dict[str, dict] = {}
 
     with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(discover_urls, p, cfg): p for p in products}
+        futures = {pool.submit(discover_urls, p, cfg, allow_llm): p for p in products}
         done, _ = wait(futures.keys(), timeout=60)
         for fut in done:
             product = futures[fut]
@@ -178,6 +178,41 @@ def discover_all_urls(products: list[str]) -> dict[str, dict]:
 
 
 MAX_EVIDENCE_PER_PRODUCT = 40
+
+RUNTIME_PROFILES = {
+    "fast": {
+        "live": False,
+        "search": False,
+        "skills": False,
+        "cache": True,
+        "url_discovery_llm": False,
+        "timeout_sec": 25,
+        "max_evidence_per_product": 24,
+    },
+    "balanced": {
+        "live": True,
+        "search": True,
+        "skills": False,
+        "cache": True,
+        "url_discovery_llm": False,
+        "timeout_sec": 45,
+        "max_evidence_per_product": 32,
+    },
+    "deep": {
+        "live": True,
+        "search": True,
+        "skills": True,
+        "cache": True,
+        "url_discovery_llm": True,
+        "timeout_sec": 80,
+        "max_evidence_per_product": 40,
+    },
+}
+
+
+def runtime_settings(profile: Optional[str]) -> dict:
+    name = (profile or "balanced").strip().lower()
+    return {**RUNTIME_PROFILES["balanced"], **RUNTIME_PROFILES.get(name, {})}
 
 
 def cap_evidence_per_product(evidences: list[dict], limit: int = MAX_EVIDENCE_PER_PRODUCT) -> list[dict]:
@@ -473,7 +508,7 @@ class OfficialPageAdapter(SourceAdapter):
             try:
                 page = browser.new_page()
                 page.goto(url, timeout=15000, wait_until="domcontentloaded")
-                page.wait_for_timeout(3000)  # 等 JS 渲染
+                page.wait_for_timeout(int(os.environ.get("PLAYWRIGHT_RENDER_WAIT_MS", "1200")))
                 html = page.content()
                 return html
             finally:
@@ -657,8 +692,12 @@ class MockAdapter(SourceAdapter):
 class CacheAdapter(SourceAdapter):
     """data/cache/<product>.json 持久化。同 evidence_id 覆盖,按 TTL 重算 freshness。"""
 
-    def __init__(self, cache_dir: Optional[Path] = None) -> None:
-        self.cache_dir = cache_dir or _CACHE_DIR
+    def __init__(self, cache_dir: Optional[Path] = None, enabled: bool = True) -> None:
+        self.disabled = (
+            not enabled
+            or os.environ.get("DISABLE_CACHE", "").strip() in ("1", "true", "True")
+        )
+        self.cache_dir = cache_dir or Path(os.environ.get("CACHE_DIR", str(_CACHE_DIR)))
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, product: str) -> Path:
@@ -667,6 +706,8 @@ class CacheAdapter(SourceAdapter):
         return self.cache_dir / f"{safe}.json"
 
     def can_fetch(self, product: str) -> bool:
+        if self.disabled:
+            return False
         return self._path(product).exists()
 
     def _load(self, product: str) -> list[dict]:
@@ -686,7 +727,7 @@ class CacheAdapter(SourceAdapter):
 
     def save(self, product: str, evidences: list[dict]) -> None:
         """merge 写入:同 evidence_id 用新数据覆盖,旧 ID 保留"""
-        if not evidences:
+        if self.disabled or not evidences:
             return
         existing = {e["evidence_id"]: e for e in self._load(product)}
         for ev in evidences:
@@ -718,16 +759,22 @@ class CacheAdapter(SourceAdapter):
 class AdapterRegistry:
     """三层兜底:live → cache → mock"""
 
-    def __init__(self, discovered_urls: Optional[dict[str, dict]] = None) -> None:
+    def __init__(self, discovered_urls: Optional[dict[str, dict]] = None,
+                 runtime_profile: str = "balanced") -> None:
         """初始化。
 
         Args:
             discovered_urls: discover_all_urls() 的返回值，
                              {product: {official_pages: [...], pricing_pages: [...]}}
         """
+        settings = runtime_settings(runtime_profile)
         self.live_adapters: list[SourceAdapter] = []
         # 真实抓取默认开启;DISABLE_LIVE_FETCH=1 关闭
-        if os.environ.get("DISABLE_LIVE_FETCH", "").strip() not in ("1", "true", "True"):
+        live_disabled = (
+            not settings["live"]
+            or os.environ.get("DISABLE_LIVE_FETCH", "").strip() in ("1", "true", "True")
+        )
+        if not live_disabled:
             # 合并 discovered URLs: official_pages + pricing_pages
             dynamic: dict[str, list[str]] = {}
             if discovered_urls:
@@ -738,12 +785,16 @@ class AdapterRegistry:
             self.live_adapters.append(OfficialPageAdapter(dynamic_urls=dynamic or None))
         # Tavily 网络检索:有 TAVILY_API_KEY 即启用(广度补全,与 skills 互补)
         from . import search as _search
-        if _search.tavily_available():
+        if not live_disabled and settings["search"] and _search.tavily_available():
             self.live_adapters.append(SearchAdapter())
             print("  [Registry] SearchAdapter 已启用 (TAVILY_API_KEY 存在)")
         # Skills（HN/V2EX 等高价值源,各自环境变量控制）
-        self.skills = create_skill_registry()
-        self.cache = CacheAdapter()
+        skills_enabled = (
+            bool(settings["skills"])
+            or os.environ.get("ENABLE_SKILLS", "").strip() in ("1", "true", "True")
+        )
+        self.skills = create_skill_registry(enabled=skills_enabled)
+        self.cache = CacheAdapter(enabled=bool(settings["cache"]))
         self.mock = MockAdapter()
 
     def fetch_all(self, product: str, focus: str) -> tuple[list[dict], dict]:
@@ -880,10 +931,11 @@ class AdapterRegistry:
 _registry: Optional[AdapterRegistry] = None
 
 
-def get_registry(discovered_urls: Optional[dict[str, dict]] = None) -> AdapterRegistry:
+def get_registry(discovered_urls: Optional[dict[str, dict]] = None,
+                 runtime_profile: str = "balanced") -> AdapterRegistry:
     global _registry
     if _registry is None:
-        _registry = AdapterRegistry(discovered_urls=discovered_urls)
+        _registry = AdapterRegistry(discovered_urls=discovered_urls, runtime_profile=runtime_profile)
     return _registry
 
 
@@ -910,10 +962,16 @@ def collector_node(state: AgentState) -> AgentState:
     meta = state["analysis_meta"]
     products = [meta["target_product"]] + list(meta["competitors"])
     focus = meta["analysis_focus"][0] if meta.get("analysis_focus") else ""
+    runtime_profile = meta.get("runtime_profile") or "balanced"
+    settings = runtime_settings(runtime_profile)
 
     # Step 0: URL Discovery — 让 LLM 为每个产品找到官网 URL
     print(f"[collector] discovering URLs for {products} ...")
-    discovered = discover_all_urls(products)
+    allow_url_llm = (
+        bool(settings["url_discovery_llm"])
+        or os.environ.get("URL_DISCOVERY_LLM", "").strip() in ("1", "true", "True")
+    )
+    discovered = discover_all_urls(products, allow_llm=allow_url_llm)
     for p, info in discovered.items():
         src = info.get("source", "?")
         op = info.get("official_pages", [])
@@ -927,14 +985,19 @@ def collector_node(state: AgentState) -> AgentState:
                 print(f"    pricing:  {url}")
 
     fetched: list[dict] = []
-    collection_meta: dict = {"products": {}, "discovered_urls": discovered}
+    collection_meta: dict = {
+        "products": {},
+        "discovered_urls": discovered,
+        "runtime_profile": runtime_profile,
+    }
     reset_registry()  # 每次运行重新创建，避免旧 discovered_urls 残留
-    registry = get_registry(discovered_urls=discovered)
+    registry = get_registry(discovered_urls=discovered, runtime_profile=runtime_profile)
     print(f"[collector_node] registry.live_adapters={len(registry.live_adapters)}, products={products}")
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(registry.fetch_all, p, focus): p for p in products}
-        done, not_done = wait(futures.keys(), timeout=80)
+        timeout_sec = int(settings["timeout_sec"])
+        done, not_done = wait(futures.keys(), timeout=timeout_sec)
 
         for fut in done:
             product = futures[fut]
@@ -957,7 +1020,7 @@ def collector_node(state: AgentState) -> AgentState:
             fut.cancel()
             collection_meta["products"][product] = {
                 "adapter_events": [
-                    {"status": "timeout", "reason": "wall-clock 80s exceeded"}
+                    {"status": "timeout", "reason": f"wall-clock {timeout_sec}s exceeded"}
                 ],
                 "coverage": {ct: 0 for ct in REQUIRED_CLAIM_TYPES},
             }
@@ -977,11 +1040,12 @@ def collector_node(state: AgentState) -> AgentState:
     merged = dedupe_evidence(merged)
     print(f"[collector_node] after dedupe: {len(merged)}")
 
-    # 输出 debug 文件（cap 之前，展示全部 evidence）
-    dump_evidence_debug(merged, run_id=run_id)
+    if os.environ.get("DUMP_FULL_EVIDENCE", "").strip() in ("1", "true", "True"):
+        dump_evidence_debug(merged, run_id=run_id)
 
-    # 每个产品按 confidence 取 top 40
-    merged = cap_evidence_per_product(merged)
+    # 每个产品按 confidence 取 top N；不同运行模式控制 prompt 体积与等待时间
+    merged = cap_evidence_per_product(merged, limit=int(settings["max_evidence_per_product"]))
+    dump_evidence_debug(merged, run_id=run_id)
 
     return {
         **state,

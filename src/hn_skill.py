@@ -207,7 +207,7 @@ class HNSkill(CollectorSkill):
         for kw in keywords:
             # 时间预算检查
             if time.time() - t_start > self._TIME_BUDGET:
-                print(f"[HN Skill] ⏱ time budget exhausted at keyword search, stopping early")
+                print("[HN Skill] time budget exhausted at keyword search, stopping early")
                 break
             hits = _hn_search(kw, tags="story", hits_per_page=MAX_STORIES_PER_KEYWORD)
             for h in hits:
@@ -219,7 +219,7 @@ class HNSkill(CollectorSkill):
             time.sleep(0.3)
         print(f"[HN Skill] total unique stories: {len(all_stories)}")
         if not all_stories:
-            print(f"[HN Skill] ⚠ WARNING: zero stories found for all {len(keywords)} keywords!")
+            print(f"[HN Skill] WARNING: zero stories found for all {len(keywords)} keywords!")
             print(f"  keywords were: {keywords}")
             print(f"  possible causes: product name too niche, keywords not matching HN content")
 
@@ -229,7 +229,7 @@ class HNSkill(CollectorSkill):
         for i, story in enumerate(all_stories[:15]):  # 最多处理 15 个 story
             # 时间预算检查
             if time.time() - t_start > self._TIME_BUDGET:
-                print(f"[HN Skill] ⏱ time budget exhausted at comment fetch, stopping early")
+                print("[HN Skill] time budget exhausted at comment fetch, stopping early")
                 break
             sid = story.get("objectID")
             if not sid:

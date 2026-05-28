@@ -107,8 +107,8 @@ class LLMClient:
         self._client = OpenAI(
             api_key=api_key,
             base_url=os.environ.get("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
-            timeout=float(os.environ.get("ARK_TIMEOUT", "180")),
-            max_retries=2,
+            timeout=float(os.environ.get("ARK_TIMEOUT", "90")),
+            max_retries=int(os.environ.get("ARK_MAX_RETRIES", "1")),
         )
         return self._client
 

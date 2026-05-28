@@ -39,6 +39,7 @@ export interface ReportMeta {
   competitors: string[];
   analysis_focus: string[];
   analysis_purpose?: string;
+  runtime_profile?: string;
   data_cutoff?: string;
   generated_at?: string;
 }
@@ -74,6 +75,10 @@ export type ProgressEvent =
       elapsed_sec: number;
       evidence_count: number;
       retry_count: Record<string, number>;
+      collector_phase?: string;
+      product?: string;
+      source_counts?: Record<string, number>;
+      coverage?: Record<string, number>;
     }
   | {
       type: "progress";

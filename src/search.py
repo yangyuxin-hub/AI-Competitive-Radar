@@ -50,7 +50,7 @@ def tavily_search(query: str, site: str = "", max_results: int = 5) -> list[dict
     domain = _domain_of(site)
     if domain:
         payload["include_domains"] = [domain]
-    with httpx.Client(timeout=httpx.Timeout(connect=5.0, read=20.0, write=5.0, pool=5.0)) as client:
+    with httpx.Client(timeout=httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0)) as client:
         resp = client.post(_TAVILY_URL, json=payload)
         resp.raise_for_status()
         data = resp.json()

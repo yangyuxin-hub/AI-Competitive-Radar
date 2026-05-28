@@ -2,7 +2,7 @@
 
 Demo 默认 REVIEWER_MODE=minimal:
 - hard_gate(error,会打回): R1(引用完整) / R4(推理链) / R5(结构冲突)
-- soft(只 warning,不打回): R2 / R3 / R7
+- soft(只 warning,不打回): R0 / R2 / R3 / R7
 - R6(LLM 语义校验): 关
 """
 from __future__ import annotations
@@ -28,8 +28,8 @@ REVIEWER_RULES = {
 
 MODE_CONFIG = {
     "minimal": {
-        "hard_gate": {"R0", "R1", "R4", "R5"},
-        "soft": {"R2", "R3", "R7"},
+        "hard_gate": {"R1", "R4", "R5"},
+        "soft": {"R0", "R2", "R3", "R7"},
         "llm": False,
     },
     "full": {

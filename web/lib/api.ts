@@ -27,6 +27,7 @@ export interface RunArgs {
   analysis_focus: string[];
   analysis_purpose?: string;
   user_input?: string;
+  runtime_profile?: "fast" | "balanced" | "deep";
 }
 
 /** 把选择题答案拼成运行参数（对齐后端 intake.assemble_meta 的口径）。 */
@@ -56,6 +57,7 @@ export function runAnalysis(
       body: JSON.stringify(args),
       signal: controller.signal,
     });
+    if (!res.ok) throw new Error(`run failed: ${res.status}`);
     if (!res.body) throw new Error("no response body");
     const reader = res.body.getReader();
     const decoder = new TextDecoder();

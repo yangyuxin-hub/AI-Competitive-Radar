@@ -173,7 +173,7 @@ class V2EXSkill(CollectorSkill):
         # 2a: 拉节点话题
         for node in nodes:
             if time.time() - t_start > self._TIME_BUDGET:
-                print(f"[V2EX Skill] ⏱ time budget exhausted at node fetch")
+                print("[V2EX Skill] time budget exhausted at node fetch")
                 break
             topics = _fetch_topics_by_node(node)
             for t in topics:
@@ -185,7 +185,7 @@ class V2EXSkill(CollectorSkill):
         print(f"[V2EX Skill] total unique topics: {len(all_topics)}")
 
         if not all_topics:
-            print(f"[V2EX Skill] ⚠ 0 topics from all nodes, returning empty")
+            print("[V2EX Skill] WARNING: 0 topics from all nodes, returning empty")
             return self._empty_result(product, keywords, nodes, t_start)
 
         # 2b: 关键词过滤
@@ -200,7 +200,7 @@ class V2EXSkill(CollectorSkill):
         topic_replies: dict[int, list[dict]] = {}
         for i, t in enumerate(matched[:MAX_TOPICS_TO_FETCH_REPLIES]):
             if time.time() - t_start > self._TIME_BUDGET - 3:
-                print(f"[V2EX Skill] ⏱ time budget tight, stopping reply fetch")
+                print("[V2EX Skill] time budget tight, stopping reply fetch")
                 break
             tid = t.get("id")
             if not tid:

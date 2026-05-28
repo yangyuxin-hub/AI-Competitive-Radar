@@ -251,6 +251,30 @@ def _filter_evidence_ids(
     return kept, dropped
 
 
+def sanitize_schema_evidence_refs(schema: dict, evidence: list[dict]) -> tuple[dict, int]:
+    """Remove evidence IDs that do not exist in the current raw_evidence packet."""
+    valid_ids = {e["evidence_id"] for e in evidence if e.get("evidence_id")}
+    dropped = 0
+    ref_keys = {"evidence_ids", "support_evidence_ids", "representative_evidence_ids"}
+
+    def walk(obj) -> None:
+        nonlocal dropped
+        if isinstance(obj, dict):
+            for key, value in list(obj.items()):
+                if key in ref_keys and isinstance(value, list):
+                    filtered = [eid for eid in value if eid in valid_ids]
+                    dropped += len(value) - len(filtered)
+                    obj[key] = filtered
+                else:
+                    walk(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                walk(item)
+
+    walk(schema)
+    return schema, dropped
+
+
 def sanitize_facts_evidence_refs(facts: dict, evidence: list[dict]) -> tuple[dict, int]:
     """Drop evidence refs whose claim_type cannot satisfy the target schema field.
 
@@ -477,4 +501,8 @@ def analyzer_node(state: AgentState) -> AgentState:
         **facts,
         **derivations,
     }
+    if is_mock_mode():
+        schema_draft, dropped = sanitize_schema_evidence_refs(schema_draft, evidence)
+        if dropped:
+            print(f"[analyzer] mock schema sanitize dropped {dropped} invalid evidence refs")
     return {**state, "schema_draft": schema_draft}

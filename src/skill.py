@@ -36,7 +36,7 @@ class SkillRegistry:
     def register(self, name: str, skill: CollectorSkill) -> None:
         disabled = os.environ.get("DISABLE_SKILLS", "")
         disabled_set = {s.strip() for s in disabled.split(",") if s.strip()}
-        if name in disabled_set:
+        if disabled.strip() in ("1", "true", "True", "all", "*") or name in disabled_set:
             print(f"[SkillRegistry] {name} disabled by DISABLE_SKILLS env")
             return
         self._skills[name] = skill
@@ -56,8 +56,9 @@ def register_all_skills(registry: SkillRegistry) -> None:
     registry.register("v2ex", V2EXSkill())
 
 
-def create_skill_registry() -> SkillRegistry:
+def create_skill_registry(enabled: bool = True) -> SkillRegistry:
     """创建并初始化技能注册表。"""
     registry = SkillRegistry()
-    register_all_skills(registry)
+    if enabled:
+        register_all_skills(registry)
     return registry

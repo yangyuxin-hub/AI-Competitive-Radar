@@ -146,6 +146,7 @@ def run_demo_streaming(
     analysis_focus: Optional[list[str]] = None,
     analysis_purpose: Optional[str] = None,
     user_input: Optional[str] = None,
+    runtime_profile: str = "balanced",
 ):
     """生成器: 每完成一个节点 yield (node_name, state_after_node)。
     供 Streamlit / 任何 stream UI 实时展示节点进度用。"""
@@ -161,6 +162,7 @@ def run_demo_streaming(
         competitors=comp,
         analysis_focus=focus,
         analysis_purpose=purpose,
+        runtime_profile=runtime_profile,
     )
     for event in app.stream(initial, config={"recursion_limit": 50}):
         # event 形如 {node_name: state_after_node}
@@ -174,6 +176,7 @@ def run_demo(
     analysis_focus: Optional[list[str]] = None,
     analysis_purpose: Optional[str] = None,
     user_input: Optional[str] = None,
+    runtime_profile: str = "balanced",
 ) -> AgentState:
     from .collector import reset_debug_file
     reset_debug_file()
@@ -188,6 +191,7 @@ def run_demo(
         competitors=comp,
         analysis_focus=focus,
         analysis_purpose=purpose,
+        runtime_profile=runtime_profile,
     )
     # LangGraph 0.2 默认 recursion_limit=25,我们最多 collector1+analyzer2+writer1 = 4 轮重试,
     # 每轮 5 节点,理论上限 ~25。给个 50 留余量。

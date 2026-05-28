@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   fetchQuestions,
   answersToRunArgs,
@@ -11,6 +11,7 @@ import { domainOf } from "@/lib/source";
 import ReportView from "./ReportView";
 
 type Stage = "input" | "clarify" | "running" | "report";
+type RuntimeProfile = "fast" | "balanced" | "deep";
 
 const SCENARIOS = [
   {
@@ -52,6 +53,12 @@ const PIPELINE = [
   { node: "reviewer", icon: "🧪", label: "规则质检" },
 ];
 
+const RUN_PROFILES: { key: RuntimeProfile; label: string; sub: string }[] = [
+  { key: "fast", label: "快速", sub: "缓存优先" },
+  { key: "balanced", label: "均衡", sub: "实时检索" },
+  { key: "deep", label: "深度", sub: "社区证据" },
+];
+
 export default function AnalyzeFlow() {
   const [stage, setStage] = useState<Stage>("input");
   const [userInput, setUserInput] = useState("");
@@ -63,8 +70,10 @@ export default function AnalyzeFlow() {
   const [events, setEvents] = useState<ProgressEvent[]>([]);
   const [report, setReport] = useState<Report | null>(null);
   const [intakeReasoning, setIntakeReasoning] = useState<string>("");
+  const [runProfile, setRunProfile] = useState<RuntimeProfile>("balanced");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const cancelRunRef = useRef<(() => void) | null>(null);
 
   async function onSubmitInput() {
     if (!userInput.trim()) return;
@@ -122,25 +131,35 @@ export default function AnalyzeFlow() {
   }
 
   function onRun() {
-    const args = answersToRunArgs(answers, userInput);
+    const args = { ...answersToRunArgs(answers, userInput), runtime_profile: runProfile };
     if (!args.target_product) {
       setError("请先选择目标产品");
       return;
     }
+    cancelRunRef.current?.();
     setEvents([]);
     setReport(null);
     setError(null);
     setStage("running");
-    runAnalysis(args, (e) => {
+    cancelRunRef.current = runAnalysis(args, (e) => {
       if (e.type === "done") {
+        cancelRunRef.current = null;
         setReport(e.report);
         setStage("report");
       } else if (e.type === "error") {
+        cancelRunRef.current = null;
         setError(e.message);
       } else {
         setEvents((prev) => [...prev, e]);
       }
     });
+  }
+
+  function cancelRun() {
+    cancelRunRef.current?.();
+    cancelRunRef.current = null;
+    setError("已取消本次分析");
+    setStage("clarify");
   }
 
   function reset() {
@@ -155,6 +174,9 @@ export default function AnalyzeFlow() {
     setEvents([]);
     setReport(null);
     setError(null);
+    setRunProfile("balanced");
+    cancelRunRef.current?.();
+    cancelRunRef.current = null;
   }
 
   return (
@@ -275,6 +297,25 @@ export default function AnalyzeFlow() {
               </div>
             </div>
           ))}
+          <div>
+            <div className="mb-2 text-sm font-medium text-neutral-200">采集模式</div>
+            <div className="inline-flex rounded-xl border border-white/10 bg-white/[0.03] p-1">
+              {RUN_PROFILES.map((p) => (
+                <button
+                  key={p.key}
+                  onClick={() => setRunProfile(p.key)}
+                  className={`min-w-24 rounded-lg px-3 py-2 text-left transition ${
+                    runProfile === p.key
+                      ? "bg-sky-500/20 text-sky-200"
+                      : "text-neutral-500 hover:text-neutral-200"
+                  }`}
+                >
+                  <span className="block text-sm font-medium">{p.label}</span>
+                  <span className="block text-[11px]">{p.sub}</span>
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="flex gap-3">
             <button
               onClick={onRun}
@@ -292,7 +333,7 @@ export default function AnalyzeFlow() {
         </div>
       )}
 
-      {stage === "running" && <AgentProgress events={events} />}
+      {stage === "running" && <AgentProgress events={events} onCancel={cancelRun} />}
 
       {stage === "report" && report && (
         <div className="space-y-6">
@@ -321,7 +362,7 @@ function useElapsed(running: boolean) {
   return sec;
 }
 
-function AgentProgress({ events }: { events: ProgressEvent[] }) {
+function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel: () => void }) {
   const [collectExpanded, setCollectExpanded] = useState(false);
   const progress = events.filter((e) => e.type === "progress") as Extract<
     ProgressEvent,
@@ -337,7 +378,7 @@ function AgentProgress({ events }: { events: ProgressEvent[] }) {
   for (const e of progress) counts.set(e.node, (counts.get(e.node) ?? 0) + 1);
   const last = timeline.at(-1);
   const currentNode = last?.node;
-  const evidenceCount = last?.evidence_count ?? 0;
+  const evidenceCount = Math.max(0, ...timeline.map((e) => e.evidence_count ?? 0));
   const retry = last?.retry_count ?? {};
   const totalRetry = Object.values(retry).reduce((a, b) => a + b, 0);
   const quality = progress.findLast((e) => e.quality)?.quality;
@@ -356,18 +397,51 @@ function AgentProgress({ events }: { events: ProgressEvent[] }) {
       : last
         ? `${last.label}完成，准备进入下一步`
         : "正在连接分析服务";
-  const collectorEvents = progress.filter((e) => e.node === "collector");
-  const collectorPhase = collectorEvents.at(-1)?.collector_phase;
   // 采集全过程(状态思考 + 进度),按时间顺序，供折叠/滚动查看
   const allCollector = events.filter(
     (e) => (e.type === "status" || e.type === "progress") && e.node === "collector"
   ) as Extract<ProgressEvent, { type: "status" | "progress" }>[];
-  const collectorMessage = (allCollector.at(-1) as { message?: string } | undefined)?.message;
+  const collectorPhase = allCollector.findLast((e) => e.collector_phase)?.collector_phase;
   const shownCollector = collectExpanded ? allCollector : allCollector.slice(-5);
+
+  // ── 进度条 + ETA(自校准:用已耗时与当前进度反推总时长,适配不同 runtime profile)──
+  const STAGE_SPAN: Record<string, [number, number]> = {
+    collector: [3, 25], analyzer: [25, 90], writer: [90, 94],
+    reviewer: [94, 99], degraded_writer: [94, 99],
+  };
+  const STAGE_TYP: Record<string, number> = {
+    collector: 55, analyzer: 180, writer: 3, reviewer: 6, degraded_writer: 6,
+  };
+  // 每个节点见过的最大 elapsed_sec ≈ 该节点完成时刻
+  const nodeMaxElapsed: Record<string, number> = {};
+  for (const e of timeline) {
+    const el = (e as { elapsed_sec?: number }).elapsed_sec;
+    if (typeof el === "number") nodeMaxElapsed[e.node] = Math.max(nodeMaxElapsed[e.node] ?? 0, el);
+  }
+  let pct = 2;
+  if (currentNode) {
+    const [lo, hi] = STAGE_SPAN[currentNode] ?? [0, 100];
+    const prior = order.filter((n) => n !== currentNode && (counts.get(n) ?? 0) > 0);
+    const stageStart = prior.length ? Math.max(...prior.map((n) => nodeMaxElapsed[n] ?? 0)) : 0;
+    const frac = Math.min(1, Math.max(0, (elapsed - stageStart) / (STAGE_TYP[currentNode] ?? 60)));
+    pct = Math.round(lo + (hi - lo) * frac);
+  }
+  pct = Math.min(99, Math.max(2, pct));
+  const remainSec = pct > 4 ? Math.max(1, Math.round((elapsed * (100 - pct)) / pct)) : null;
+
+  // ── 各环节耗时 + 成果(按完成顺序)──
+  const stageTimeline = stageResults.map((e) => {
+    const prior = order.filter(
+      (n) => order.indexOf(n) < order.indexOf(e.node) && (counts.get(n) ?? 0) > 0
+    );
+    const start = prior.length ? Math.max(...prior.map((n) => nodeMaxElapsed[n] ?? 0)) : 0;
+    const end = nodeMaxElapsed[e.node] ?? start;
+    return { node: e.node, icon: e.icon, label: e.label, dur: Math.max(0, end - start), result: e.result };
+  });
 
   return (
     <div className="space-y-6 py-6">
-      <div className="flex items-center justify-center gap-4 text-sm text-neutral-400">
+      <div className="flex flex-wrap items-center justify-center gap-4 text-sm text-neutral-400">
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-2 w-2 animate-ping rounded-full bg-sky-400" />
           多 Agent 协作中
@@ -381,6 +455,28 @@ function AgentProgress({ events }: { events: ProgressEvent[] }) {
             打回重试 ×{totalRetry}
           </span>
         )}
+        <button
+          onClick={onCancel}
+          className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-neutral-500 transition hover:border-red-400/40 hover:text-red-300"
+        >
+          取消
+        </button>
+      </div>
+
+      {/* 进度条 + ETA */}
+      <div className="mx-auto max-w-xl">
+        <div className="mb-1 flex items-center justify-between text-xs text-neutral-500">
+          <span>进度 {pct}%</span>
+          {remainSec != null && (
+            <span>{pct >= 99 ? "即将完成…" : `预计剩余 ~${remainSec}s`}</span>
+          )}
+        </div>
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-sky-500 to-emerald-400 transition-all duration-500"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
       </div>
 
       <div className="mx-auto max-w-xl rounded-xl border border-sky-500/20 bg-sky-500/10 p-4">
@@ -515,6 +611,23 @@ function AgentProgress({ events }: { events: ProgressEvent[] }) {
             {collectionHealth.map((item) => (
               <div key={item.product}>
                 {item.product}：{item.health}，缺少 {item.missing_claim_types.join(" / ")}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 各环节耗时 + 成果(时间线) */}
+      {stageTimeline.length > 0 && (
+        <div className="mx-auto max-w-xl rounded-xl border border-white/10 bg-white/[0.02] p-3">
+          <div className="mb-2 text-xs font-medium text-neutral-400">各环节耗时与成果</div>
+          <div className="space-y-1.5">
+            {stageTimeline.map((s) => (
+              <div key={s.node} className="flex items-start gap-2 text-xs">
+                <span className="shrink-0">{s.icon}</span>
+                <span className="shrink-0 text-neutral-300">{s.label}</span>
+                <span className="shrink-0 font-mono text-emerald-400">{s.dur}s</span>
+                {s.result && <span className="text-neutral-500">· {s.result}</span>}
               </div>
             ))}
           </div>

@@ -103,11 +103,20 @@ class RunReq(BaseModel):
     analysis_focus: list[str] = []
     analysis_purpose: Optional[str] = None
     user_input: Optional[str] = None
+    runtime_profile: str = "balanced"
 
 
-def _propose_with_timeout(req: ProposeReq, timeout_sec: float = 40.0) -> dict:
+def _propose_with_timeout(req: ProposeReq, timeout_sec: Optional[float] = None) -> dict:
     """Intent LLM 产出智能竞品 + reasoning,约需 20-25s(有波动);给足超时让其完成,
     前端「理解意图中…」期间等待。超时仍回退启发式,保证不会卡死首屏。"""
+    import os
+
+    if req.domain_hint:
+        draft = intake._propose_heuristic(req.user_input, req.domain_hint)  # noqa: SLF001
+        draft["_fallback_reason"] = "domain_hint_fast_path"
+        return draft
+
+    timeout_sec = timeout_sec or float(os.environ.get("INTAKE_TIMEOUT", "18"))
     pool = ThreadPoolExecutor(max_workers=1)
     fut = pool.submit(intake.propose, req.user_input, req.domain_hint)
     try:
@@ -329,6 +338,18 @@ def _status_event(node_name: str, message: str, elapsed: int, state: Optional[di
     }
 
 
+def _merge_status_state(event: dict, state: dict) -> dict:
+    """Keep status events numerically consistent with the latest completed node."""
+    if not state:
+        return event
+    evidence_count = len(state.get("raw_evidence") or [])
+    if evidence_count and not event.get("evidence_count"):
+        event = {**event, "evidence_count": evidence_count}
+    if state.get("retry_count") and not event.get("retry_count"):
+        event = {**event, "retry_count": state.get("retry_count")}
+    return event
+
+
 def _node_for_label(label: str) -> str:
     if label.startswith(("facts", "derivations")):
         return "analyzer"
@@ -407,6 +428,10 @@ def _run_stream(args: dict):
             if not msg:
                 return
             event = _status_event("collector", msg, elapsed())
+            event["collector_phase"] = evt.get("phase")
+            for key in ("product", "source_counts", "coverage"):
+                if evt.get(key) is not None:
+                    event[key] = evt.get(key)
             if evt.get("phase") == "fetch" and evt.get("status") == "done" and evt.get("product"):
                 collected["total"] += int(evt.get("evidence_count") or 0)
             event["evidence_count"] = collected["total"]
@@ -465,7 +490,7 @@ def _run_stream(args: dict):
 
             kind = item.get("kind")
             if kind == "status":
-                yield _sse(item["event"])
+                yield _sse(_merge_status_state(item["event"], last_state))
                 continue
             if kind == "progress":
                 node_name = item["node"]
@@ -499,6 +524,7 @@ def api_run(req: RunReq):
         "analysis_focus": req.analysis_focus,
         "analysis_purpose": req.analysis_purpose,
         "user_input": req.user_input,
+        "runtime_profile": req.runtime_profile,
     }
     return StreamingResponse(
         _run_stream(args),
