@@ -149,6 +149,8 @@ def run_demo_streaming(
 ):
     """生成器: 每完成一个节点 yield (node_name, state_after_node)。
     供 Streamlit / 任何 stream UI 实时展示节点进度用。"""
+    from .collector import reset_debug_file
+    reset_debug_file()
     tp, comp, focus, purpose, ui = _resolve_run_args(
         target_product, competitors, analysis_focus, analysis_purpose, user_input
     )
@@ -173,6 +175,8 @@ def run_demo(
     analysis_purpose: Optional[str] = None,
     user_input: Optional[str] = None,
 ) -> AgentState:
+    from .collector import reset_debug_file
+    reset_debug_file()
     tp, comp, focus, purpose, ui = _resolve_run_args(
         target_product, competitors, analysis_focus, analysis_purpose, user_input
     )

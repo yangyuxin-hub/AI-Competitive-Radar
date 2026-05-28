@@ -429,6 +429,13 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
 
 def analyzer_node(state: AgentState) -> AgentState:
     evidence = state["raw_evidence"] or []
+    print(f"\n[analyzer] received {len(evidence)} raw_evidence")
+    if evidence:
+        by_source = {}
+        for e in evidence:
+            s = e.get("source_type", "?")
+            by_source[s] = by_source.get(s, 0) + 1
+        print(f"[analyzer] by source_type: {by_source}")
     meta = state["analysis_meta"]
     analyzer_retry = (state.get("retry_count") or {}).get("analyzer", 0)
 
