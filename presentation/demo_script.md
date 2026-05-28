@@ -1,7 +1,7 @@
 # 5 分钟演示脚本
 
 > 时间预算:5 分钟正讲 + 10 分钟答辩问答
-> 演示前 checklist:虚拟环境激活、`.venv/Scripts/streamlit run frontend/app.py` 已启动、浏览器开在 http://localhost:8501、网络畅通(若要演示真豆包)
+> 演示前 checklist:虚拟环境激活、后端 `uvicorn api.main:app --port 8000` 已起、前端 `cd web && npm run dev` 已起、浏览器开在 http://localhost:3000、网络畅通(若要演示真豆包)
 
 ---
 
@@ -119,8 +119,9 @@ cd D:\claude code\multi-agent-langchain-product-competitive-anaysis
 $env:DOMAIN="ai_coding"; $env:ARK_API_KEY="..."; python -m src.graph
 # 再跑一次 pm,把 pm 缓存预热
 $env:DOMAIN="pm"; python -m src.graph
-# 启动前端
-streamlit run frontend/app.py
+# 启动前端工作台(两个终端)
+./.venv/Scripts/python.exe -m uvicorn api.main:app --port 8000
+cd web && npm run dev   # → http://localhost:3000
 ```
 
 预热的目的:演示当场切到真豆包模式时,即使现场网络抖动,至少 `out/<domain>/` 已经有真实产物,可以直接展示。
