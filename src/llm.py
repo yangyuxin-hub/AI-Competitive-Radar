@@ -141,40 +141,22 @@ class LLMClient:
 
         t0 = time.time()
         _emit_llm(label=label, phase="start")
-        resp = None
-        used_json_mode = False
-        try:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                max_tokens=max_tokens,
-                response_format={"type": "json_object"},
-            )
-            used_json_mode = True
-        except Exception as e:
-            # json_object 不支持等情况,降级
-            print(f"[llm] json_object mode rejected ({type(e).__name__}: {e}); falling back to text")
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                max_tokens=max_tokens,
-            )
-
+        # 本 EP(豆包)不支持 response_format=json_object,直接走文本模式(省掉一轮被拒的往返)。
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.2,
+            max_tokens=max_tokens,
+        )
         elapsed = time.time() - t0
         raw = resp.choices[0].message.content or "{}"
         usage = getattr(resp, "usage", None)
         prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
         completion_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
-        usage_text = (
-            f"prompt={prompt_tokens} completion={completion_tokens} total={prompt_tokens + completion_tokens}"
-            if usage else "usage=?"
-        )
-        print(f"[llm] {label}: {elapsed:.1f}s · json_mode={used_json_mode} · {usage_text}")
+        print(f"[llm] {label}: {elapsed:.1f}s · prompt={prompt_tokens} completion={completion_tokens}")
         _emit_llm(
             label=label, phase="done",
-            duration=elapsed, json_mode=used_json_mode,
+            duration=elapsed, json_mode=False,
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
         )
 

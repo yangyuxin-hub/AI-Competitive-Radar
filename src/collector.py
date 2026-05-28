@@ -597,6 +597,23 @@ class SearchAdapter(SourceAdapter):
             analysis_focus=[focus] if focus else [],
             domain=self.domain,
         )
+        # 把「该去哪搜、为什么」的真实决策实时吐出来(替代轮播文案)
+        _CT_CN = {
+            "feature_existence": "功能",
+            "performance_quality": "性能",
+            "pricing": "定价",
+            "user_pain": "痛点",
+        }
+        for q in plan:
+            site = q.get("site") or "全网"
+            ct = _CT_CN.get(q.get("claim_type"), q.get("claim_type") or "")
+            why = q.get("why") or ""
+            _emit_progress(
+                phase="plan_decision",
+                product=product,
+                claim_type=q.get("claim_type"),
+                message=f"🔍 决定去 {site} 搜「{q.get('query')}」找{ct}证据 —— {why}",
+            )
         cfg = source_planner.load_sources_config()
         per_query = int((cfg.get("defaults") or {}).get("results_per_query", 5))
         evidences, events = search.search_plan_to_evidence(product, plan, per_query)

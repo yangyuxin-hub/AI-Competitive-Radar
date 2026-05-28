@@ -65,7 +65,8 @@ def _result_to_evidence(product: str, result: dict, q: dict) -> Optional[dict]:
     title = (result.get("title") or "").strip()
     if not content or not url:
         return None
-    snippet = content[:500]
+    # 片段过长会撑大 analyzer prompt、抬高 evidence_id 误引率 → 截断控质量与速度
+    snippet = content[:260]
     claim = title or content[:120]
     bias = q.get("bias") or "third_party"
     score = result.get("score")
@@ -87,45 +88,41 @@ def _result_to_evidence(product: str, result: dict, q: dict) -> Optional[dict]:
     }
 
 
+def _run_one_query(product: str, q: dict, results_per_query: int) -> tuple[list[dict], dict]:
+    query = q.get("query")
+    if not query:
+        return [], {}
+    base = {"query": query, "site": q.get("site", ""), "claim_type": q.get("claim_type")}
+    try:
+        results = tavily_search(query, q.get("site", ""), results_per_query)
+        hits = [ev for r in results if (ev := _result_to_evidence(product, r, q))]
+        return hits, {**base, "status": "ok", "count": len(hits),
+                      "urls": [h["source_url"] for h in hits]}
+    except Exception as e:  # noqa: BLE001
+        return [], {**base, "status": "error", "error": str(e)}
+
+
 def search_plan_to_evidence(
     product: str,
     plan: list[dict],
     results_per_query: int = 5,
 ) -> tuple[list[dict], list[dict]]:
-    """执行整份搜索计划，返回 (evidence_list, query_events)。
+    """并发执行整份搜索计划，返回 (evidence_list, query_events)。
 
     query_events 记录每条查询的命中数/状态，供前端展示「爬了哪些来源」。
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     evidences: list[dict] = []
     events: list[dict] = []
-    if not tavily_available():
+    if not tavily_available() or not plan:
         return evidences, events
-    for q in plan:
-        query = q.get("query")
-        if not query:
-            continue
-        try:
-            results = tavily_search(query, q.get("site", ""), results_per_query)
-            hits = []
-            for r in results:
-                ev = _result_to_evidence(product, r, q)
-                if ev:
-                    hits.append(ev)
+    # 多条查询并发(每条是独立的 Tavily HTTP 调用)
+    with ThreadPoolExecutor(max_workers=min(8, len(plan))) as pool:
+        for hits, event in pool.map(
+            lambda q: _run_one_query(product, q, results_per_query), plan
+        ):
+            if event:
+                events.append(event)
             evidences.extend(hits)
-            events.append({
-                "query": query,
-                "site": q.get("site", ""),
-                "claim_type": q.get("claim_type"),
-                "status": "ok",
-                "count": len(hits),
-                "urls": [h["source_url"] for h in hits],
-            })
-        except Exception as e:  # noqa: BLE001
-            events.append({
-                "query": query,
-                "site": q.get("site", ""),
-                "claim_type": q.get("claim_type"),
-                "status": "error",
-                "error": str(e),
-            })
     return evidences, events

@@ -39,7 +39,8 @@
   "focus_candidates": ["分析焦点候选"],
   "focus_suggested": "最贴合用户意图的一个焦点",
   "purpose_candidates": ["分析目的候选"],
-  "purpose_suggested": "最可能的目的"
+  "purpose_suggested": "最可能的目的",
+  "reasoning": "2-3 句话说明你的判断依据:从这句话识别出的品类/目标、为什么推荐这些竞品(覆盖了哪些不同竞争逻辑)、为什么是这个焦点"
 }
 ```
 

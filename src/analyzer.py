@@ -45,6 +45,29 @@ def _emit_progress(**evt) -> None:
         pass
 
 
+def _facts_summary(facts: dict) -> str:
+    feats = [f.get("name") for f in (facts.get("feature_tree") or {}).get("features", []) if f.get("name")]
+    pains = (facts.get("user_persona") or {}).get("pain_points") or []
+    parts = []
+    if feats:
+        parts.append("功能维度：" + "、".join(feats[:4]))
+    if pains:
+        parts.append(f"识别 {len(pains)} 个用户痛点")
+    return "；".join(parts)
+
+
+def _der_summary(der: dict) -> str:
+    recs = der.get("recommendations") or []
+    swot = der.get("swot") or {}
+    n_s = len(swot.get("strengths") or [])
+    n_w = len(swot.get("weaknesses") or [])
+    top = recs[0].get("action") if recs else ""
+    parts = [f"SWOT：{n_s} 优势 / {n_w} 劣势", f"{len(recs)} 条改进建议"]
+    if top:
+        parts.append(f"首要：{top[:30]}")
+    return "；".join(parts)
+
+
 def _corrupt_facts_for_demo(facts: dict) -> dict:
     """注入一个 R1 错误(evidence_id 不存在)演示打回。深拷贝后修改,不污染原 sample。"""
     out = copy.deepcopy(facts)
@@ -368,10 +391,17 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0) -> d
     payload = {"analysis_meta": meta, "raw_evidence": evidence}
     _emit_progress(step="facts", phase="start", attempt=1)
     facts = llm.call_json(system, payload, max_tokens=8192, label="facts")
-    _emit_progress(step="facts", phase="done", attempt=1)
+    _emit_progress(step="facts", phase="done", attempt=1, summary=_facts_summary(facts))
 
+    # issue 过多时 LLM 重跑(~80s)既慢又难全修 → 直接走确定性 sanitize(秒级)
+    _MAX_LLM_REPAIR_ISSUES = int(os.environ.get("ANALYZER_FACTS_REPAIR_THRESHOLD", "6"))
     issues = quick_validate_facts(facts, evidence, meta)
-    if issues:
+    if issues and len(issues) > _MAX_LLM_REPAIR_ISSUES:
+        print(f"[analyzer] facts found {len(issues)} issues (> {_MAX_LLM_REPAIR_ISSUES}); 跳过 LLM 重跑，直接 sanitize")
+        _emit_progress(step="facts", phase="repair", issues=len(issues))
+        facts, dropped = sanitize_facts_evidence_refs(facts, evidence)
+        print(f"[analyzer] facts deterministic sanitize dropped {dropped} invalid evidence refs")
+    elif issues:
         print(f"[analyzer] facts quick_validate found {len(issues)} issues; repairing")
         _emit_progress(step="facts", phase="repair", issues=len(issues))
         try:
@@ -379,7 +409,7 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0) -> d
                 system + _build_repair_hint(issues), payload,
                 max_tokens=8192, label="facts_repair",
             )
-            _emit_progress(step="facts", phase="done", attempt=2)
+            _emit_progress(step="facts", phase="done", attempt=2, summary=_facts_summary(facts))
         except Exception as e:
             print(f"[analyzer] facts repair failed; applying deterministic sanitize: {e}")
 
@@ -410,7 +440,7 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
     payload = {"analysis_meta": meta, "raw_evidence": evidence, "facts": facts}
     _emit_progress(step="derivations", phase="start", attempt=1)
     der = llm.call_json(system, payload, max_tokens=3072, label="derivations")
-    _emit_progress(step="derivations", phase="done", attempt=1)
+    _emit_progress(step="derivations", phase="done", attempt=1, summary=_der_summary(der))
 
     issues = quick_validate_derivations(der, facts, evidence)
     if issues:
@@ -421,7 +451,7 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
                 system + _build_repair_hint(issues), payload,
                 max_tokens=3072, label="derivations_repair",
             )
-            _emit_progress(step="derivations", phase="done", attempt=2)
+            _emit_progress(step="derivations", phase="done", attempt=2, summary=_der_summary(der))
         except Exception as e:
             print(f"[analyzer] derivations repair failed; reviewer will handle remaining issues: {e}")
     return der

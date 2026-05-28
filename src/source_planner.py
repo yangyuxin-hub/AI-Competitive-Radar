@@ -20,8 +20,6 @@ _SOURCES_YAML = _ROOT / "config" / "sources.yaml"
 _PROMPT = _ROOT / "prompts" / "source_discovery.md"
 
 REQUIRED_CLAIM_TYPES = ["feature_existence", "performance_quality", "pricing", "user_pain"]
-# 这两类官网/url_discovery 已覆盖，规划重点是另外两类
-_EXTERNAL_CLAIM_TYPES = ["performance_quality", "user_pain"]
 
 
 def load_sources_config() -> dict:
@@ -61,15 +59,24 @@ def _system_prompt() -> str:
     return text[text.index(marker) + len(marker):].strip() if marker in text else text
 
 
+_CLAIM_KEYWORDS = {
+    "feature_existence": "features capabilities official",
+    "pricing": "pricing plans cost",
+    "performance_quality": "review performance accuracy",
+    "user_pain": "user complaints problems",
+}
+
+
 def _heuristic_plan(product: str, focus: list[str], missing: list[str], recs: list[dict],
                     max_per_claim: int) -> list[dict]:
-    """无 LLM 时:直接用推荐源 + 模板查询。"""
+    """无 LLM 时:直接用推荐源 + 模板查询(覆盖全部 claim_type)。"""
     focus_kw = focus[0] if focus else ""
     queries: list[dict] = []
     for ct in missing:
-        rel = [r for r in recs if ct in ("performance_quality", "user_pain")] or recs
-        for r in rel[:max_per_claim]:
-            kw = "user complaints" if ct == "user_pain" else "review performance"
+        rel = [r for r in recs if (r.get("note") or "").strip()] if False else recs
+        chosen = rel[:max_per_claim] or [{}]
+        kw = _CLAIM_KEYWORDS.get(ct, "")
+        for r in chosen:
             queries.append({
                 "claim_type": ct,
                 "query": f"{product} {focus_kw} {kw}".strip(),
@@ -88,8 +95,8 @@ def plan_sources(
     missing_claim_types: Optional[list[str]] = None,
     domain: Optional[str] = None,
 ) -> list[dict]:
-    """产出搜索计划。missing 默认聚焦官网抓不到的 performance_quality / user_pain。"""
-    missing = missing_claim_types or _EXTERNAL_CLAIM_TYPES
+    """产出搜索计划。默认覆盖全部 4 类证据(Tavily 主力，不依赖官网抓取)。"""
+    missing = missing_claim_types or REQUIRED_CLAIM_TYPES
     cfg = load_sources_config()
     max_per_claim = int((cfg.get("defaults") or {}).get("max_queries_per_claim", 2))
     recs = recommended_for(domain, missing)

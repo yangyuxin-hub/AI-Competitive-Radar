@@ -70,6 +70,15 @@ _STATUS_COPY = {
     ],
 }
 
+# 长间隙(LLM 调用中)的稳定等待文案 — 单句不轮播，配合计时表明仍在工作
+_WAIT_MESSAGE = {
+    "collector": "正在联网检索并整理证据",
+    "analyzer": "正在深度分析：抽取功能/定价/痛点并推导建议，这一步最慢",
+    "writer": "正在把结构化结论渲染成报告",
+    "reviewer": "正在跑 R0-R7 质检规则",
+    "degraded_writer": "正在生成分层降级报告",
+}
+
 app = FastAPI(title="AI Competitive Radar API")
 app.add_middleware(
     CORSMiddleware,
@@ -96,8 +105,9 @@ class RunReq(BaseModel):
     user_input: Optional[str] = None
 
 
-def _propose_with_timeout(req: ProposeReq, timeout_sec: float = 6.0) -> dict:
-    """Intent LLM is nice-to-have; never let it block the first screen."""
+def _propose_with_timeout(req: ProposeReq, timeout_sec: float = 40.0) -> dict:
+    """Intent LLM 产出智能竞品 + reasoning,约需 20-25s(有波动);给足超时让其完成,
+    前端「理解意图中…」期间等待。超时仍回退启发式,保证不会卡死首屏。"""
     pool = ThreadPoolExecutor(max_workers=1)
     fut = pool.submit(intake.propose, req.user_input, req.domain_hint)
     try:
@@ -319,12 +329,32 @@ def _status_event(node_name: str, message: str, elapsed: int, state: Optional[di
     }
 
 
+def _node_for_label(label: str) -> str:
+    if label.startswith(("facts", "derivations")):
+        return "analyzer"
+    if label.startswith("review"):
+        return "reviewer"
+    return "collector"
+
+
 def _llm_status(evt: dict, elapsed: int) -> Optional[dict]:
     label = str(evt.get("label") or "")
     phase = evt.get("phase")
+    if phase == "chunk":
+        # 流式生成中:实时显示已生成字数(真实「处理过程输出」)
+        chars = int(evt.get("chars") or 0)
+        step = "事实层" if label.startswith("facts") else (
+            "推导层" if label.startswith("derivations") else (
+                "质检复核" if label.startswith("review") else "内容"
+            )
+        )
+        return _status_event(_node_for_label(label), f"✍️ 正在生成{step}…已写 {chars} 字", elapsed)
     if label.startswith("url_discovery_"):
         product = label.replace("url_discovery_", "", 1)
         msg = f"{'正在发现' if phase == 'start' else '已完成'} {product} 的官方页和定价页"
+        return _status_event("collector", msg, elapsed)
+    if label.startswith("source_discovery"):
+        msg = "正在规划检索策略：该去哪些站搜哪类证据" if phase == "start" else "检索策略已就绪，开始联网搜索"
         return _status_event("collector", msg, elapsed)
     if label.startswith("facts"):
         msg = "正在调用模型抽取事实层 JSON" if phase == "start" else "事实层 JSON 已返回，准备本地校验"
@@ -341,16 +371,19 @@ def _llm_status(evt: dict, elapsed: int) -> Optional[dict]:
 def _analyzer_status(evt: dict, elapsed: int) -> dict:
     step = evt.get("step")
     phase = evt.get("phase")
+    summary = evt.get("summary")
     if step == "facts" and phase == "start":
         msg = "Analyzer Step 1：从证据中抽取功能、定价、用户痛点"
     elif step == "facts" and phase == "repair":
         msg = f"事实层自检发现 {evt.get('issues', '?')} 个问题，正在修复引用"
     elif step == "facts":
-        msg = "事实层完成，进入推导层"
+        msg = f"✅ 事实层完成 — {summary}" if summary else "事实层完成，进入推导层"
     elif step == "derivations" and phase == "start":
-        msg = "Analyzer Step 2：生成 SWOT 和优先级建议"
+        msg = "Analyzer Step 2：基于事实推导 SWOT 和优先级建议"
     elif step == "derivations" and phase == "repair":
         msg = f"推导层自检发现 {evt.get('issues', '?')} 个问题，正在修复"
+    elif step == "derivations":
+        msg = f"✅ 推导完成 — {summary}" if summary else "推导层完成"
     else:
         msg = "Analyzer 正在整理结构化结论"
     return _status_event("analyzer", msg, elapsed)
@@ -367,10 +400,24 @@ def _run_stream(args: dict):
 
     def worker() -> None:
         nonlocal final_state
+        collected = {"total": 0}
+
+        def _collector_cb(evt: dict) -> None:
+            msg = evt.get("message")
+            if not msg:
+                return
+            event = _status_event("collector", msg, elapsed())
+            if evt.get("phase") == "fetch" and evt.get("status") == "done" and evt.get("product"):
+                collected["total"] += int(evt.get("evidence_count") or 0)
+            event["evidence_count"] = collected["total"]
+            q.put({"kind": "status", "event": event})
+
         try:
             from src import analyzer as analyzer_mod  # noqa: WPS433
             from src import llm as llm_mod  # noqa: WPS433
+            from src import collector as collector_mod  # noqa: WPS433
 
+            collector_mod.set_progress_callback(_collector_cb)
             analyzer_mod.set_progress_callback(
                 lambda evt: q.put({"kind": "status", "event": _analyzer_status(evt, elapsed())})
             )
@@ -389,6 +436,7 @@ def _run_stream(args: dict):
             q.put({"kind": "error", "message": str(e)})
         finally:
             try:
+                collector_mod.set_progress_callback(None)
                 analyzer_mod.set_progress_callback(None)
                 llm_mod.set_llm_callback(None)
             except Exception:
@@ -400,7 +448,7 @@ def _run_stream(args: dict):
     last_state: dict = {}
     last_completed: Optional[str] = None
     current_node = "collector"
-    tick = 0
+    last_hb = 0.0
     try:
         yield _sse(_status_event("collector", "开始运行，多 Agent 流程已启动", elapsed()))
 
@@ -408,10 +456,11 @@ def _run_stream(args: dict):
             try:
                 item = q.get(timeout=1.0)
             except Empty:
-                messages = _STATUS_COPY.get(current_node) or ["仍在处理中"]
-                msg = messages[tick % len(messages)]
-                tick += 1
-                yield _sse(_status_event(current_node, msg, elapsed(), last_state))
+                # 心跳节流:长间隙(LLM 调用中)每 ~4s 才发一次稳定等待文案，避免刷屏淹没真实结论
+                if elapsed() - last_hb >= 4:
+                    last_hb = elapsed()
+                    wait = _WAIT_MESSAGE.get(current_node, "仍在处理中")
+                    yield _sse(_status_event(current_node, f"{wait}…（已用 {elapsed()}s）", elapsed(), last_state))
                 continue
 
             kind = item.get("kind")
@@ -424,11 +473,11 @@ def _run_stream(args: dict):
                 last_completed = node_name
                 last_state = state
                 current_node = _next_node_after(last_completed, state)
-                tick = 0
+                last_hb = elapsed()  # 进入新节点，重置心跳计时
                 yield _sse(_progress_event(node_name, state))
                 if node_name != "reviewer" or state.get("status") != "passed":
-                    messages = _STATUS_COPY.get(current_node) or ["继续处理下一步"]
-                    yield _sse(_status_event(current_node, messages[0], elapsed(), last_state))
+                    nxt = _WAIT_MESSAGE.get(current_node, "继续处理下一步")
+                    yield _sse(_status_event(current_node, nxt, elapsed(), last_state))
                 continue
             if kind == "error":
                 yield _sse({"type": "error", "message": item.get("message") or "unknown error"})

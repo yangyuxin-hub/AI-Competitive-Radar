@@ -13,7 +13,7 @@
 #   note:        说明
 
 defaults:
-  results_per_query: 5        # 每条搜索查询取回的结果数
+  results_per_query: 3        # 每条搜索查询取回的结果数(精炼优先，控 prompt 体积与速度)
   max_queries_per_claim: 2    # 每个 claim_type 最多发几条查询
 
 # ─── 按证据类型推荐的来源（global，适用所有行业）──────────────────

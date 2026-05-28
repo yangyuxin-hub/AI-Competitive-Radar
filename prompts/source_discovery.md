@@ -19,11 +19,15 @@
 
 ### 规则
 
-1. 只为 `missing_claim_types` 里的类型规划查询，已覆盖的不要重复。
+1. 为 `missing_claim_types` 里的**每一类**都规划查询（本系统靠搜索覆盖全部 4 类，不单独抓官网）：
+   - `feature_existence`：搜产品官方功能页/文档（`query` 含 "features"，`site` 填厂商官网域名，如 cursor.com）
+   - `pricing`：搜官方定价（`query` 含 "pricing/plans"，`site` 填厂商官网域名）
+   - `performance_quality`：第三方评测 / benchmark / 真实性能反馈
+   - `user_pain`：社区吐槽、评论（Reddit / HN / 评测站）
 2. **优先参考 `recommended_sources`** 给出的站点（用户长期信任的源）；同时可以**模仿它们的形式**补充同类优质站点（如用户给了 reddit，你可补 stackoverflow / 对应行业社区）。
 3. 每条查询包含可直接搜索的 `query` 字符串（含产品名 + 焦点 + 诉求关键词，用英文更易命中海外社区）。
-4. `site` 填建议限定的域名（如 `reddit.com`），搜索时会作为 `site:` 过滤；不确定就留空（全网搜）。
-5. `performance_quality` 和 `user_pain` 是重点——这是官网抓不到、最需要外部检索的部分。
+4. `site` 填建议限定的域名（如 `reddit.com`、`cursor.com`），搜索时会作为 `site:` 过滤；不确定就留空（全网搜）。
+5. `performance_quality` 和 `user_pain` 信息最分散、最需要广撒网；`feature_existence` / `pricing` 优先官方域名以保证权威。
 6. 每个 claim_type 最多 `max_queries_per_claim` 条；总查询数控制在 8 条以内。
 7. 返回纯 JSON，不要 markdown 包裹，不要编造不存在的站点。
 
