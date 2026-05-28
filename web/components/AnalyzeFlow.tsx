@@ -6,15 +6,43 @@ import {
   answersToRunArgs,
   runAnalysis,
 } from "@/lib/api";
-import type { Question, Answers, ProgressEvent, Report } from "@/lib/types";
+import type { Question, Answers, ProgressEvent, Report, NodeDetail } from "@/lib/types";
+import { domainOf } from "@/lib/source";
 import ReportView from "./ReportView";
 
 type Stage = "input" | "clarify" | "running" | "report";
 
 const SCENARIOS = [
-  "评估下季度要不要做某个功能，看三家友商做得怎么样",
-  "Cursor 刚发了大更新，要不要跟、怎么跟",
-  "用户为什么流失到竞品，看看大家在吐槽什么",
+  {
+    domainHint: "ai_coding",
+    domain: "AI 编程工具",
+    title: "代码补全体验",
+    prompt: "分析 Cursor、Windsurf 和 GitHub Copilot 在代码补全体验上的差距",
+  },
+  {
+    domainHint: "ai_coding",
+    domain: "AI 编程工具",
+    title: "Agent 能力跟进",
+    prompt: "Cursor 刚发了 Agent 大更新，分析 Windsurf 和 GitHub Copilot 要不要跟、怎么跟",
+  },
+  {
+    domainHint: "pm",
+    domain: "项目协作工具",
+    title: "任务管理体验",
+    prompt: "分析 Notion、Asana 和 Linear 在团队任务管理体验上的差距",
+  },
+  {
+    domainHint: "pm",
+    domain: "项目协作工具",
+    title: "协作工具定价",
+    prompt: "比较 Notion、Asana 和 Linear 的定价策略，判断中小团队更容易买谁",
+  },
+  {
+    domainHint: "pm",
+    domain: "项目协作工具",
+    title: "用户流失原因",
+    prompt: "用户为什么从 Notion 流向 Asana 或 Linear，看看大家主要在吐槽什么",
+  },
 ];
 
 const PIPELINE = [
@@ -27,6 +55,7 @@ const PIPELINE = [
 export default function AnalyzeFlow() {
   const [stage, setStage] = useState<Stage>("input");
   const [userInput, setUserInput] = useState("");
+  const [domainHint, setDomainHint] = useState<string | undefined>();
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Answers>({});
   const [customOpts, setCustomOpts] = useState<Record<string, string[]>>({});
@@ -41,7 +70,7 @@ export default function AnalyzeFlow() {
     setBusy(true);
     setError(null);
     try {
-      const { questions } = await fetchQuestions(userInput);
+      const { questions } = await fetchQuestions(userInput, domainHint);
       setQuestions(questions);
       const init: Answers = {};
       for (const q of questions) {
@@ -113,6 +142,7 @@ export default function AnalyzeFlow() {
   function reset() {
     setStage("input");
     setUserInput("");
+    setDomainHint(undefined);
     setQuestions([]);
     setAnswers({});
     setCustomOpts({});
@@ -134,18 +164,32 @@ export default function AnalyzeFlow() {
         <div className="space-y-4">
           <textarea
             value={userInput}
-            onChange={(e) => setUserInput(e.target.value)}
-            placeholder="用一句话说想分析什么，例如：分析 Cursor 和 Windsurf 的代码补全体验"
+            onChange={(e) => {
+              setUserInput(e.target.value);
+              setDomainHint(undefined);
+            }}
+            placeholder="用一句话说想分析什么，例如：分析 Notion、Asana、Linear 的任务管理体验"
             className="h-28 w-full resize-none rounded-xl border border-white/10 bg-white/5 p-4 text-neutral-100 outline-none placeholder:text-neutral-600 focus:border-sky-500/50"
           />
-          <div className="flex flex-wrap gap-2">
+          <div className="grid gap-2 sm:grid-cols-2">
             {SCENARIOS.map((s) => (
               <button
-                key={s}
-                onClick={() => setUserInput(s)}
-                className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-neutral-400 transition hover:border-sky-500/40 hover:text-sky-300"
+                key={s.prompt}
+                onClick={() => {
+                  setUserInput(s.prompt);
+                  setDomainHint(s.domainHint);
+                }}
+                className={`rounded-lg border px-3 py-2 text-left transition hover:border-sky-500/40 hover:bg-white/[0.04] ${
+                  userInput === s.prompt
+                    ? "border-sky-500/50 bg-sky-500/10"
+                    : "border-white/10 bg-white/[0.02]"
+                }`}
               >
-                {s}
+                <div className="text-xs text-neutral-500">{s.domain}</div>
+                <div className="mt-0.5 text-sm font-medium text-neutral-200">{s.title}</div>
+                <div className="mt-1 line-clamp-2 text-xs leading-relaxed text-neutral-500">
+                  {s.prompt}
+                </div>
               </button>
             ))}
           </div>
@@ -269,17 +313,35 @@ function AgentProgress({ events }: { events: ProgressEvent[] }) {
     ProgressEvent,
     { type: "progress" }
   >[];
+  const timeline = events.filter((e) => e.type === "progress" || e.type === "status") as Extract<
+    ProgressEvent,
+    { type: "progress" | "status" }
+  >[];
   const elapsed = useElapsed(true);
   // 一个节点可能出现多次（retry）→ 用出现次数判断 done
   const counts = new Map<string, number>();
   for (const e of progress) counts.set(e.node, (counts.get(e.node) ?? 0) + 1);
-  const last = progress.at(-1);
+  const last = timeline.at(-1);
   const currentNode = last?.node;
   const evidenceCount = last?.evidence_count ?? 0;
   const retry = last?.retry_count ?? {};
   const totalRetry = Object.values(retry).reduce((a, b) => a + b, 0);
   const quality = progress.findLast((e) => e.quality)?.quality;
+  const collectionHealth = progress.findLast((e) => e.collection_health)?.collection_health ?? [];
   const rejected = progress.some((e) => e.reject_target);
+  // 每个节点保留最新一条带 detail 的结果，按流水线顺序展示
+  const byNode = new Map<string, Extract<ProgressEvent, { type: "progress" }>>();
+  for (const e of progress) if (e.detail) byNode.set(e.node, e);
+  const order = ["collector", "analyzer", "writer", "reviewer", "degraded_writer"];
+  const stageResults = [...byNode.values()].sort(
+    (a, b) => order.indexOf(a.node) - order.indexOf(b.node)
+  );
+  const currentMessage =
+    last?.type === "status"
+      ? last.message
+      : last
+        ? `${last.label}完成，准备进入下一步`
+        : "正在连接分析服务";
 
   return (
     <div className="space-y-6 py-6">
@@ -297,6 +359,14 @@ function AgentProgress({ events }: { events: ProgressEvent[] }) {
             打回重试 ×{totalRetry}
           </span>
         )}
+      </div>
+
+      <div className="mx-auto max-w-xl rounded-xl border border-sky-500/20 bg-sky-500/10 p-4">
+        <div className="mb-1 flex items-center gap-2 text-sm font-medium text-sky-200">
+          <span>{last?.icon ?? "•"}</span>
+          <span>{last?.label ?? "准备中"}</span>
+        </div>
+        <p className="text-sm leading-relaxed text-neutral-300">{currentMessage}</p>
       </div>
 
       <div className="flex items-stretch justify-center gap-1">
@@ -367,19 +437,49 @@ function AgentProgress({ events }: { events: ProgressEvent[] }) {
         </div>
       )}
 
+      {collectionHealth.length > 0 && (
+        <div className="mx-auto max-w-xl rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
+          <div className="mb-2 font-medium text-amber-300">证据覆盖不足</div>
+          <div className="space-y-1 text-xs text-amber-100/80">
+            {collectionHealth.map((item) => (
+              <div key={item.product}>
+                {item.product}：{item.health}，缺少 {item.missing_claim_types.join(" / ")}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 各环节中间结果 */}
+      {stageResults.length > 0 && (
+        <div className="mx-auto max-w-xl space-y-2">
+          {stageResults.map((e) => (
+            <NodeDetailCard key={e.node} icon={e.icon} label={e.label} detail={e.detail!} />
+          ))}
+        </div>
+      )}
+
       {/* 实时事件流 */}
-      <div className="mx-auto max-w-lg space-y-1">
-        {progress.slice(-6).map((e, i) => (
+      <div className="mx-auto max-w-xl space-y-1">
+        {timeline.slice(-8).map((e, i) => (
           <div
             key={i}
             className="flex items-center gap-2 rounded-lg bg-white/[0.02] px-3 py-1.5 text-xs text-neutral-400"
           >
             <span>{e.icon}</span>
             <span className="text-neutral-300">{e.label}</span>
-            {e.reject_target && (
+            {e.type === "status" && (
+              <span className="truncate text-neutral-500">{e.message}</span>
+            )}
+            {e.type === "progress" && e.reject_target && (
               <span className="text-amber-400">→ 打回 {e.reject_target}</span>
             )}
-            <span className="ml-auto font-mono text-neutral-600">{e.evidence_count} 证据</span>
+            {e.type === "progress" && !e.reject_target && (
+              <span className="text-emerald-400">{e.result ?? "完成"}</span>
+            )}
+            {e.type !== "progress" && (
+              <span className="ml-auto font-mono text-neutral-600">{e.evidence_count} 证据</span>
+            )}
           </div>
         ))}
       </div>
@@ -388,6 +488,129 @@ function AgentProgress({ events }: { events: ProgressEvent[] }) {
         <p className="text-center text-xs text-neutral-500">
           Reviewer 发现问题并打回重跑 — 这正是质量自愈闭环在工作
         </p>
+      )}
+    </div>
+  );
+}
+
+function NodeDetailCard({
+  icon,
+  label,
+  detail,
+}: {
+  icon: string;
+  label: string;
+  detail: NodeDetail;
+}) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-xs">
+      <div className="mb-2 flex items-center gap-1.5 text-neutral-300">
+        <span>{icon}</span>
+        <span className="font-medium">{label}</span>
+      </div>
+
+      {detail.kind === "collection" && (
+        <div className="space-y-2">
+          <div className="flex flex-wrap gap-1.5">
+            {detail.coverage?.map((c) => (
+              <span
+                key={c.label}
+                className={`rounded px-2 py-0.5 ${
+                  c.ok
+                    ? "bg-emerald-500/15 text-emerald-300"
+                    : "bg-red-500/15 text-red-300"
+                }`}
+              >
+                {c.ok ? "✓" : "✕"} {c.label} {c.ok ? `×${c.count}` : "未获取"}
+              </span>
+            ))}
+          </div>
+          {detail.sources && detail.sources.length > 0 && (
+            <div className="text-neutral-500">
+              来源：
+              {detail.sources.map((s) => `${s.label} ×${s.count}`).join(" · ")}
+            </div>
+          )}
+          {detail.products?.some((p) => p.missing.length > 0) && (
+            <div className="text-amber-300/80">
+              {detail.products
+                .filter((p) => p.missing.length > 0)
+                .map((p) => `${p.product} 缺 ${p.missing.join("/")}`)
+                .join("；")}
+            </div>
+          )}
+          {detail.searched && detail.searched.length > 0 && (
+            <div className="space-y-1.5 border-t border-white/5 pt-2">
+              <div className="text-neutral-500">🔍 网络检索了这些来源：</div>
+              {detail.searched.map((s, i) => (
+                <div key={i} className="rounded-lg bg-white/[0.02] px-2 py-1.5">
+                  <div className="text-neutral-400">
+                    <span className="text-sky-400">{s.product}</span>
+                    {s.site && <span className="text-neutral-500"> · {s.site}</span>}
+                    <span className="text-neutral-600"> · 命中 {s.count}</span>
+                    <span className="ml-1 text-neutral-600">「{s.query}」</span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {s.urls.map((u) => (
+                      <a
+                        key={u}
+                        href={u}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="max-w-[180px] truncate rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-neutral-400 transition hover:text-sky-300"
+                      >
+                        {domainOf(u)}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {detail.kind === "analysis" && (
+        <div className="space-y-2">
+          {detail.features && detail.features.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {detail.features.map((f) => (
+                <span key={f} className="rounded bg-white/5 px-2 py-0.5 text-neutral-300">
+                  {f}
+                </span>
+              ))}
+            </div>
+          )}
+          {detail.recommendations && detail.recommendations.length > 0 && (
+            <div className="space-y-1 text-neutral-400">
+              {detail.recommendations.map((r, i) => (
+                <div key={i}>
+                  {r.priority && <span className="text-sky-400">{r.priority}</span>} {r.action}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {detail.kind === "review" && (
+        <div className="flex flex-wrap gap-1.5">
+          {detail.passed?.map((r) => (
+            <span key={r} className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-400">
+              ✓ {r}
+            </span>
+          ))}
+          {detail.warnings?.map((r) => (
+            <span key={`w-${r}`} className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-400">
+              ⚠ {r}
+            </span>
+          ))}
+          {detail.failed?.map((r) => (
+            <span key={`f-${r}`} className="rounded bg-red-500/15 px-1.5 py-0.5 text-red-400">
+              ✕ {r}
+            </span>
+          ))}
+        </div>
       )}
     </div>
   );

@@ -9,12 +9,13 @@ import type {
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
 export async function fetchQuestions(
-  userInput: string
+  userInput: string,
+  domainHint?: string
 ): Promise<{ questions: Question[]; draft: Record<string, unknown> }> {
   const res = await fetch(`${BASE}/api/intake/questions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_input: userInput }),
+    body: JSON.stringify({ user_input: userInput, domain_hint: domainHint }),
   });
   if (!res.ok) throw new Error(`questions failed: ${res.status}`);
   return res.json();
@@ -37,7 +38,7 @@ export function answersToRunArgs(answers: Answers, userInput: string): RunArgs {
     target_product: target,
     competitors: asList(answers.competitors).filter((c) => c !== target),
     analysis_focus: asList(answers.focus),
-    analysis_purpose: asList(answers.purpose)[0],
+    analysis_purpose: asList(answers.purpose).join(" / ") || undefined,
     user_input: userInput || undefined,
   };
 }

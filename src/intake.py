@@ -240,16 +240,16 @@ def build_questions(draft: dict) -> list[Choice]:
         ),
         Choice(
             key="focus",
-            question="这次分析的焦点维度是什么?",
+            question="这次分析的焦点维度是什么?(可多选)",
             options=focus_opts,
-            multi=False,
+            multi=True,
             suggested=[focus_sug] if focus_sug else [],
         ),
         Choice(
             key="purpose",
-            question="分析目的是什么?(影响建议的取向)",
+            question="分析目的是什么?(可多选,影响建议的取向)",
             options=purpose_opts,
-            multi=False,
+            multi=True,
             suggested=[purpose_sug] if purpose_sug else [],
         ),
         Choice(
@@ -290,10 +290,8 @@ def assemble_meta(answers: dict, user_input: Optional[str] = None) -> dict:
         else (_as_list(answers.get("target"))[:1] or [""])[0]
     competitors = [c for c in _as_list(answers.get("competitors")) if c != target]
     focus = _as_list(answers.get("focus")) or ["核心功能完整度"]
-    purpose = answers.get("purpose")
-    if isinstance(purpose, list):
-        purpose = purpose[0] if purpose else None
-    purpose = (purpose or "学习竞品优点,优化自身产品")
+    purpose_list = _as_list(answers.get("purpose"))
+    purpose = " / ".join(purpose_list) if purpose_list else "学习竞品优点,优化自身产品"
 
     ui = user_input or (
         f"分析 {target} 与 {', '.join(competitors) or '同类竞品'} 在 {focus[0]} 上的差距"

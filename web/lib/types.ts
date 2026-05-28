@@ -66,6 +66,16 @@ export interface ReportIndexItem {
 
 export type ProgressEvent =
   | {
+      type: "status";
+      node: string;
+      icon: string;
+      label: string;
+      message: string;
+      elapsed_sec: number;
+      evidence_count: number;
+      retry_count: Record<string, number>;
+    }
+  | {
       type: "progress";
       node: string;
       icon: string;
@@ -74,6 +84,13 @@ export type ProgressEvent =
       evidence_count: number;
       retry_count: Record<string, number>;
       reject_target: string | null;
+      result?: string | null;
+      detail?: NodeDetail | null;
+      collection_health?: {
+        product: string;
+        health: string;
+        missing_claim_types: string[];
+      }[];
       quality?: {
         quality_score?: number;
         passed_rules?: string[];
@@ -83,5 +100,26 @@ export type ProgressEvent =
     }
   | { type: "done"; report_id: string; report: Report }
   | { type: "error"; message: string };
+
+export interface NodeDetail {
+  kind: "collection" | "analysis" | "review";
+  coverage?: { label: string; count: number; ok: boolean }[];
+  missing?: string[];
+  sources?: { label: string; count: number }[];
+  products?: { product: string; health?: string; missing: string[] }[];
+  searched?: {
+    product: string;
+    query: string;
+    site?: string;
+    claim_type?: string;
+    count: number;
+    urls: string[];
+  }[];
+  features?: string[];
+  recommendations?: { action: string; priority?: string | null }[];
+  passed?: string[];
+  warnings?: string[];
+  failed?: string[];
+}
 
 export type Answers = Record<string, string | string[]>;

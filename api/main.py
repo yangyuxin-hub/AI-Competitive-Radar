@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from queue import Empty, Queue
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -41,6 +45,31 @@ _NODE_META = {
     "degraded_writer": ("⚠️", "降级输出"),
 }
 
+_PIPELINE = ["collector", "analyzer", "writer", "reviewer"]
+_STATUS_COPY = {
+    "collector": [
+        "解析产品与竞品，准备证据采集",
+        "检查官方页、缓存与 mock 兜底数据",
+        "按 feature / pricing / user_pain 覆盖率整理证据",
+    ],
+    "analyzer": [
+        "把原始证据压成事实层：功能、定价、用户痛点",
+        "校验 evidence_id 是否真实存在，避免编造引用",
+        "推导 SWOT 与优先级建议，计算 priority_score",
+    ],
+    "writer": [
+        "把结构化 schema 渲染成可读 Markdown",
+        "为结论挂上可点击的证据 chip",
+    ],
+    "reviewer": [
+        "运行 R1-R7 质检规则",
+        "检查证据链、引用完整性与优先级公式",
+    ],
+    "degraded_writer": [
+        "质量门禁未完全通过，正在生成分层降级报告",
+    ],
+}
+
 app = FastAPI(title="AI Competitive Radar API")
 app.add_middleware(
     CORSMiddleware,
@@ -67,19 +96,34 @@ class RunReq(BaseModel):
     user_input: Optional[str] = None
 
 
+def _propose_with_timeout(req: ProposeReq, timeout_sec: float = 6.0) -> dict:
+    """Intent LLM is nice-to-have; never let it block the first screen."""
+    pool = ThreadPoolExecutor(max_workers=1)
+    fut = pool.submit(intake.propose, req.user_input, req.domain_hint)
+    try:
+        return fut.result(timeout=timeout_sec)
+    except TimeoutError:
+        fut.cancel()
+        draft = intake._propose_heuristic(req.user_input, req.domain_hint)  # noqa: SLF001
+        draft["_fallback_reason"] = f"intent_llm_timeout_{timeout_sec}s"
+        return draft
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # 意图澄清
 # ────────────────────────────────────────────────────────────────────────────
 
 @app.post("/api/intake/propose")
 def api_propose(req: ProposeReq):
-    draft = intake.propose(req.user_input, req.domain_hint)
+    draft = _propose_with_timeout(req)
     return {"draft": draft}
 
 
 @app.post("/api/intake/questions")
 def api_questions(req: ProposeReq):
-    draft = intake.propose(req.user_input, req.domain_hint)
+    draft = _propose_with_timeout(req)
     questions = [c.to_dict() for c in intake.build_questions(draft)]
     return {"draft": draft, "questions": questions}
 
@@ -92,33 +136,305 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-def _run_stream(args: dict):
-    """逐节点 yield SSE 事件，结束后持久化并发 done 事件。"""
-    final_state: dict = {}
-    try:
-        for node_name, state in run_demo_streaming(**args):
-            final_state = state
-            icon, label = _NODE_META.get(node_name, ("•", node_name))
-            evidence = state.get("raw_evidence") or []
-            qr = state.get("quality_report") or {}
-            event = {
-                "type": "progress",
-                "node": node_name,
-                "icon": icon,
-                "label": label,
-                "status": state.get("status"),
-                "evidence_count": len(evidence),
-                "retry_count": state.get("retry_count") or {},
-                "reject_target": state.get("reject_target"),
+_CLAIM_LABELS = {
+    "feature_existence": "功能具备性",
+    "performance_quality": "性能与质量",
+    "pricing": "定价信息",
+    "user_pain": "用户痛点",
+}
+_REQUIRED_CLAIMS = ["feature_existence", "performance_quality", "pricing", "user_pain"]
+_SOURCE_LABELS = {"live": "官网抓取", "search": "网络检索", "cache": "缓存", "mock": "兜底样本", "unknown": "其他"}
+
+
+def _node_detail(node_name: str, state: dict) -> Optional[dict]:
+    """节点完成后的结构化中间结果：拿到了什么、缺了什么。"""
+    evidence = state.get("raw_evidence") or []
+    schema = state.get("schema_draft") or {}
+
+    if node_name == "collector":
+        counts = {ct: 0 for ct in _REQUIRED_CLAIMS}
+        sources: dict[str, int] = {}
+        for e in evidence:
+            ct = e.get("claim_type")
+            if ct in counts:
+                counts[ct] += 1
+            src = e.get("collection_source") or "unknown"
+            sources[src] = sources.get(src, 0) + 1
+        coverage = [
+            {"label": _CLAIM_LABELS.get(ct, ct), "count": counts[ct], "ok": counts[ct] > 0}
+            for ct in _REQUIRED_CLAIMS
+        ]
+        meta = state.get("collection_meta") or {}
+        products = [
+            {
+                "product": name,
+                "health": info.get("health"),
+                "missing": [_CLAIM_LABELS.get(m, m) for m in (info.get("missing_claim_types") or [])],
             }
-            if node_name in ("reviewer", "degraded_writer") and qr:
-                event["quality"] = {
-                    "quality_score": qr.get("quality_score"),
-                    "passed_rules": qr.get("passed_rules"),
-                    "failed_rules": qr.get("failed_rules"),
-                    "warning_rules": qr.get("warning_rules"),
+            for name, info in (meta.get("products") or {}).items()
+        ]
+        searched: list[dict] = []
+        for name, info in (meta.get("products") or {}).items():
+            for ev in info.get("search_events") or []:
+                if ev.get("status") == "ok" and ev.get("count"):
+                    searched.append({
+                        "product": name,
+                        "query": ev.get("query"),
+                        "site": ev.get("site"),
+                        "claim_type": _CLAIM_LABELS.get(ev.get("claim_type"), ev.get("claim_type")),
+                        "count": ev.get("count"),
+                        "urls": (ev.get("urls") or [])[:5],
+                    })
+        return {
+            "kind": "collection",
+            "coverage": coverage,
+            "missing": [c["label"] for c in coverage if not c["ok"]],
+            "sources": [
+                {"label": _SOURCE_LABELS.get(s, s), "count": n}
+                for s, n in sorted(sources.items(), key=lambda kv: -kv[1])
+            ],
+            "products": products,
+            "searched": searched,
+        }
+
+    if node_name == "analyzer":
+        feats = (schema.get("feature_tree") or {}).get("features") or []
+        recs = schema.get("recommendations") or []
+        return {
+            "kind": "analysis",
+            "features": [f.get("name") for f in feats if f.get("name")],
+            "recommendations": [
+                {
+                    "action": (r.get("action") or "")[:40],
+                    "priority": (r.get("priority_score") or {}).get("priority"),
                 }
-            yield _sse(event)
+                for r in recs
+            ],
+        }
+
+    if node_name == "reviewer":
+        qr = state.get("quality_report") or {}
+        return {
+            "kind": "review",
+            "passed": qr.get("passed_rules") or [],
+            "warnings": qr.get("warning_rules") or [],
+            "failed": qr.get("failed_rules") or [],
+        }
+    return None
+
+
+def _result_summary(node_name: str, state: dict) -> Optional[str]:
+    """节点完成后的「阶段性结果」一句话，供前端活动流展示。"""
+    evidence = state.get("raw_evidence") or []
+    schema = state.get("schema_draft") or {}
+    if node_name == "collector":
+        types = {e.get("claim_type") for e in evidence if e.get("claim_type")}
+        return f"采集 {len(evidence)} 条证据，覆盖 {len(types)} 类诉求" if evidence else None
+    if node_name == "analyzer":
+        feats = (schema.get("feature_tree") or {}).get("features") or []
+        recs = schema.get("recommendations") or []
+        pains = (schema.get("user_persona") or {}).get("pain_points") or []
+        parts = []
+        if feats:
+            parts.append(f"{len(feats)} 个功能维度")
+        if pains:
+            parts.append(f"{len(pains)} 个痛点")
+        if recs:
+            parts.append(f"{len(recs)} 条建议")
+        return "提取 " + " / ".join(parts) if parts else None
+    if node_name in ("writer", "degraded_writer"):
+        md = state.get("report_draft") or ""
+        return f"生成报告约 {len(md)} 字" if md else None
+    if node_name == "reviewer":
+        qr = state.get("quality_report") or {}
+        if qr.get("quality_score") is not None:
+            return f"质检 {qr.get('quality_score')}/100 · {state.get('status')}"
+    return None
+
+
+def _progress_event(node_name: str, state: dict) -> dict:
+    icon, label = _NODE_META.get(node_name, ("•", node_name))
+    evidence = state.get("raw_evidence") or []
+    qr = state.get("quality_report") or {}
+    event = {
+        "type": "progress",
+        "node": node_name,
+        "icon": icon,
+        "label": label,
+        "status": state.get("status"),
+        "evidence_count": len(evidence),
+        "retry_count": state.get("retry_count") or {},
+        "reject_target": state.get("reject_target"),
+        "result": _result_summary(node_name, state),
+        "detail": _node_detail(node_name, state),
+    }
+    if node_name in ("reviewer", "degraded_writer") and qr:
+        event["quality"] = {
+            "quality_score": qr.get("quality_score"),
+            "passed_rules": qr.get("passed_rules"),
+            "failed_rules": qr.get("failed_rules"),
+            "warning_rules": qr.get("warning_rules"),
+        }
+    collection_meta = state.get("collection_meta") or {}
+    products = collection_meta.get("products") or {}
+    unhealthy = [
+        {
+            "product": product,
+            "health": info.get("health"),
+            "missing_claim_types": info.get("missing_claim_types") or [],
+        }
+        for product, info in products.items()
+        if info.get("health") and info.get("health") != "ok"
+    ]
+    if unhealthy:
+        event["collection_health"] = unhealthy
+    return event
+
+
+def _next_node_after(node_name: Optional[str], state: dict) -> str:
+    if node_name == "reviewer":
+        if state.get("status") == "degraded":
+            return "degraded_writer"
+        if state.get("status") == "running":
+            return state.get("reject_target") or "analyzer"
+    if node_name in _PIPELINE:
+        idx = _PIPELINE.index(node_name)
+        if idx + 1 < len(_PIPELINE):
+            return _PIPELINE[idx + 1]
+    return "collector"
+
+
+def _status_event(node_name: str, message: str, elapsed: int, state: Optional[dict] = None) -> dict:
+    icon, label = _NODE_META.get(node_name, ("•", node_name))
+    state = state or {}
+    return {
+        "type": "status",
+        "node": node_name,
+        "icon": icon,
+        "label": label,
+        "message": message,
+        "elapsed_sec": elapsed,
+        "evidence_count": len(state.get("raw_evidence") or []),
+        "retry_count": state.get("retry_count") or {},
+    }
+
+
+def _llm_status(evt: dict, elapsed: int) -> Optional[dict]:
+    label = str(evt.get("label") or "")
+    phase = evt.get("phase")
+    if label.startswith("url_discovery_"):
+        product = label.replace("url_discovery_", "", 1)
+        msg = f"{'正在发现' if phase == 'start' else '已完成'} {product} 的官方页和定价页"
+        return _status_event("collector", msg, elapsed)
+    if label.startswith("facts"):
+        msg = "正在调用模型抽取事实层 JSON" if phase == "start" else "事实层 JSON 已返回，准备本地校验"
+        return _status_event("analyzer", msg, elapsed)
+    if label.startswith("derivations"):
+        msg = "正在推导 SWOT 与改进建议" if phase == "start" else "推导层已返回，准备合并报告 schema"
+        return _status_event("analyzer", msg, elapsed)
+    if label.startswith("review"):
+        msg = "正在运行 LLM 质检复核" if phase == "start" else "LLM 质检复核完成"
+        return _status_event("reviewer", msg, elapsed)
+    return None
+
+
+def _analyzer_status(evt: dict, elapsed: int) -> dict:
+    step = evt.get("step")
+    phase = evt.get("phase")
+    if step == "facts" and phase == "start":
+        msg = "Analyzer Step 1：从证据中抽取功能、定价、用户痛点"
+    elif step == "facts" and phase == "repair":
+        msg = f"事实层自检发现 {evt.get('issues', '?')} 个问题，正在修复引用"
+    elif step == "facts":
+        msg = "事实层完成，进入推导层"
+    elif step == "derivations" and phase == "start":
+        msg = "Analyzer Step 2：生成 SWOT 和优先级建议"
+    elif step == "derivations" and phase == "repair":
+        msg = f"推导层自检发现 {evt.get('issues', '?')} 个问题，正在修复"
+    else:
+        msg = "Analyzer 正在整理结构化结论"
+    return _status_event("analyzer", msg, elapsed)
+
+
+def _run_stream(args: dict):
+    """逐节点 + 心跳式 yield SSE 事件，结束后持久化并发 done 事件。"""
+    final_state: dict = {}
+    q: Queue = Queue()
+    started_at = time.time()
+
+    def elapsed() -> int:
+        return int(time.time() - started_at)
+
+    def worker() -> None:
+        nonlocal final_state
+        try:
+            from src import analyzer as analyzer_mod  # noqa: WPS433
+            from src import llm as llm_mod  # noqa: WPS433
+
+            analyzer_mod.set_progress_callback(
+                lambda evt: q.put({"kind": "status", "event": _analyzer_status(evt, elapsed())})
+            )
+            llm_mod.set_llm_callback(
+                lambda evt: (
+                    q.put({"kind": "status", "event": status})
+                    if (status := _llm_status(evt, elapsed())) else None
+                )
+            )
+
+            for node_name, state in run_demo_streaming(**args):
+                final_state = state
+                q.put({"kind": "progress", "node": node_name, "state": state})
+            q.put({"kind": "finished"})
+        except Exception as e:  # noqa: BLE001
+            q.put({"kind": "error", "message": str(e)})
+        finally:
+            try:
+                analyzer_mod.set_progress_callback(None)
+                llm_mod.set_llm_callback(None)
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    last_state: dict = {}
+    last_completed: Optional[str] = None
+    current_node = "collector"
+    tick = 0
+    try:
+        yield _sse(_status_event("collector", "开始运行，多 Agent 流程已启动", elapsed()))
+
+        while True:
+            try:
+                item = q.get(timeout=1.0)
+            except Empty:
+                messages = _STATUS_COPY.get(current_node) or ["仍在处理中"]
+                msg = messages[tick % len(messages)]
+                tick += 1
+                yield _sse(_status_event(current_node, msg, elapsed(), last_state))
+                continue
+
+            kind = item.get("kind")
+            if kind == "status":
+                yield _sse(item["event"])
+                continue
+            if kind == "progress":
+                node_name = item["node"]
+                state = item["state"]
+                last_completed = node_name
+                last_state = state
+                current_node = _next_node_after(last_completed, state)
+                tick = 0
+                yield _sse(_progress_event(node_name, state))
+                if node_name != "reviewer" or state.get("status") != "passed":
+                    messages = _STATUS_COPY.get(current_node) or ["继续处理下一步"]
+                    yield _sse(_status_event(current_node, messages[0], elapsed(), last_state))
+                continue
+            if kind == "error":
+                yield _sse({"type": "error", "message": item.get("message") or "unknown error"})
+                return
+            if kind == "finished":
+                break
 
         report = _persist_report(final_state)
         yield _sse({"type": "done", "report_id": report["report_id"], "report": report})

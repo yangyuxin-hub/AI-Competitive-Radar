@@ -63,7 +63,7 @@ export default function ReportView({ report }: { report: Report }) {
 
   return (
     <EvidenceProvider evidence={report.raw_evidence}>
-      <div className="space-y-8">
+      <div className="space-y-8 ca-stagger">
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div>
