@@ -131,16 +131,24 @@ class LLMClient:
         except ImportError as e:
             raise RuntimeError("openai SDK 未安装。pip install -r requirements.txt") from e
 
-        api_key = os.environ.get("ARK_API_KEY")
+        # 默认走小米 MiMo(TTFT ~2-5s,远快于 Doubao EP 的 25-38s);ARK_* 仍可回退兼容
+        api_key = os.environ.get("LLM_API_KEY") or os.environ.get("ARK_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "ARK_API_KEY 未设置。若要无 API key 跑骨架,设置 ANALYZER_MOCK=1"
+                "LLM_API_KEY / ARK_API_KEY 未设置。若要无 API key 跑骨架,设置 ANALYZER_MOCK=1"
             )
+        base_url = (
+            os.environ.get("LLM_BASE_URL")
+            or os.environ.get("ARK_BASE_URL")
+            or "https://token-plan-cn.xiaomimimo.com/v1"
+        )
+        timeout = float(os.environ.get("LLM_TIMEOUT", os.environ.get("ARK_TIMEOUT", "120")))
+        import httpx  # 关掉系统代理(实测代理给 LLM 调用平添 ~10s)
         self._client = OpenAI(
             api_key=api_key,
-            base_url=os.environ.get("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
-            timeout=float(os.environ.get("ARK_TIMEOUT", "90")),
-            max_retries=int(os.environ.get("ARK_MAX_RETRIES", "1")),
+            base_url=base_url,
+            max_retries=int(os.environ.get("LLM_MAX_RETRIES", os.environ.get("ARK_MAX_RETRIES", "1"))),
+            http_client=httpx.Client(trust_env=False, timeout=timeout),
         )
         return self._client
 
@@ -165,7 +173,7 @@ class LLMClient:
             )
 
         client = self._ensure()
-        model = model or os.environ.get("ARK_EP", "doubao-seed-2-0-lite")
+        model = model or os.environ.get("LLM_MODEL") or os.environ.get("ARK_EP") or "mimo-v2.5-pro"
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
