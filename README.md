@@ -28,9 +28,12 @@ $env:ARK_API_KEY="ark-xxx"
 $env:ARK_EP="ep-xxx"
 python -m src.graph
 
-# 3c. 启 Streamlit 前端(推荐演示用)
-streamlit run frontend/app.py
-# 浏览器打开 http://localhost:8501
+# 3c. 启前端工作台(推荐演示用) — React + FastAPI
+#   终端1: 后端 API
+./.venv/Scripts/python.exe -m uvicorn api.main:app --port 8000
+#   终端2: 前端
+cd web && npm install && npm run dev
+# 浏览器打开 http://localhost:3000
 ```
 
 ---
@@ -97,11 +100,12 @@ src/
   writer.py       Markdown 渲染 + [SXXXXXXX] chip
   reviewer.py     R1-R7 规则 + minimal/full 模式 + degraded_writer
   graph.py        LangGraph 编排 + main 入口 + 流式生成器
-frontend/
-  app.py          Streamlit 前端 (sidebar 配置 + 3 tabs)
+api/
+  main.py         FastAPI: intake/run(SSE)/reports 端点,包装 src/
+web/              React(Next.js) 前端工作台
+  app/ components/ lib/   意图澄清 + Agent剧场 + 结构化报告 + 引用溯源 + 档案diff
 docs/
-  design-v2.1.md  设计基线
-  design-v2.2.md  当前设计 (v2.2.1 frozen)
+  design-v2.2.md  当前设计 (v2.2.1 frozen, 含答辩/合规/质量附录)
 ```
 
 ---
@@ -150,7 +154,7 @@ docs/
 | `src/analyzer.py` | 让 TRAE 帮你迭代 prompt 结构、调整 quick_validate 规则边界 | commit message 加 `[TRAE]` 前缀,如 `[TRAE] tighten facts prompt for pricing extraction` |
 | `prompts/analyzer_*.md` | TRAE 配合实测样本调 prompt few-shot | 同上;同时在 prompt 文件头加 `> 最后调整:via TRAE 2026-05-XX` |
 | `src/reviewer.py` 规则函数 | TRAE 帮你为新规则写实现 + 单元测试 | 单测放在 `tests/test_reviewer.py`,文件头注释标 `# TRAE-assisted` |
-| `frontend/app.py` | TRAE 改 Streamlit 布局、加 chart 可视化 | commit `[TRAE-UI]` 前缀 |
+| `web/` (Next.js) | TRAE 改前端布局、加 chart 可视化、打磨 Agent 剧场动效 | commit `[TRAE-UI]` 前缀 |
 | `data/sample_sources_*.json` | TRAE 帮造新行业 evidence | data 文件 `_meta.generated_by: "TRAE-assisted"` |
 
 **为什么这样做**:评分维度 4 明确要求"TRAE 等 AI 编程工具的使用痕迹清晰",commit message + 文件头注释能让评委 5 秒看到协作证据,不需要现场演示 TRAE 操作。

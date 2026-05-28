@@ -1201,7 +1201,7 @@ ark_client = OpenAI(
 - **UA**：`AICompetitiveRadar/0.1 (+https://github.com/yangyuxin-hub/AI-Competitive-Radar; academic)`。
 - **数据使用**：评论只摘要不重发、带 source_url、不抓 author、不存 cookie、不绕付费/登录墙。用户访谈数据预案：脱敏 + 明示授权 + 可撤回（evidence_id 哈希定位）。
 - **模型/隐私**：`ARK_API_KEY` 走环境变量，`.gitignore` 配 `.env*`/`secrets/`；报告 header 标 `报告ID + 数据截止日`，不暗示实时态势；out/ cache/ logs/ 均本地 git-ignore。
-- **依赖 License**：langgraph(MIT) / openai(Apache-2.0) / httpx(BSD-3) / beautifulsoup4(MIT) / pyyaml(MIT) / python-dotenv(BSD-3) / streamlit(Apache-2.0)，全部允许商用修改。
+- **依赖 License**：langgraph(MIT) / openai(Apache-2.0) / httpx(BSD-3) / beautifulsoup4(MIT) / pyyaml(MIT) / python-dotenv(BSD-3) / fastapi(MIT) / next·react(MIT)，全部允许商用修改。
 - **赛后待办**：轮换 ARK API key；生产化接官方 Reddit API。
 
 ## 附录 C · LLM-as-Judge 报告质量评测（已落地：`src/judge.py` + `config/quality_rubric.yaml`）

@@ -29,6 +29,8 @@ export default function AnalyzeFlow() {
   const [userInput, setUserInput] = useState("");
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Answers>({});
+  const [customOpts, setCustomOpts] = useState<Record<string, string[]>>({});
+  const [customInput, setCustomInput] = useState<Record<string, string>>({});
   const [events, setEvents] = useState<ProgressEvent[]>([]);
   const [report, setReport] = useState<Report | null>(null);
   const [busy, setBusy] = useState(false);
@@ -46,6 +48,8 @@ export default function AnalyzeFlow() {
         init[q.key] = q.multi ? [...q.suggested] : (q.suggested[0] ?? q.options[0] ?? "");
       }
       setAnswers(init);
+      setCustomOpts({});
+      setCustomInput({});
       setStage("clarify");
     } catch (e) {
       setError(String(e));
@@ -65,6 +69,23 @@ export default function AnalyzeFlow() {
       }
       return { ...prev, [q.key]: opt };
     });
+  }
+
+  function addCustom(q: Question) {
+    const val = (customInput[q.key] ?? "").trim();
+    if (!val) return;
+    setCustomOpts((prev) => {
+      const cur = prev[q.key] ?? [];
+      return cur.includes(val) ? prev : { ...prev, [q.key]: [...cur, val] };
+    });
+    setAnswers((prev) => {
+      if (q.multi) {
+        const cur = (prev[q.key] as string[]) ?? [];
+        return cur.includes(val) ? prev : { ...prev, [q.key]: [...cur, val] };
+      }
+      return { ...prev, [q.key]: val };
+    });
+    setCustomInput((prev) => ({ ...prev, [q.key]: "" }));
   }
 
   function onRun() {
@@ -94,6 +115,8 @@ export default function AnalyzeFlow() {
     setUserInput("");
     setQuestions([]);
     setAnswers({});
+    setCustomOpts({});
+    setCustomInput({});
     setEvents([]);
     setReport(null);
     setError(null);
@@ -143,9 +166,12 @@ export default function AnalyzeFlow() {
           </p>
           {questions.map((q) => (
             <div key={q.key}>
-              <div className="mb-2 text-sm font-medium text-neutral-200">{q.question}</div>
-              <div className="flex flex-wrap gap-2">
-                {q.options.map((opt) => {
+              <div className="mb-2 text-sm font-medium text-neutral-200">
+                {q.question}
+                {q.multi && <span className="ml-2 text-xs text-neutral-500">可多选</span>}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {[...q.options, ...(customOpts[q.key] ?? [])].map((opt) => {
                   const cur = answers[q.key];
                   const on = q.multi
                     ? ((cur as string[]) ?? []).includes(opt)
@@ -164,6 +190,31 @@ export default function AnalyzeFlow() {
                     </button>
                   );
                 })}
+                {q.allow_custom && (
+                  <span className="inline-flex items-center gap-1">
+                    <input
+                      value={customInput[q.key] ?? ""}
+                      onChange={(e) =>
+                        setCustomInput((p) => ({ ...p, [q.key]: e.target.value }))
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          addCustom(q);
+                        }
+                      }}
+                      placeholder="其他…"
+                      className="w-28 rounded-lg border border-dashed border-white/15 bg-transparent px-2.5 py-1.5 text-sm text-neutral-200 outline-none placeholder:text-neutral-600 focus:border-sky-500/50"
+                    />
+                    <button
+                      onClick={() => addCustom(q)}
+                      disabled={!(customInput[q.key] ?? "").trim()}
+                      className="rounded-lg border border-white/10 px-2.5 py-1.5 text-sm text-neutral-400 transition hover:text-sky-300 disabled:opacity-40"
+                    >
+                      ＋添加
+                    </button>
+                  </span>
+                )}
               </div>
             </div>
           ))}
