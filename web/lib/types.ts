@@ -74,6 +74,14 @@ export type ProgressEvent =
       evidence_count: number;
       retry_count: Record<string, number>;
       reject_target: string | null;
+      collector_phase?: string;
+      message?: string;
+      product?: string;
+      source_counts?: Record<string, number>;
+      coverage?: Record<string, number>;
+      official_count?: number;
+      pricing_count?: number;
+      product_count?: number;
       quality?: {
         quality_score?: number;
         passed_rules?: string[];

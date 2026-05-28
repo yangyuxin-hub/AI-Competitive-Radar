@@ -1,14 +1,10 @@
-"""FastAPI 后端 — 竞品分析 Agent 工作台
-
-把 src/ 现成函数包成 HTTP/SSE，供 Next.js 前端调用。后端逻辑零改动。
-
-启动:
-    ./.venv/Scripts/python.exe -m uvicorn api.main:app --reload --port 8000
-"""
+"""FastAPI backend for the competitive analysis workspace."""
 from __future__ import annotations
 
 import json
+import queue
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -23,6 +19,7 @@ sys.path.insert(0, str(_ROOT))
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv(_ROOT / ".env")
 except ImportError:
     pass
@@ -41,6 +38,13 @@ _NODE_META = {
     "degraded_writer": ("⚠️", "降级输出"),
 }
 
+_COLLECTOR_PHASE_META = {
+    "start": ("📥", "采集开始"),
+    "url_discovery": ("🌐", "发现入口"),
+    "fetch": ("📦", "拉取证据"),
+    "complete": ("✅", "采集完成"),
+}
+
 app = FastAPI(title="AI Competitive Radar API")
 app.add_middleware(
     CORSMiddleware,
@@ -49,10 +53,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# ────────────────────────────────────────────────────────────────────────────
-# 请求模型
-# ────────────────────────────────────────────────────────────────────────────
 
 class ProposeReq(BaseModel):
     user_input: str
@@ -67,10 +67,6 @@ class RunReq(BaseModel):
     user_input: Optional[str] = None
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# 意图澄清
-# ────────────────────────────────────────────────────────────────────────────
-
 @app.post("/api/intake/propose")
 def api_propose(req: ProposeReq):
     draft = intake.propose(req.user_input, req.domain_hint)
@@ -84,46 +80,87 @@ def api_questions(req: ProposeReq):
     return {"draft": draft, "questions": questions}
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# 运行分析 (SSE)
-# ────────────────────────────────────────────────────────────────────────────
-
 def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-def _run_stream(args: dict):
-    """逐节点 yield SSE 事件，结束后持久化并发 done 事件。"""
-    final_state: dict = {}
-    try:
-        for node_name, state in run_demo_streaming(**args):
-            final_state = state
-            icon, label = _NODE_META.get(node_name, ("•", node_name))
-            evidence = state.get("raw_evidence") or []
-            qr = state.get("quality_report") or {}
-            event = {
-                "type": "progress",
-                "node": node_name,
-                "icon": icon,
-                "label": label,
-                "status": state.get("status"),
-                "evidence_count": len(evidence),
-                "retry_count": state.get("retry_count") or {},
-                "reject_target": state.get("reject_target"),
-            }
-            if node_name in ("reviewer", "degraded_writer") and qr:
-                event["quality"] = {
-                    "quality_score": qr.get("quality_score"),
-                    "passed_rules": qr.get("passed_rules"),
-                    "failed_rules": qr.get("failed_rules"),
-                    "warning_rules": qr.get("warning_rules"),
-                }
-            yield _sse(event)
+def _collector_event_to_progress(event: dict) -> dict:
+    phase = event.get("phase", "fetch")
+    icon, label = _COLLECTOR_PHASE_META.get(phase, ("📦", "采集"))
+    return {
+        "type": "progress",
+        "node": "collector",
+        "icon": icon,
+        "label": label,
+        "status": event.get("status") or "running",
+        "evidence_count": int(event.get("evidence_count") or 0),
+        "retry_count": {},
+        "reject_target": None,
+        "collector_phase": phase,
+        "message": event.get("message"),
+        "product": event.get("product"),
+        "source_counts": event.get("source_counts"),
+        "coverage": event.get("coverage"),
+        "official_count": event.get("official_count"),
+        "pricing_count": event.get("pricing_count"),
+        "product_count": event.get("product_count"),
+    }
 
-        report = _persist_report(final_state)
-        yield _sse({"type": "done", "report_id": report["report_id"], "report": report})
-    except Exception as e:  # noqa: BLE001
-        yield _sse({"type": "error", "message": str(e)})
+
+def _node_progress(node_name: str, state: dict) -> dict:
+    icon, label = _NODE_META.get(node_name, ("•", node_name))
+    evidence = state.get("raw_evidence") or []
+    qr = state.get("quality_report") or {}
+    event = {
+        "type": "progress",
+        "node": node_name,
+        "icon": icon,
+        "label": label,
+        "status": state.get("status"),
+        "evidence_count": len(evidence),
+        "retry_count": state.get("retry_count") or {},
+        "reject_target": state.get("reject_target"),
+    }
+    if node_name in ("reviewer", "degraded_writer") and qr:
+        event["quality"] = {
+            "quality_score": qr.get("quality_score"),
+            "passed_rules": qr.get("passed_rules"),
+            "failed_rules": qr.get("failed_rules"),
+            "warning_rules": qr.get("warning_rules"),
+        }
+    return event
+
+
+def _run_stream(args: dict):
+    events: "queue.Queue[dict | None]" = queue.Queue()
+    final_box: dict[str, dict] = {}
+
+    def worker() -> None:
+        from src.collector import set_progress_callback as set_collector_progress
+
+        def on_collector(evt: dict) -> None:
+            events.put(_collector_event_to_progress(evt))
+
+        set_collector_progress(on_collector)
+        try:
+            for node_name, state in run_demo_streaming(**args):
+                final_box["state"] = state
+                events.put(_node_progress(node_name, state))
+            report = _persist_report(final_box.get("state") or {})
+            events.put({"type": "done", "report_id": report["report_id"], "report": report})
+        except Exception as exc:  # noqa: BLE001
+            events.put({"type": "error", "message": str(exc)})
+        finally:
+            set_collector_progress(None)
+            events.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    while True:
+        event = events.get()
+        if event is None:
+            break
+        yield _sse(event)
 
 
 @app.post("/api/run")
@@ -142,10 +179,6 @@ def api_run(req: RunReq):
     )
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# 档案
-# ────────────────────────────────────────────────────────────────────────────
-
 def _load_index() -> list[dict]:
     if _INDEX.exists():
         return json.loads(_INDEX.read_text(encoding="utf-8"))
@@ -156,7 +189,6 @@ def _persist_report(state: dict) -> dict:
     _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     meta = state.get("analysis_meta") or {}
     now = datetime.now(timezone.utc)
-    # report_id 唯一化：原 meta.report_id 可能跨次重复，加时间戳后缀
     base_id = meta.get("report_id") or "CR"
     report_id = f"{base_id}-{now.strftime('%H%M%S')}"
     report = {
