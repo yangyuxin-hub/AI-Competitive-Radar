@@ -1171,3 +1171,61 @@ ark_client = OpenAI(
 4. `prompts/analyzer_derivations.md` — Step 2 system prompt + few-shot
 
 代码骨架在 sample 数据锁定后再起。
+
+---
+
+# 附录（答辩与质量材料）
+
+> 原 `comparison.md` / `compliance.md` / `quality-judge-design.md` / `report-improvement-roadmap.md` 已并入此处，已完成项不再赘述。
+
+## 附录 A · 人工 vs 本系统量化对比（评分维度 3）
+
+| 维度 | 传统人工 | 本系统 | 提升 |
+|------|---------|--------|------|
+| 端到端耗时 | 3-4 小时 | 5-6 分钟（Mock < 5s） | ~38× |
+| 证据覆盖量 | 15-20 条（凭印象） | 30 条/域（可扩） | 1.5-2× |
+| 结构一致性 | 字段各异 | 100% 符合 Schema v2.1 | 质变 |
+| 可重现性 | 同题差 30%+ | 同输入 → 一致输出 | 质变 |
+| 可溯源性 | 段落引用易断链 | 每条结论 chip 点开原文+可信度 | 质变 |
+
+> 后三项是人工流程**根本做不到**的能力，不是「快多少倍」。
+
+**真豆包实测（2026-05-24）**：PM 域 30 evidence / 2 次 LLM 调用 / 33.6K token / 324s / 首轮 passed / 成本 ≈ ¥0.01；AI 编程域 34 evidence / 130s / 首轮 passed。两域 hard gate R1/R4/R5 均零 error。可重现性演示当天现场跑 3 次（注意 `temperature=0.2`，需 100% 一致改 `src/llm.py` 设 0）。
+
+**诚实局限**：强依赖 evidence 质量（三层 Adapter 兜底）；few-shot 用 Cursor 示例（实测未污染 PM 域）；真豆包 2-5 分钟（Cache/Mock 加速）；Reddit/HN 数据只摘要标 URL，生产应接官方 API。
+
+## 附录 B · 合规要点（评分维度 5）
+
+- **采集**：仅抓配置文件列出的 vendor 自家页（`/features` `/pricing`，均在 robots.txt allow）；Reddit/HN 真实 Adapter 未实装，生产应接 PRAW / Algolia API。Demo 默认走 MockAdapter，真实抓取需 `ENABLE_LIVE_FETCH=1` 显式开启。
+- **频率**：httpx connect 5s / read 15s 双 timeout；`ThreadPoolExecutor(max_workers=6)` 并发上限；CacheAdapter TTL 内不重抓。单次 demo ≤ 6 次 GET。
+- **UA**：`AICompetitiveRadar/0.1 (+https://github.com/yangyuxin-hub/AI-Competitive-Radar; academic)`。
+- **数据使用**：评论只摘要不重发、带 source_url、不抓 author、不存 cookie、不绕付费/登录墙。用户访谈数据预案：脱敏 + 明示授权 + 可撤回（evidence_id 哈希定位）。
+- **模型/隐私**：`ARK_API_KEY` 走环境变量，`.gitignore` 配 `.env*`/`secrets/`；报告 header 标 `报告ID + 数据截止日`，不暗示实时态势；out/ cache/ logs/ 均本地 git-ignore。
+- **依赖 License**：langgraph(MIT) / openai(Apache-2.0) / httpx(BSD-3) / beautifulsoup4(MIT) / pyyaml(MIT) / python-dotenv(BSD-3) / streamlit(Apache-2.0)，全部允许商用修改。
+- **赛后待办**：轮换 ARK API key；生产化接官方 Reddit API。
+
+## 附录 C · LLM-as-Judge 报告质量评测（已落地：`src/judge.py` + `config/quality_rubric.yaml`）
+
+离线 Pointwise harness，**不替代** R1-R7：R1-R7 判「可信地报」（确定性/二值/可打回），judge 衡量「报得好不好」（主观/连续分/不打回）。
+
+- **4 维（1-5 锚定）**：准确性（evidence_coverage_ratio）/ 洞察力（insight_density=(swot+建议)/功能行）/ 实用性（recs_with_action_fields_ratio）/ 聚焦度（feature vs analysis_focus）。锚点见 rubric yaml。
+- **确定性信号 + LLM 混合**：先用代码算客观比例塞进 prompt，LLM 再据此给 1-5 + justification(引 chip) + fix_suggestion，`temperature=0`，压方差。
+- **加权按 purpose 浮动**：default 准确.30/洞察.30/实用.25/聚焦.15；「定价」类准确.40；「差异化」类洞察.40。`warn_threshold=3` 列「待优化方向」。
+- **闭环**：跑分 → 读低分维度 + fix → 改 `prompts/analyzer_*.md` → 重生成 → 再跑分。命令 `python -m src.judge out/<domain>`。
+- **未做**：接进 graph 当 judge 节点（full 模式按阈值打回）；Pairwise A/B；人工 gold 校准集。
+
+## 附录 D · 报告质量改进 — 未完成项（roadmap 残留）
+
+> 已完成并从原文档删除：R2 warning 修复（commit bcb2c06）、质量 Rubric（judge 已落地，见附录 C）、intake 意图问询层（`src/intake.py`，Planner 雏形）。
+
+| 优先级 | 改动 | 目标 |
+|--------|------|------|
+| P0 | Writer 增「核心结论 / 分析边界 / 竞品分层 / 竞争逻辑」区块 | 报告先回答「分析什么、为什么这些竞品重要」，避免被 Agent 能力稀释 |
+| P1 | 扩展 AI coding 竞品池（+Supermaven / JetBrainsAI / Tabnine） | 从 3 产品功能对比升级为竞品分层竞争地图 |
+| P1 | Recommendation 加落地字段（expected_impact / success_metric / risk / time_horizon / owner_hint） | 建议从口号变 action plan |
+| P2 | 新增 Planner 节点（graph entry 从 collector 改 planner，输出 analysis_scope / hypotheses / evidence_plan） | Collector 按问题补证据，Reviewer 校验是否回答初始假设 |
+| P2 | 反证检查 | 防止报告只为 target 背书 |
+
+**报告结构目标顺序**：核心结论 → 分析边界 → 竞品分层 → 功能差距 → 定价 → 用户画像痛点 → 竞争逻辑 → 改进建议 → SWOT。
+
+**竞品分层示例**：AI 原生编辑器(Cursor/Windsurf 抢入口) / 通用插件(Copilot/Supermaven 抢 IDE Tab) / IDE 原生(JetBrainsAI 抢语义重构) / 企业安全(Tabnine 抢合规采购)。
