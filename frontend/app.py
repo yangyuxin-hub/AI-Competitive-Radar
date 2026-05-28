@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import re
 import sys
@@ -869,211 +870,534 @@ def render_quality_report(qr: dict) -> None:
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# 页面布局
+# ChatGPT 风格工作台(v2.3 UI)
 # ────────────────────────────────────────────────────────────────────────────
 
-st.set_page_config(
-    page_title="竞品分析 Agent",
-    page_icon="🔍",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+DOCUMENT_MODES = {"empty", "clarifying", "running", "ready", "error"}
 
-inject_design_system()
-topbar()
 
-domains = load_domains()
-
-# ─── 应用 intake「智能填写」结果(同样需在 widget 渲染前注入 session_state)──
-_intake_pending = st.session_state.pop("_intake_pending", None)
-if _intake_pending:
-    if _intake_pending.get("domain_key"):
-        load_domains.clear()
-        domains = load_domains()
-        st.session_state["sb_domain"] = _intake_pending["domain_key"]
-    st.session_state["sb_target"] = _intake_pending["target_product"]
-    st.session_state["sb_competitors"] = "\n".join(_intake_pending.get("competitors", []))
-    st.session_state["sb_focus"] = (_intake_pending.get("analysis_focus") or [""])[0]
-
-# ─── 应用一键预设(session_state 注入需在 widget 渲染前发生)───────
-PRESETS = {
-    "ai_coding_mock": {
-        "label": "💻 AI 编程演示", "domain": "ai_coding",
-        "mock": True, "loop": False, "mode": "minimal",
-        "desc": "Cursor vs Windsurf vs GitHubCopilot,Mock 模式秒级跑完",
-    },
-    "pm_mock": {
-        "label": "📋 PM 工具演示", "domain": "pm",
-        "mock": True, "loop": False, "mode": "minimal",
-        "desc": "Notion vs Asana vs Linear,验证零代码切换行业",
-    },
-    "loop_demo": {
-        "label": "🔄 打回闭环演示", "domain": "ai_coding",
-        "mock": True, "loop": True, "mode": "minimal",
-        "desc": "Analyzer 首轮注入 3 错误 → Reviewer 打回 → 重试通过",
-    },
+def inject_chat_styles() -> None:
+    st.markdown(
+        """
+<style>
+.stApp {
+  background: #ffffff;
+  color: #0d0d0d;
 }
-
-_pending = st.session_state.pop("_preset_pending", None)
-if _pending:
-    p = PRESETS[_pending]
-    st.session_state["sb_domain"] = p["domain"]
-    st.session_state["sb_mock"] = p["mock"]
-    st.session_state["sb_loop"] = p["loop"]
-    st.session_state["sb_mode"] = p["mode"]
-    st.session_state["_auto_run"] = True
-    dom_default = domains.get(p["domain"], {})
-    st.session_state["sb_target"] = dom_default.get("target_product", "")
-    st.session_state["sb_competitors"] = "\n".join(dom_default.get("competitors", []))
-    st.session_state["sb_focus"] = (dom_default.get("analysis_focus") or [""])[0]
-
-with st.sidebar:
-    st.markdown("### 行业域")
-    domain_key = st.selectbox(
-        "选择行业",
-        list(domains.keys()),
-        format_func=lambda k: f"{domains[k].get('name', '')} · {k}",
-        help="domains.yaml 配置;切换 = 改一行 env DOMAIN=xxx,不改代码",
-        key="sb_domain",
+.block-container {
+  max-width: none;
+  padding: 0 42px 28px 42px;
+}
+header[data-testid="stHeader"],
+div[data-testid="stToolbar"],
+div[data-testid="stDecoration"],
+div[data-testid="stStatusWidget"],
+#MainMenu {
+  display: none;
+}
+[data-testid="stSidebar"] {
+  background: #f7f7f7;
+  border-right: 1px solid #e5e5e5;
+}
+[data-testid="stSidebar"] > div:first-child {
+  padding: 12px 12px 18px;
+}
+[data-testid="stSidebar"] hr {
+  margin: 12px 0;
+}
+.ca-app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  gap: 16px;
+  padding: 8px 0 4px;
+  margin-bottom: 0;
+}
+.ca-app-title {
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 760;
+  letter-spacing: 0;
+  margin: 0;
+}
+.ca-app-subtitle {
+  color: var(--ca-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  margin-top: 6px;
+  max-width: 760px;
+}
+.ca-chat-caption {
+  color: var(--ca-muted);
+  font-size: 12px;
+  margin: 0 0 12px;
+}
+.ca-home-spacer {
+  height: clamp(18px, 8vh, 70px);
+}
+.ca-home-title {
+  font-size: 29px;
+  line-height: 1.2;
+  font-weight: 520;
+  letter-spacing: 0;
+  margin: 0 0 18px;
+  text-align: center;
+}
+div[data-testid="stForm"] {
+  border: 0;
+  padding: 0;
+}
+div[data-testid="stForm"] div[data-testid="stTextInput"] input {
+  min-height: 56px;
+  border-radius: 28px;
+  border: 1px solid #d4d4d4;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .07);
+  padding-left: 20px;
+  padding-right: 20px;
+  font-size: 15px;
+  background: #ffffff;
+}
+div[data-testid="stForm"] .stButton > button {
+  min-height: 56px;
+  border-radius: 28px;
+}
+.ca-suggestion-row {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+.ca-suggestion {
+  border: 1px solid #dedede;
+  background: #fff;
+  color: #4f4f4f;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 14px;
+}
+.ca-home-send-note {
+  color: #8a8a8a;
+  text-align: center;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.ca-sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 760;
+  margin: 4px 4px 16px;
+}
+.ca-sidebar-logo {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #dddddd;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  background: #ffffff;
+  font-weight: 850;
+}
+.ca-side-section {
+  margin: 16px 4px 6px;
+  color: #5f5f5f;
+  font-size: 12px;
+  font-weight: 700;
+}
+.ca-side-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 7px 10px;
+  color: #171717;
+  border-radius: 10px;
+  font-size: 14px;
+}
+.ca-side-item.active {
+  background: #ececec;
+}
+.ca-recent {
+  padding: 7px 10px;
+  color: #242424;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ca-side-foot {
+  border-top: 1px solid #e5e5e5;
+  margin-top: 18px;
+  padding: 12px 6px 2px;
+  color: #555;
+  font-size: 13px;
+}
+.ca-doc-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  border-bottom: 1px solid var(--ca-line);
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+}
+.ca-doc-title {
+  font-size: 18px;
+  font-weight: 830;
+  line-height: 1.25;
+}
+.ca-doc-meta {
+  color: var(--ca-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+.ca-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+.ca-running-note {
+  border: 1px solid rgba(36, 93, 143, .24);
+  background: #eef6ff;
+  color: #1c4f7c;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+.ca-empty strong {
+  color: var(--ca-ink);
+}
+div[data-testid="stChatInput"] {
+  max-width: 820px;
+  margin: 8px auto 0;
+}
+div[data-testid="stChatMessage"] {
+  max-width: 820px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.stButton > button,
+.stDownloadButton > button {
+  border-radius: 12px;
+  min-height: 40px;
+  background: #0d0d0d;
+  color: #ffffff;
+  border: 1px solid #0d0d0d;
+  font-weight: 650;
+}
+.stButton > button:hover,
+.stDownloadButton > button:hover {
+  background: #2b2b2b;
+  color: #ffffff;
+  border-color: #2b2b2b;
+}
+[data-testid="stSidebar"] .stButton > button {
+  justify-content: flex-start;
+  background: #ececec;
+  color: #171717;
+  border: 1px solid transparent;
+  box-shadow: none;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+  background: #e3e3e3;
+  color: #171717;
+  border-color: transparent;
+}
+</style>
+        """,
+        unsafe_allow_html=True,
     )
-    dom_cfg = domains.get(domain_key, {})
-
-    st.markdown("### 分析对象")
-    if "sb_target" not in st.session_state:
-        st.session_state["sb_target"] = dom_cfg.get("target_product", "")
-    if "sb_competitors" not in st.session_state:
-        st.session_state["sb_competitors"] = "\n".join(dom_cfg.get("competitors", []))
-    if "sb_focus" not in st.session_state:
-        st.session_state["sb_focus"] = (dom_cfg.get("analysis_focus") or [""])[0]
-
-    target = st.text_input("目标产品", key="sb_target")
-    competitors_text = st.text_area("竞品(每行一个)", height=80, key="sb_competitors")
-    focus = st.text_input("分析焦点", key="sb_focus")
-
-    st.markdown("### Agent 配置")
-    reviewer_mode = st.radio(
-        "Reviewer 模式",
-        ["minimal", "full"],
-        index=0,
-        horizontal=True,
-        help="minimal: R1/R4/R5 当 error,其余 warning;full: R1-R5 都是 error,R6 终轮启用",
-        key="sb_mode",
-    )
-
-    use_mock = st.toggle(
-        "🧪 Mock 模式(跳过真实 LLM)",
-        help="开启后 Analyzer 直接返回 sample_report.json,用于评委演示时省 API 调用",
-        key="sb_mock",
-    )
-
-    enable_live = False
-    if not use_mock:
-        enable_live = st.toggle(
-            "🌐 实时抓取官网(ENABLE_LIVE_FETCH)",
-            help="开启后 Collector 会用 httpx + BS4 真正抓取产品官网页面作为证据源。关闭则只用缓存和 Mock 数据兜底。",
-            key="sb_live",
-        )
-
-    demo_loop = st.toggle(
-        "🔄 演示打回闭环",
-        help=(
-            "开启后(仅 Mock 模式生效)Analyzer 首轮故意输出含 R1+R5+R4 错误的 schema,"
-            "Reviewer 检出 → reject_target=analyzer → 重试 → 第二轮干净通过。"
-            "用于演示评分维度 1 的「反馈闭环真实可触发,且重做后输出有改善」。"
-        ),
-        key="sb_loop",
-    )
-
-    if not use_mock:
-        st.markdown("### ARK API")
-        api_key = st.text_input(
-            "ARK_API_KEY",
-            value=os.environ.get("ARK_API_KEY", ""),
-            type="password",
-        )
-        ep = st.text_input(
-            "ARK_EP",
-            value=os.environ.get("ARK_EP", "ep-20260514111325-xjmj7"),
-        )
-    else:
-        api_key, ep = "", ""
-
-    st.divider()
-    run_btn = st.button(
-        "🚀 开始分析",
-        type="primary",
-        use_container_width=True,
-        disabled=not target or not focus,
-    )
 
 
-# ─── 一句话智能填写面板(主区顶部,回填上面的侧栏配置)────────────
-intake_panel(domains)
+def init_chat_state() -> None:
+    defaults = {
+        "chat_messages": [],
+        "pending_questions": None,
+        "pending_prompt": None,
+        "run_request": None,
+        "active_run": False,
+        "completed": False,
+        "final_state": None,
+        "node_log": [],
+        "document_mode": "empty",
+        "last_run_meta": None,
+        "last_error": "",
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# 运行逻辑
-# ────────────────────────────────────────────────────────────────────────────
+def append_chat(role: str, content: str) -> None:
+    st.session_state.chat_messages.append({"role": role, "content": content})
 
-# session_state 初始化
-if "completed" not in st.session_state:
+
+def reset_workspace() -> None:
+    st.session_state.chat_messages = []
+    st.session_state.pending_questions = None
+    st.session_state.pending_prompt = None
+    st.session_state.run_request = None
+    st.session_state.active_run = False
     st.session_state.completed = False
-if "final_state" not in st.session_state:
     st.session_state.final_state = None
-if "node_log" not in st.session_state:
     st.session_state.node_log = []
+    st.session_state.document_mode = "empty"
+    st.session_state.last_run_meta = None
+    st.session_state.last_error = ""
 
-auto_run = st.session_state.pop("_auto_run", False)
-should_run = run_btn or auto_run
 
-if should_run:
-    # 注入环境变量
-    os.environ["DOMAIN"] = domain_key
-    os.environ["REVIEWER_MODE"] = reviewer_mode
-    if use_mock:
+def product_hits(user_input: str) -> list[str]:
+    products = intake.load_products()
+    text = (user_input or "").lower()
+    hits: list[str] = []
+    for name, cfg in products.items():
+        candidates = [name] + list(cfg.get("aliases") or [])
+        if any(c and c.lower() in text for c in candidates):
+            hits.append(name)
+    return hits
+
+
+def infer_focus(user_input: str) -> Optional[str]:
+    text = user_input or ""
+    rules = [
+        (("代码补全", "补全体验", "autocomplete", "completion"), "代码补全体验"),
+        (("定价", "价格", "pricing", "price"), "定价策略"),
+        (("任务管理", "项目管理", "协作"), "团队任务管理体验"),
+        (("功能", "feature", "能力"), "核心功能完整度"),
+        (("上手", "易用", "体验", "ux"), "用户体验与上手成本"),
+        (("集成", "生态", "插件"), "集成与生态"),
+        (("痛点", "差评", "用户反馈"), "用户痛点"),
+    ]
+    lowered = text.lower()
+    for keywords, focus in rules:
+        if any(k.lower() in lowered for k in keywords):
+            return focus
+    return None
+
+
+def default_purpose(dom_cfg: dict) -> str:
+    return dom_cfg.get("analysis_purpose") or "学习竞品优点，优化自身产品"
+
+
+def question_default(questions: list[dict], key: str) -> object:
+    for q in questions:
+        if q.get("key") == key:
+            suggested = q.get("suggested") or []
+            if q.get("multi"):
+                return suggested
+            return suggested[0] if suggested else ""
+    return []
+
+
+def direct_meta_from_prompt(user_input: str, questions: list[dict], dom_cfg: dict) -> Optional[dict]:
+    hits = product_hits(user_input)
+    focus = infer_focus(user_input)
+    if len(hits) < 2 or not focus:
+        return None
+
+    answers = {
+        "target": hits[0],
+        "competitors": hits[1:],
+        "focus": focus,
+        "purpose": question_default(questions, "purpose") or default_purpose(dom_cfg),
+        "persist": "仅本次运行",
+    }
+    return intake.assemble_meta(answers, user_input=user_input)
+
+
+def domain_meta(domain_key: str, domains: dict) -> dict:
+    dom_cfg = domains.get(domain_key, {})
+    target = dom_cfg.get("target_product") or "Cursor"
+    competitors = list(dom_cfg.get("competitors") or ["Windsurf", "GitHubCopilot"])
+    focus = list(dom_cfg.get("analysis_focus") or ["代码补全体验"])
+    return {
+        "target_product": target,
+        "competitors": competitors,
+        "analysis_focus": focus,
+        "analysis_purpose": default_purpose(dom_cfg),
+        "user_input": f"分析 {target} 和 {', '.join(competitors)} 在 {focus[0]} 上的差距",
+    }
+
+
+def queue_run(meta: dict, note: Optional[str] = None) -> None:
+    st.session_state.run_request = meta
+    st.session_state.last_run_meta = meta
+    st.session_state.active_run = True
+    st.session_state.completed = False
+    st.session_state.final_state = None
+    st.session_state.node_log = []
+    st.session_state.document_mode = "running"
+    if note:
+        append_chat("assistant", note)
+
+
+def start_intake_or_run(user_input: str, domain_key: str, domains: dict) -> None:
+    append_chat("user", user_input)
+
+    # 已有报告后的轻量继续对话：新分析走 intake，其余提示当前能力边界。
+    if st.session_state.get("final_state") and not looks_like_new_analysis(user_input):
+        lowered = user_input.lower()
+        if "下载" in user_input or "download" in lowered:
+            append_chat("assistant", "右侧文档顶部可以下载 `report.md`，质检和结构化结果也可以分别下载 JSON。")
+        elif "证据" in user_input or "引用" in user_input:
+            append_chat("assistant", "右侧切到“证据”标签页，可以按 `[SXXXXXXX]` 查看每条结论对应的原始片段。")
+        elif "质量" in user_input or "评分" in user_input:
+            append_chat("assistant", "右侧“质检”标签页展示 Reviewer 的规则结果、质量分、warning 和 error。")
+        else:
+            append_chat(
+                "assistant",
+                "当前版本支持查看、下载、重新生成报告，也可以直接输入新的竞品分析需求开始下一轮。自由报告问答还没有接入。",
+            )
+        return
+
+    dom_cfg = domains.get(domain_key, {})
+    with st.spinner("正在理解你的分析需求..."):
+        questions = [c.to_dict() for c in intake.intake_questions(user_input, domain_key)]
+
+    meta = direct_meta_from_prompt(user_input, questions, dom_cfg)
+    if meta:
+        queue_run(
+            meta,
+            "信息足够清楚。我会先让 Collector 收集证据，然后生成右侧报告文档。",
+        )
+        return
+
+    st.session_state.pending_questions = [
+        q for q in questions if q.get("key") in {"target", "competitors", "focus", "purpose"}
+    ]
+    st.session_state.pending_prompt = user_input
+    st.session_state.document_mode = "clarifying"
+    append_chat("assistant", "Collector 开始收集前还需要确认几个点，避免把产品或分析维度理解错。")
+
+
+def looks_like_new_analysis(user_input: str) -> bool:
+    text = (user_input or "").lower()
+    if product_hits(user_input):
+        return True
+    keywords = ("分析", "对比", "比较", "竞品", "差距", "vs", "versus", "重新生成")
+    return any(k in text for k in keywords)
+
+
+def render_clarification_form() -> None:
+    questions = st.session_state.get("pending_questions") or []
+    if not questions:
+        return
+
+    with st.chat_message("assistant"):
+        st.markdown("请确认下面的信息，确认后我会开始生成报告。")
+        with st.form("clarification_form"):
+            answers: dict = {}
+            for q in questions:
+                key = q["key"]
+                opts = list(q.get("options") or [])
+                suggested = list(q.get("suggested") or [])
+                label = q.get("question") or key
+                widget_key = f"chat_clarify_{key}"
+
+                if q.get("multi"):
+                    default = [s for s in suggested if s in opts]
+                    answers[key] = st.multiselect(label, opts, default=default, key=widget_key)
+                elif opts:
+                    default_idx = opts.index(suggested[0]) if suggested and suggested[0] in opts else 0
+                    answers[key] = st.selectbox(label, opts, index=default_idx, key=widget_key)
+                else:
+                    answers[key] = st.text_input(label, key=widget_key)
+
+                if q.get("allow_custom"):
+                    custom = st.text_input(
+                        f"自定义{label}（可留空）",
+                        key=f"chat_clarify_custom_{key}",
+                    )
+                    if custom.strip():
+                        answers[key] = (
+                            [c.strip() for c in custom.split(",") if c.strip()]
+                            if q.get("multi")
+                            else custom.strip()
+                        )
+
+            submitted = st.form_submit_button("开始生成报告", type="primary", use_container_width=True)
+
+    if not submitted:
+        return
+
+    meta = intake.assemble_meta(answers, user_input=st.session_state.get("pending_prompt"))
+    if not meta.get("target_product") or not meta.get("competitors") or not meta.get("analysis_focus"):
+        st.warning("目标产品、竞品和分析焦点都需要确认后才能开始。")
+        return
+
+    append_chat(
+        "assistant",
+        f"收到。我会分析 {meta['target_product']} 和 {', '.join(meta['competitors'])} 在 {meta['analysis_focus'][0]} 上的差距。",
+    )
+    st.session_state.pending_questions = None
+    st.session_state.pending_prompt = None
+    queue_run(meta)
+    st.rerun()
+
+
+def configure_runtime(settings: dict) -> None:
+    os.environ["DOMAIN"] = settings["domain_key"]
+    os.environ["REVIEWER_MODE"] = settings["reviewer_mode"]
+    if settings["use_mock"]:
         os.environ["ANALYZER_MOCK"] = "1"
     else:
         os.environ.pop("ANALYZER_MOCK", None)
-        if api_key:
-            os.environ["ARK_API_KEY"] = api_key
-        if ep:
-            os.environ["ARK_EP"] = ep
-    if demo_loop:
+        if settings.get("api_key"):
+            os.environ["ARK_API_KEY"] = settings["api_key"]
+        if settings.get("ep"):
+            os.environ["ARK_EP"] = settings["ep"]
+    if settings.get("demo_loop"):
         os.environ["DEMO_LOOP"] = "1"
     else:
         os.environ.pop("DEMO_LOOP", None)
-    if enable_live:
+    if settings.get("enable_live"):
         os.environ["ENABLE_LIVE_FETCH"] = "1"
     else:
         os.environ.pop("ENABLE_LIVE_FETCH", None)
 
-    st.session_state.completed = False
-    st.session_state.final_state = None
-    st.session_state.node_log = []
 
-    competitors_list = [c.strip() for c in competitors_text.splitlines() if c.strip()]
+def execute_analysis(meta: dict, settings: dict) -> None:
+    configure_runtime(settings)
+    st.session_state.active_run = True
+    st.session_state.document_mode = "running"
 
+    competitors = list(meta.get("competitors") or [])
+    focus = list(meta.get("analysis_focus") or [""])
+
+    st.markdown(
+        f"""
+<div class="ca-running-note">
+  正在生成 <b>{esc(meta.get('target_product'))}</b> vs <b>{esc(', '.join(competitors))}</b>
+  的竞品报告。生成完成后会自动切换为可下载文档。
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
     metric_grid([
-        ("目标产品", target, "本轮分析的主产品", ""),
-        ("竞品数量", len(competitors_list), ", ".join(competitors_list), ""),
-        ("分析焦点", focus, "报告会围绕该维度展开", ""),
-        ("运行模式", "Mock" if use_mock else "LLM", reviewer_mode, ""),
+        ("目标产品", meta.get("target_product", ""), "本轮分析的主产品", ""),
+        ("竞品数量", len(competitors), ", ".join(competitors), ""),
+        ("分析焦点", focus[0] if focus else "", "报告会围绕该维度展开", ""),
+        ("运行模式", "Mock" if settings["use_mock"] else "LLM", settings["reviewer_mode"], ""),
     ])
-    section("Agent 运行进度", f"{target} vs {', '.join(competitors_list)}")
+
     progress_box = st.container()
-    substep_box = st.empty()  # Analyzer 子步骤实时刷新(消灭 80s 静默)
+    substep_box = st.empty()
     log_box = st.empty()
 
     try:
-        from src.graph import run_demo_streaming
         from src.analyzer import set_progress_callback
-        from src.llm import set_llm_callback
         from src.collector import reset_registry
+        from src.graph import run_demo_streaming
+        from src.llm import set_llm_callback
 
-        reset_registry()  # 重置 registry，确保 ENABLE_LIVE_FETCH 等配置生效
+        reset_registry()
 
-        # ─── 注册子步骤回调,Analyzer / LLM 调用期间实时刷新 ──────────
-        substep_state = {"current": "", "tokens": 0}
+        substep_state = {"current": "等待 Analyzer 调度", "tokens": 0, "cls": ""}
 
         def _render_substep():
             line = substep_state["current"]
@@ -1089,16 +1413,18 @@ if should_run:
             step = evt.get("step", "?")
             phase = evt.get("phase", "?")
             attempt = evt.get("attempt", 1)
-            label = {"facts": "Step 1/2 事实层(features + pricing + persona)",
-                     "derivations": "Step 2/2 推导层(swot + recommendations)"}.get(step, step)
+            label = {
+                "facts": "Step 1/2 事实层(features + pricing + persona)",
+                "derivations": "Step 2/2 推导层(swot + recommendations)",
+            }.get(step, step)
             if phase == "start":
-                substep_state["current"] = f"📡 调用中:{label} · 第 {attempt} 次"
+                substep_state["current"] = f"调用中:{label} · 第 {attempt} 次"
                 substep_state["cls"] = ""
             elif phase == "done":
-                substep_state["current"] = f"✅ 完成:{label} · 第 {attempt} 次"
+                substep_state["current"] = f"完成:{label} · 第 {attempt} 次"
                 substep_state["cls"] = "done"
             elif phase == "repair":
-                substep_state["current"] = f"🔧 自修复:{label} 检出 {evt.get('issues', 0)} issue,重新调用 LLM"
+                substep_state["current"] = f"自修复:{label} 检出 {evt.get('issues', 0)} issue，重新调用 LLM"
                 substep_state["cls"] = "repair"
             _render_substep()
 
@@ -1111,26 +1437,24 @@ if should_run:
         set_progress_callback(on_analyzer)
         set_llm_callback(on_llm)
 
-        # 节点活动指示(带 pass 计数,允许重复出现)
         node_counts = {"collector": 0, "analyzer": 0, "writer": 0, "reviewer": 0}
+        placeholders = {}
         with progress_box:
-            placeholders = {}
             for node in node_counts:
                 placeholders[node] = st.empty()
-                placeholders[node].markdown(
-                    step_html(node, "wait", "等待调度"),
-                    unsafe_allow_html=True,
-                )
+                placeholders[node].markdown(step_html(node, "wait", "等待调度"), unsafe_allow_html=True)
 
         t0 = time.time()
+        last_t = t0
         final_state = None
         events_text: list[str] = []
-        last_t = t0
 
         for node_name, state_after in run_demo_streaming(
-            target_product=target,
-            competitors=competitors_list,
-            analysis_focus=[focus],
+            target_product=meta.get("target_product"),
+            competitors=competitors,
+            analysis_focus=focus,
+            analysis_purpose=meta.get("analysis_purpose"),
+            user_input=meta.get("user_input"),
         ):
             now = time.time()
             step_duration = now - last_t
@@ -1138,54 +1462,41 @@ if should_run:
             elapsed = now - t0
             icon = _NODE_ICONS.get(node_name, "▶️")
 
-            # 节点 pass 计数 + 状态
             if node_name in node_counts:
                 node_counts[node_name] += 1
                 pass_n = node_counts[node_name]
                 status = state_after.get("status", "?")
                 reject = state_after.get("reject_target")
-
-                # Reviewer 打回的特殊提示
                 if node_name == "reviewer" and reject and status == "running":
                     qr = state_after.get("quality_report") or {}
                     err_n = len(qr.get("errors") or [])
-                    placeholders[node_name].markdown(
-                        step_html(
-                            node_name,
-                            "warn",
-                            f"第 {pass_n} 次，检出 {err_n} 个 error，打回 {_NODE_LABELS.get(reject, reject)}，耗时 {step_duration:.1f}s",
-                        ),
-                        unsafe_allow_html=True,
+                    meta_text = (
+                        f"第 {pass_n} 次，检出 {err_n} 个 error，"
+                        f"打回 {_NODE_LABELS.get(reject, reject)}，耗时 {step_duration:.1f}s"
                     )
+                    placeholders[node_name].markdown(step_html(node_name, "warn", meta_text), unsafe_allow_html=True)
                 elif node_name == "reviewer" and status == "passed":
                     placeholders[node_name].markdown(
                         step_html(node_name, "ok", f"第 {pass_n} 次，通过质检，耗时 {step_duration:.1f}s"),
                         unsafe_allow_html=True,
                     )
                 else:
-                    suffix = f"· 第 {pass_n} 次" if pass_n > 1 else ""
+                    suffix = f" · 第 {pass_n} 次" if pass_n > 1 else ""
                     placeholders[node_name].markdown(
-                        step_html(node_name, "ok", f"完成 {suffix}，耗时 {step_duration:.1f}s"),
+                        step_html(node_name, "ok", f"完成{suffix}，耗时 {step_duration:.1f}s"),
                         unsafe_allow_html=True,
                     )
             else:
-                # 例如 degraded_writer
-                with progress_box:
-                    st.markdown(
-                        step_html(node_name, "warn", f"完成，耗时 {step_duration:.1f}s"),
-                        unsafe_allow_html=True,
-                    )
+                st.markdown(step_html(node_name, "warn", f"完成，耗时 {step_duration:.1f}s"), unsafe_allow_html=True)
 
             final_state = state_after
-
-            # 完整事件日志
             retry_info = state_after.get("retry_count") or {}
             retry_text = " ".join(f"{k}:{v}" for k, v in retry_info.items() if v)
             qr = state_after.get("quality_report") or {}
             err_n = len(qr.get("errors") or [])
             line = f"[{elapsed:6.1f}s] {icon} {node_name:9s} status={state_after.get('status', '?'):9s}"
             if state_after.get("reject_target"):
-                line += f" → reject={state_after['reject_target']}"
+                line += f" -> reject={state_after['reject_target']}"
             if err_n:
                 line += f" errors={err_n}"
             if retry_text:
@@ -1198,26 +1509,36 @@ if should_run:
         st.session_state.final_state = final_state
         st.session_state.completed = True
         st.session_state.node_log = events_text
+        st.session_state.run_request = None
+        st.session_state.active_run = False
+        st.session_state.document_mode = "ready"
 
-        status = final_state.get("status") if final_state else "?"
-        if status == "passed":
-            st.success(f"🎉 完成 · status={status} · 用时 {time.time()-t0:.1f}s")
-        elif status == "degraded":
-            st.warning(f"⚠️ 降级输出 · status={status} · 用时 {time.time()-t0:.1f}s")
-        else:
-            st.info(f"status={status}")
+        status = final_state.get("status") if final_state else "unknown"
+        append_chat("assistant", f"报告已生成，状态 `{status}`。你可以在右侧查看、下载，或继续输入新的分析需求。")
+        st.rerun()
 
     except Exception as e:
-        st.error(f"运行失败: {type(e).__name__}: {e}")
-        st.exception(e)
+        st.session_state.last_error = f"{type(e).__name__}: {e}"
+        st.session_state.run_request = None
+        st.session_state.active_run = False
+        st.session_state.document_mode = "error"
+        append_chat("assistant", f"运行失败：{type(e).__name__}: {e}")
+        st.rerun()
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# 结果展示(完成后)
-# ────────────────────────────────────────────────────────────────────────────
+def source_summary(raw_ev: list[dict]) -> str:
+    source_counts = {}
+    for ev in raw_ev:
+        src = ev.get("collection_source", "unknown")
+        source_counts[src] = source_counts.get(src, 0) + 1
+    parts = []
+    for src, icon in [("live", "🌐"), ("cache", "💾"), ("mock", "🧪"), ("unknown", "❓")]:
+        if src in source_counts:
+            parts.append(f"{icon} {src}: {source_counts[src]}")
+    return " · ".join(parts) if parts else "无"
 
-if st.session_state.completed and st.session_state.final_state:
-    fs = st.session_state.final_state
+
+def render_ready_document(fs: dict) -> None:
     report_md = fs.get("report_draft") or ""
     raw_ev = fs.get("raw_evidence") or []
     qr = fs.get("quality_report") or {}
@@ -1225,133 +1546,336 @@ if st.session_state.completed and st.session_state.final_state:
     status = fs.get("status", "?")
     status_label, status_cls = _STATUS_STYLE.get(status, (status, ""))
 
-    source_counts = {}
-    for ev in raw_ev:
-        s = ev.get("collection_source", "unknown")
-        source_counts[s] = source_counts.get(s, 0) + 1
-    source_parts = []
-    for s_key, s_icon in [("live", "🌐"), ("cache", "💾"), ("mock", "🧪")]:
-        if s_key in source_counts:
-            source_parts.append(f"{s_icon} {s_key}: {source_counts[s_key]}")
-    source_text = " · ".join(source_parts) if source_parts else "无"
+    st.markdown(
+        f"""
+<div class="ca-doc-header">
+  <div>
+    <div class="ca-doc-title">竞品分析报告</div>
+    <div class="ca-doc-meta">状态 {esc(status_label)} · 质量分 {esc(qr.get('quality_score', '?'))}/100 · 证据 {len(raw_ev)} 条 · 引用 {len(eids)} 条</div>
+  </div>
+  <span class="ca-pill {esc(status_cls)}">{esc(status)}</span>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    d1, d2, d3 = st.columns(3)
+    with d1:
+        st.download_button(
+            "下载 report.md",
+            data=report_md,
+            file_name="report.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+    with d2:
+        st.download_button(
+            "下载 quality_report.json",
+            data=json.dumps(qr, ensure_ascii=False, indent=2),
+            file_name="quality_report.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+    with d3:
+        st.download_button(
+            "下载 schema_draft.json",
+            data=json.dumps(fs.get("schema_draft") or {}, ensure_ascii=False, indent=2),
+            file_name="schema_draft.json",
+            mime="application/json",
+            use_container_width=True,
+        )
 
     st.markdown(
         f"""
 <div class="ca-strip">
-  <span class="ca-pill {esc(status_cls)}">状态：{esc(status_label)}</span>
-  <span class="ca-pill">质量分：{esc(qr.get('quality_score', '?'))}/100</span>
-  <span class="ca-pill">证据：{len(raw_ev)} 条</span>
-  <span class="ca-pill">引用：{len(eids)} 条</span>
   <span class="ca-pill">Reviewer：{esc(qr.get('mode', '?'))}</span>
-  <span class="ca-pill">来源分布：{esc(source_text)}</span>
+  <span class="ca-pill">来源分布：{esc(source_summary(raw_ev))}</span>
+  <span class="ca-pill">重试：{esc(fs.get('retry_count', {}))}</span>
 </div>
         """,
         unsafe_allow_html=True,
     )
 
-    tab_report, tab_quality, tab_schema, tab_raw = st.tabs([
-        "报告与证据",
-        "质检详情",
-        "结构化结果",
-        "原始证据",
-    ])
-
+    tab_report, tab_evidence, tab_quality, tab_schema = st.tabs(["报告", "证据", "质检", "结构化"])
     with tab_report:
-        left, right = st.columns([3, 2], gap="medium")
-        with left:
-            section("竞品报告", "带证据 chip 的 Markdown 输出 · 点击 chip 跳右侧证据")
-            valid_ids = {e["evidence_id"] for e in raw_ev}
-            rewritten = rewrite_chips(report_md, valid_ids, raw_ev)
-            st.markdown(f"<div class='ca-report-shell'>\n\n{rewritten}\n\n</div>",
-                        unsafe_allow_html=True)
-        with right:
-            render_evidence_panel(eids, raw_ev)
-
+        valid_ids = {e["evidence_id"] for e in raw_ev}
+        rewritten = rewrite_chips(report_md, valid_ids, raw_ev)
+        st.markdown(f"<div class='ca-report-shell'>\n\n{rewritten}\n\n</div>", unsafe_allow_html=True)
+    with tab_evidence:
+        render_evidence_panel(eids, raw_ev)
     with tab_quality:
         render_quality_report(qr)
         section("节点执行日志", "LangGraph 事件序列")
         st.code("\n".join(st.session_state.node_log), language=None)
-        section("重试明细", "按 target 分桶")
-        st.json(fs.get("retry_count", {}))
-
     with tab_schema:
-        section("schema_draft", "Analyzer 两步式输出")
-        st.caption("包含 feature_tree、pricing_model、user_persona、swot、recommendations。")
         st.json(fs.get("schema_draft") or {}, expanded=False)
 
-    with tab_raw:
-        section("raw_evidence", f"Collector 抓取并去重后的 {len(raw_ev)} 条证据")
-        for ev in raw_ev:
-            label = f"`{ev['evidence_id']}` · **{ev['product']}** · {ev['claim_type']} · {ev['source_bias']}"
-            with st.expander(label):
-                st.json(ev, expanded=False)
 
-elif not should_run:
-    # 首屏:一键演示 + 简介
-    section("一键演示", "点击下面任意场景,系统会自动填写配置并立刻开始分析")
+def render_document_workspace(settings: dict) -> None:
+    run_request = st.session_state.get("run_request")
+    if run_request:
+        execute_analysis(run_request, settings)
+        return
 
-    preset_cols = st.columns(len(PRESETS))
-    for col, (key, cfg) in zip(preset_cols, PRESETS.items()):
-        with col:
-            st.markdown(
-                f"""
-<div class="ca-preset">
-  <div class="ca-preset-name">{esc(cfg['label'])}</div>
-  <div class="ca-preset-desc">{esc(cfg['desc'])}</div>
+    mode = st.session_state.get("document_mode", "empty")
+    if mode not in DOCUMENT_MODES:
+        mode = "empty"
+
+    if mode == "ready" and st.session_state.get("final_state"):
+        render_ready_document(st.session_state.final_state)
+    elif mode == "clarifying":
+        st.markdown(
+            """
+<div class="ca-empty">
+  <strong>等待补充信息</strong><br>
+  左侧确认目标产品、竞品和分析焦点后，Collector 才会开始收集证据。
 </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            if st.button(f"启动 {cfg['label']}", key=f"preset_btn_{key}", use_container_width=True):
-                st.session_state["_preset_pending"] = key
+            """,
+            unsafe_allow_html=True,
+        )
+    elif mode == "error":
+        st.error(st.session_state.get("last_error") or "运行失败")
+    else:
+        st.markdown(
+            """
+<div class="ca-empty">
+  <strong>右侧会生成报告文档</strong><br>
+  在左侧输入类似“分析 Cursor 和 Windsurf、GitHub Copilot 在代码补全体验上的差距”，
+  生成后这里会显示可下载的 Markdown 报告、证据和质检结果。
+</div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_chat_controls(domains: dict) -> None:
+    fs = st.session_state.get("final_state")
+    if fs:
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("重新生成", use_container_width=True):
+                meta = st.session_state.get("last_run_meta")
+                if meta:
+                    queue_run(meta, "我会基于上一轮参数重新生成报告。")
+                    st.rerun()
+        with b2:
+            if st.button("开始新分析", use_container_width=True):
+                st.session_state.pending_questions = None
+                st.session_state.pending_prompt = None
+                append_chat("assistant", "直接输入新的分析需求即可，我会重新判断是否需要追问。")
                 st.rerun()
+        report_md = fs.get("report_draft") or ""
+        st.download_button(
+            "下载当前报告",
+            data=report_md,
+            file_name="report.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
 
-    metric_grid([
-        ("输入", "一句话", "分析 X 和 Y 在 Z 维度的差距", ""),
-        ("流程", "4 Agent", "Collector → Analyzer → Writer → Reviewer", ""),
-        ("质量", "R1-R7", "证据、推理链、结构一致性检查", ""),
-        ("输出", "可溯源", "点 chip 跳证据,看原文 snippet 与可信度", ""),
-    ])
 
-    section("自定义演示路径", "或者从侧栏自己配,启动 Mock 模式无需 API key")
+def render_chat_panel(domain_key: str, domains: dict) -> None:
+    for msg in st.session_state.chat_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    render_clarification_form()
+    render_chat_controls(domains)
+
+    if st.session_state.get("active_run"):
+        st.info("Agent 正在右侧生成报告，完成后可以继续对话。")
+
+    prompt = st.chat_input("输入竞品分析需求，或继续询问当前报告")
+    if prompt:
+        start_intake_or_run(prompt, domain_key, domains)
+        st.rerun()
+
+
+def render_home_page(domain_key: str, domains: dict) -> None:
     st.markdown(
         """
-<div class="ca-grid">
-  <div class="ca-card">
-    <div class="ca-card-title">Step 1</div>
-    <div class="ca-card-value" style="font-size:20px">选择行业域</div>
-    <div class="ca-card-note">左侧会自动填入目标产品、竞品和分析焦点。</div>
+<div class="ca-home-spacer"></div>
+<div class="ca-home-title">有什么可以帮忙的？</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    _, input_col, _ = st.columns([1.1, 2.5, 1.1])
+    with input_col:
+        with st.form("home_prompt_form", clear_on_submit=True, border=False):
+            text_col, send_col = st.columns([8, 0.85], gap="small")
+            with text_col:
+                prompt = st.text_input(
+                    "输入竞品分析需求",
+                    placeholder="分析 Cursor 和 Windsurf、GitHub Copilot 在代码补全体验上的差距",
+                    label_visibility="collapsed",
+                )
+            with send_col:
+                submitted = st.form_submit_button("↑", use_container_width=True)
+        st.markdown("<div class='ca-home-send-note'>输入需求后点击发送，Agent 会先判断是否需要追问。</div>", unsafe_allow_html=True)
+    st.markdown(
+        """
+<div class="ca-suggestion-row">
+  <span class="ca-suggestion">生成竞品报告</span>
+  <span class="ca-suggestion">查找证据</span>
+  <span class="ca-suggestion">对比定价</span>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if submitted and prompt.strip():
+        start_intake_or_run(prompt.strip(), domain_key, domains)
+        st.rerun()
+
+
+def render_app_header(settings: dict) -> None:
+    st.markdown(
+        f"""
+<div class="ca-app-header">
+  <div>
+    <div class="ca-app-title">Competitive Radar <span style="color:#777;font-size:14px">⌄</span></div>
   </div>
-  <div class="ca-card">
-    <div class="ca-card-title">Step 2</div>
-    <div class="ca-card-value" style="font-size:20px">开启 Mock</div>
-    <div class="ca-card-note">没有 API key 也能完整跑完图编排和报告展示。</div>
-  </div>
-  <div class="ca-card">
-    <div class="ca-card-title">Step 3</div>
-    <div class="ca-card-value" style="font-size:20px">开始分析</div>
-    <div class="ca-card-note">实时观察每个 Agent 的状态、打回和质检结果。</div>
-  </div>
-  <div class="ca-card">
-    <div class="ca-card-title">Step 4</div>
-    <div class="ca-card-value" style="font-size:20px">展开证据</div>
-    <div class="ca-card-note">报告中的证据 chip 会映射到右侧原始 snippet。</div>
+  <div class="ca-strip">
+    <span class="ca-pill {'bad' if settings['use_mock'] else 'ok'}">{'Mock' if settings['use_mock'] else 'LLM'}</span>
+    <span class="ca-pill">Reviewer: {esc(settings['reviewer_mode'])}</span>
   </div>
 </div>
         """,
         unsafe_allow_html=True,
     )
 
-    section("打回闭环演示", "评分维度 1 的关键看点")
+
+st.set_page_config(
+    page_title="竞品分析 Agent",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+inject_design_system()
+inject_chat_styles()
+init_chat_state()
+
+domains = load_domains()
+if "chat_domain" not in st.session_state:
+    st.session_state.chat_domain = os.environ.get("DOMAIN", "ai_coding") if os.environ.get("DOMAIN") in domains else "ai_coding"
+if "chat_mock" not in st.session_state:
+    st.session_state.chat_mock = True
+if "chat_mode" not in st.session_state:
+    st.session_state.chat_mode = "minimal"
+if "chat_loop" not in st.session_state:
+    st.session_state.chat_loop = False
+if "chat_live" not in st.session_state:
+    st.session_state.chat_live = False
+
+with st.sidebar:
     st.markdown(
         """
-<div class="ca-card">
-  <div class="ca-card-value" style="font-size:22px">Analyzer 首轮故意犯错，Reviewer 发现后打回，第二轮修复通过。</div>
-  <div class="ca-card-note">
-    勾选“演示打回闭环”后，系统会触发 R1 引用不存在、R5 分数公式冲突、R4 推理链断裂。
-    最终事件序列为 collector → analyzer → writer → reviewer → analyzer → writer → reviewer，能清楚展示“发现问题、定位目标、重做变好”的闭环。
-  </div>
+<div class="ca-sidebar-brand">
+  <div class="ca-sidebar-logo">CR</div>
+  <div>Competitive Radar</div>
+</div>
+<div class="ca-side-item active">＋ 新分析</div>
+<div class="ca-side-item">⌕ 搜索报告</div>
+<div class="ca-side-item">▣ 项目</div>
+<div class="ca-side-item">◇ Agent</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if st.button("新建对话", use_container_width=True):
+        reset_workspace()
+        st.rerun()
+
+    st.markdown(
+        """
+<div class="ca-side-section">最近</div>
+<div class="ca-recent">Cursor 代码补全差距</div>
+<div class="ca-recent">Notion 任务管理对比</div>
+<div class="ca-recent">Reviewer 打回闭环演示</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if st.button("运行 AI 编程演示", use_container_width=True):
+        reset_workspace()
+        st.session_state.chat_domain = "ai_coding"
+        st.session_state.chat_mock = True
+        st.session_state.chat_loop = False
+        meta = domain_meta("ai_coding", domains)
+        append_chat("user", meta["user_input"])
+        queue_run(meta, "我会使用 AI 编程工具预设开始生成报告。")
+        st.rerun()
+
+    with st.expander("运行设置", expanded=False):
+        domain_options = list(domains.keys()) or ["ai_coding"]
+        domain_key = st.selectbox(
+            "默认行业",
+            domain_options,
+            format_func=lambda k: f"{domains.get(k, {}).get('name', '')} · {k}",
+            key="chat_domain",
+        )
+        reviewer_mode = st.radio(
+            "Reviewer 模式",
+            ["minimal", "full"],
+            horizontal=True,
+            key="chat_mode",
+        )
+        use_mock = st.toggle("Mock 模式", key="chat_mock")
+        enable_live = False
+        if not use_mock:
+            enable_live = st.toggle("实时抓取官网", key="chat_live")
+        demo_loop = st.toggle("演示打回闭环", key="chat_loop")
+
+        if not use_mock:
+            api_key = st.text_input("ARK_API_KEY", value=os.environ.get("ARK_API_KEY", ""), type="password")
+            ep = st.text_input("ARK_EP", value=os.environ.get("ARK_EP", "ep-20260514111325-xjmj7"))
+        else:
+            api_key, ep = "", ""
+
+    st.markdown(
+        """
+<div class="ca-side-foot">
+  <div>本地演示版</div>
+  <div style="color:#888;font-size:12px;margin-top:2px">Evidence traceable</div>
 </div>
         """,
         unsafe_allow_html=True,
     )
+
+settings = {
+    "domain_key": domain_key,
+    "reviewer_mode": reviewer_mode,
+    "use_mock": use_mock,
+    "enable_live": enable_live,
+    "demo_loop": demo_loop,
+    "api_key": api_key,
+    "ep": ep,
+}
+configure_runtime(settings)
+
+render_app_header(settings)
+
+mode = st.session_state.get("document_mode", "empty")
+is_empty_home = (
+    mode == "empty"
+    and not st.session_state.get("chat_messages")
+    and not st.session_state.get("pending_questions")
+    and not st.session_state.get("run_request")
+    and not st.session_state.get("final_state")
+)
+
+if is_empty_home:
+    render_home_page(domain_key, domains)
+elif mode in {"running", "ready"} or st.session_state.get("run_request") or st.session_state.get("final_state"):
+    chat_col, doc_col = st.columns([0.72, 1.28], gap="large")
+    with chat_col:
+        render_chat_panel(domain_key, domains)
+    with doc_col:
+        render_document_workspace(settings)
+else:
+    left_pad, chat_col, right_pad = st.columns([0.18, 0.64, 0.18])
+    with chat_col:
+        render_chat_panel(domain_key, domains)
+    if mode == "error":
+        st.error(st.session_state.get("last_error") or "运行失败")
+
+st.stop()
