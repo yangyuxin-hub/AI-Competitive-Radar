@@ -62,6 +62,7 @@ export default function AnalyzeFlow() {
   const [customInput, setCustomInput] = useState<Record<string, string>>({});
   const [events, setEvents] = useState<ProgressEvent[]>([]);
   const [report, setReport] = useState<Report | null>(null);
+  const [intakeReasoning, setIntakeReasoning] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,8 +71,11 @@ export default function AnalyzeFlow() {
     setBusy(true);
     setError(null);
     try {
-      const { questions } = await fetchQuestions(userInput, domainHint);
+      const { questions, draft } = await fetchQuestions(userInput, domainHint);
       setQuestions(questions);
+      setIntakeReasoning(
+        typeof draft?.reasoning === "string" ? draft.reasoning : ""
+      );
       const init: Answers = {};
       for (const q of questions) {
         init[q.key] = q.multi ? [...q.suggested] : (q.suggested[0] ?? q.options[0] ?? "");
@@ -147,6 +151,7 @@ export default function AnalyzeFlow() {
     setAnswers({});
     setCustomOpts({});
     setCustomInput({});
+    setIntakeReasoning("");
     setEvents([]);
     setReport(null);
     setError(null);
@@ -205,8 +210,16 @@ export default function AnalyzeFlow() {
 
       {stage === "clarify" && (
         <div className="space-y-6">
+          {intakeReasoning && (
+            <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.05] p-4">
+              <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-sky-300">
+                <span>🧭</span> Agent 的判断
+              </div>
+              <p className="text-sm leading-relaxed text-neutral-300">{intakeReasoning}</p>
+            </div>
+          )}
           <p className="text-sm text-neutral-400">
-            Agent 已根据你的描述预填，下面可点选调整：
+            下面是预填的分析配置，可点选调整：
           </p>
           {questions.map((q) => (
             <div key={q.key}>
@@ -309,6 +322,7 @@ function useElapsed(running: boolean) {
 }
 
 function AgentProgress({ events }: { events: ProgressEvent[] }) {
+  const [collectExpanded, setCollectExpanded] = useState(false);
   const progress = events.filter((e) => e.type === "progress") as Extract<
     ProgressEvent,
     { type: "progress" }
@@ -344,8 +358,12 @@ function AgentProgress({ events }: { events: ProgressEvent[] }) {
         : "正在连接分析服务";
   const collectorEvents = progress.filter((e) => e.node === "collector");
   const collectorPhase = collectorEvents.at(-1)?.collector_phase;
-  const collectorMessage = collectorEvents.at(-1)?.message;
-  const recentCollector = collectorEvents.slice(-4).reverse();
+  // 采集全过程(状态思考 + 进度),按时间顺序，供折叠/滚动查看
+  const allCollector = events.filter(
+    (e) => (e.type === "status" || e.type === "progress") && e.node === "collector"
+  ) as Extract<ProgressEvent, { type: "status" | "progress" }>[];
+  const collectorMessage = (allCollector.at(-1) as { message?: string } | undefined)?.message;
+  const shownCollector = collectExpanded ? allCollector : allCollector.slice(-5);
 
   return (
     <div className="space-y-6 py-6">
@@ -416,30 +434,47 @@ function AgentProgress({ events }: { events: ProgressEvent[] }) {
       <div className="mx-auto max-w-lg rounded-xl border border-white/10 bg-white/[0.02] p-4">
         <div className="mb-3 flex items-center justify-between text-sm text-neutral-300">
           <div className="flex items-center gap-2">
-            <span className="text-base">{collectorEvents.at(-1)?.icon ?? "📥"}</span>
-            <span className="font-medium">收集进度</span>
+            <span className="text-base">{allCollector.at(-1)?.icon ?? "📥"}</span>
+            <span className="font-medium">收集过程</span>
             {collectorPhase && (
               <span className="rounded bg-sky-500/15 px-2 py-0.5 text-[11px] text-sky-300">
                 {collectorPhase}
               </span>
             )}
+            <span className="text-[11px] text-neutral-600">共 {allCollector.length} 步</span>
           </div>
-          <span className="font-mono text-neutral-500">{collectorEvents.at(-1)?.evidence_count ?? 0} 证据</span>
+          <div className="flex items-center gap-3">
+            <span className="font-mono text-neutral-500">
+              {allCollector.at(-1)?.evidence_count ?? 0} 证据
+            </span>
+            {allCollector.length > 5 && (
+              <button
+                onClick={() => setCollectExpanded((v) => !v)}
+                className="rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-neutral-400 transition hover:text-sky-300"
+              >
+                {collectExpanded ? "收拢" : `展开全部 (${allCollector.length})`}
+              </button>
+            )}
+          </div>
         </div>
-        <div className="space-y-1.5">
-          {(collectorMessage || recentCollector.length === 0) && (
+        <div
+          className={`space-y-1.5 ${collectExpanded ? "max-h-72 overflow-y-auto pr-1" : ""}`}
+        >
+          {shownCollector.length === 0 && (
             <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-neutral-400">
-              {collectorMessage ?? "正在等待采集结果"}
+              正在等待采集结果
             </div>
           )}
-          {recentCollector.map((e, idx) => (
+          {shownCollector.map((e, idx) => (
             <div
-              key={`${e.node}-${idx}-${e.message ?? ""}`}
-              className="flex items-center gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-neutral-400"
+              key={`c-${idx}`}
+              className="flex items-start gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-neutral-400"
             >
-              <span className="text-neutral-200">{e.icon}</span>
-              <span className="text-neutral-300">{e.message ?? e.label}</span>
-              <span className="ml-auto font-mono text-neutral-600">{e.evidence_count} 条</span>
+              <span className="shrink-0 text-neutral-200">{e.icon}</span>
+              <span className="text-neutral-300">
+                {(e as { message?: string }).message ?? e.label}
+              </span>
+              <span className="ml-auto shrink-0 font-mono text-neutral-600">{e.evidence_count} 条</span>
             </div>
           ))}
         </div>
