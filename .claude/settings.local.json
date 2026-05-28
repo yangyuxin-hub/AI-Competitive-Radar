@@ -17,13 +17,22 @@
       "Bash(git merge *)",
       "Bash(git checkout *)",
       "Bash(git pull *)",
+      "Bash(git push *)",
+      "Bash(git branch *)",
+      "Bash(git stash *)",
       "Bash(python *)",
       "Bash(ANALYZER_MOCK=1 DOMAIN=ai_coding python -m src.graph)",
       "Bash(ANALYZER_MOCK=1 python -m src.graph)",
-      "Bash(streamlit run *)",
-      "Bash(STREAMLIT_EMAIL=noreply@example.com streamlit run frontend/app.py --server.headless true --server.port 8501)",
-      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8501)",
-      "WebFetch(domain:localhost)"
+      "Bash(playwright install *)",
+      "Bash(ENABLE_LIVE_FETCH=1 python *)",
+      "Bash(pip show *)",
+      "Bash(nslookup)",
+      "Bash(curl *)",
+      "Bash(PYTHONIOENCODING=utf-8 python -c ' *)",
+      "Bash(git rm *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(start *)"
     ]
   }
 }

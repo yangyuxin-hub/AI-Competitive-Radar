@@ -10,12 +10,34 @@ import json
 import os
 import re
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed, wait
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date
 from pathlib import Path
 from typing import Callable, Optional
 
 from .state import AgentState
+from .skill import create_skill_registry
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 进度回调(供 api SSE 实时展示采集思考/进度)
+# ────────────────────────────────────────────────────────────────────────────
+
+_PROGRESS_CALLBACK: Optional[Callable[[dict], None]] = None
+
+
+def set_progress_callback(cb: Optional[Callable[[dict], None]]) -> None:
+    global _PROGRESS_CALLBACK
+    _PROGRESS_CALLBACK = cb
+
+
+def _emit_progress(**event) -> None:
+    if _PROGRESS_CALLBACK is None:
+        return
+    try:
+        _PROGRESS_CALLBACK(dict(event))
+    except Exception:
+        pass
 
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -55,7 +77,7 @@ def _resolve_sample_path() -> Path:
 # ────────────────────────────────────────────────────────────────────────────
 
 def _load_products_config() -> dict:
-    """读取 products.yaml，返回 {product_name: {aliases, official_pages, pricing_pages}}"""
+    """读取 products.yaml，返回 {product_name: {official_pages, pricing_pages, aliases}}"""
     path = _ROOT / "config" / "products.yaml"
     try:
         import yaml
@@ -64,51 +86,20 @@ def _load_products_config() -> dict:
         out = {}
         for name, p in (cfg.get("products") or {}).items():
             out[name] = {
-                "aliases": list(p.get("aliases") or []),
                 "official_pages": list(p.get("official_pages") or []),
                 "pricing_pages": list(p.get("pricing_pages") or []),
+                "aliases": list(p.get("aliases") or []),
             }
         return out
     except Exception:
         return {}
 
 
-def _norm_product_key(name: str) -> str:
-    return re.sub(r"[^0-9a-zA-Z]+", "", name or "").lower()
-
-
-def canonical_product_name(product: str, products_config: Optional[dict] = None) -> str:
-    """Map aliases like 'GitHub Copilot' to the products.yaml key 'GitHubCopilot'."""
-    cfg = products_config or _load_products_config()
-    target = _norm_product_key(product)
-    for name, info in cfg.items():
-        candidates = [name] + list(info.get("aliases") or [])
-        if any(_norm_product_key(c) == target for c in candidates):
-            return name
-    return product
-
-
-def product_query_candidates(product: str, products_config: Optional[dict] = None) -> list[str]:
-    """Ordered names to try for URL discovery and cache/mock fallback."""
-    cfg = products_config or _load_products_config()
-    canonical = canonical_product_name(product, cfg)
-    candidates = [product]
-    if canonical not in candidates:
-        candidates.append(canonical)
-    if canonical in cfg:
-        candidates.extend(cfg[canonical].get("aliases") or [])
-    seen: list[str] = []
-    for c in candidates:
-        if c and c not in seen:
-            seen.append(c)
-    return seen
-
-
 def discover_urls(product: str, products_config: Optional[dict] = None) -> dict:
     """为单个产品发现官网 URL。
 
     Mock 模式:从 products.yaml 读取已配置的 URL。
-    真实模式:先试 products.yaml key/alias,再调用 LLM 让其搜索并返回官方 URL。
+    真实模式:调用 LLM 让其搜索并返回官方 URL。
 
     Returns: {"official_pages": [...], "pricing_pages": [...], "source": "config"|"llm"}
     """
@@ -116,28 +107,12 @@ def discover_urls(product: str, products_config: Optional[dict] = None) -> dict:
 
     # 先看 products.yaml 有没有配置
     cfg = products_config or _load_products_config()
-    canonical = canonical_product_name(product, cfg)
-    attempts: list[dict] = []
-    if canonical in cfg and (cfg[canonical]["official_pages"] or cfg[canonical]["pricing_pages"]):
-        attempts.append({"strategy": "products_yaml", "query": canonical, "status": "success"})
-        return {
-            "official_pages": cfg[canonical]["official_pages"],
-            "pricing_pages": cfg[canonical]["pricing_pages"],
-            "source": "config",
-            "canonical_product": canonical,
-            "attempts": attempts,
-        }
+    if product in cfg and (cfg[product]["official_pages"] or cfg[product]["pricing_pages"]):
+        return {**cfg[product], "source": "config"}
 
     # Mock 模式:没有配置就返回空，让 MockAdapter 兜底
     if is_mock_mode():
-        attempts.append({"strategy": "products_yaml", "query": canonical, "status": "miss"})
-        return {
-            "official_pages": [],
-            "pricing_pages": [],
-            "source": "mock",
-            "canonical_product": canonical,
-            "attempts": attempts,
-        }
+        return {"official_pages": [], "pricing_pages": [], "source": "mock"}
 
     # 真实模式:调用 LLM 发现 URL
     from .llm import get_llm
@@ -153,60 +128,18 @@ def discover_urls(product: str, products_config: Optional[dict] = None) -> dict:
             "只返回官方域名下的页面，不要第三方网站。"
         )
 
-    _emit_progress(
-        phase="url_discovery",
-        status="start",
-        product=product,
-        message=f"正在发现 {product} 的官方页和定价页",
-    )
-    errors: list[str] = []
-    for query in product_query_candidates(product, cfg):
-        payload = {"product": query, "language": "en"}
-        try:
-            result = llm.call_json(system, payload, max_tokens=1024, label=f"url_discovery_{query}")
-            official = result.get("official_pages") or []
-            pricing = result.get("pricing_pages") or []
-            status = "success" if official or pricing else "empty"
-            attempts.append({"strategy": "llm_url_discovery", "query": query, "status": status})
-            if official or pricing:
-                _emit_progress(
-                    phase="url_discovery",
-                    status="done",
-                    product=product,
-                    source="llm",
-                    official_count=len(official),
-                    pricing_count=len(pricing),
-                    message=f"{product} 已发现 {len(official)} 个官方页和 {len(pricing)} 个定价页",
-                )
-                return {
-                    "official_pages": official,
-                    "pricing_pages": pricing,
-                    "source": "llm",
-                    "canonical_product": canonical,
-                    "query_used": query,
-                    "reasoning": result.get("reasoning", ""),
-                    "attempts": attempts,
-                }
-        except Exception as e:
-            msg = f"{query}: {type(e).__name__}: {e}"
-            errors.append(msg)
-            attempts.append({"strategy": "llm_url_discovery", "query": query, "status": "error", "error": str(e)})
-            print(f"[collector] URL discovery failed for {query}: {e}")
-    _emit_progress(
-        phase="url_discovery",
-        status="error",
-        product=product,
-        source="error",
-        message=f"{product} URL 发现失败，后续将降级",
-    )
-    return {
-        "official_pages": [],
-        "pricing_pages": [],
-        "source": "error" if errors else "empty",
-        "canonical_product": canonical,
-        "attempts": attempts,
-        "error": "; ".join(errors),
-    }
+    payload = {"product": product, "language": "en"}
+    try:
+        result = llm.call_json(system, payload, max_tokens=1024, label=f"url_discovery_{product}")
+        return {
+            "official_pages": result.get("official_pages") or [],
+            "pricing_pages": result.get("pricing_pages") or [],
+            "source": "llm",
+            "reasoning": result.get("reasoning", ""),
+        }
+    except Exception as e:
+        print(f"[collector] URL discovery failed for {product}: {e}")
+        return {"official_pages": [], "pricing_pages": [], "source": "error", "error": str(e)}
 
 
 def discover_all_urls(products: list[str]) -> dict[str, dict]:
@@ -244,72 +177,108 @@ def discover_all_urls(products: list[str]) -> dict[str, dict]:
     return results
 
 
-def discover_all_urls_with_progress(products: list[str]) -> dict[str, dict]:
-    """Same as discover_all_urls, but emits lightweight progress events."""
-    cfg = _load_products_config()
-    results: dict[str, dict] = {}
-    _emit_progress(
-        phase="url_discovery",
-        status="start",
-        message=f"正在发现 {len(products)} 个产品的采集入口",
-    )
+MAX_EVIDENCE_PER_PRODUCT = 40
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(discover_urls, p, cfg): p for p in products}
-        pending = set(futures)
+
+def cap_evidence_per_product(evidences: list[dict], limit: int = MAX_EVIDENCE_PER_PRODUCT) -> list[dict]:
+    """每个产品按 evidence_confidence 降序取 top limit 条"""
+    by_product: dict[str, list[dict]] = {}
+    for ev in evidences:
+        p = ev.get("product", "unknown")
+        by_product.setdefault(p, []).append(ev)
+
+    result: list[dict] = []
+    for product, items in by_product.items():
+        items.sort(key=lambda e: e.get("evidence_confidence", 0), reverse=True)
+        kept = items[:limit]
+        dropped = len(items) - len(kept)
+        if dropped:
+            print(f"  [cap] {product}: {len(items)} → {limit} (dropped {dropped} low-confidence)")
+        result.extend(kept)
+    return result
+
+
+_debug_file_path: Optional[Path] = None
+
+
+def reset_debug_file() -> None:
+    """重置 debug 文件路径（每次 graph 执行前调用）"""
+    global _debug_file_path
+    _debug_file_path = None
+
+
+def dump_evidence_debug(evidences: list[dict], path: Optional[Path] = None, run_id: int = 0) -> Path:
+    """将 evidence 输出到 data/ 下的 debug 文件，按产品分组，跨 run 追加"""
+    import json
+    from datetime import datetime
+
+    global _debug_file_path
+
+    print(f"  [debug] dump_evidence_debug called with {len(evidences)} items (run #{run_id})")
+
+    # 首次调用时创建文件路径，后续复用（追加）
+    if path is None:
+        if _debug_file_path is None:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            _debug_file_path = _ROOT / "data" / f"evidence_debug_{ts}.json"
+        path = _debug_file_path
+
+    # 加载已有数据（追加模式）
+    existing: dict = {}
+    if path.exists():
         try:
-            for fut in as_completed(futures, timeout=60):
-                pending.discard(fut)
-                product = futures[fut]
-                try:
-                    results[product] = fut.result()
-                except Exception as e:
-                    results[product] = {
-                        "official_pages": [],
-                        "pricing_pages": [],
-                        "source": "error",
-                        "error": str(e),
-                    }
-                info = results[product]
-                official_count = len(info.get("official_pages") or [])
-                pricing_count = len(info.get("pricing_pages") or [])
-                _emit_progress(
-                    phase="url_discovery",
-                    status="done",
-                    product=product,
-                    source=info.get("source", "unknown"),
-                    official_count=official_count,
-                    pricing_count=pricing_count,
-                    message=(
-                        f"{product} 入口已就绪：{official_count} 个官方页，"
-                        f"{pricing_count} 个定价页"
-                    ),
-                )
-        except TimeoutError:
-            _emit_progress(
-                phase="url_discovery",
-                status="timeout",
-                message="部分产品入口发现超时，后续继续降级采集",
-            )
+            with path.open(encoding="utf-8") as f:
+                existing = json.load(f) or {}
+        except (json.JSONDecodeError, OSError):
+            existing = {}
 
-        for fut, product in futures.items():
-            if product not in results:
-                results[product] = {
-                    "official_pages": [],
-                    "pricing_pages": [],
-                    "source": "timeout",
-                }
-                _emit_progress(
-                    phase="url_discovery",
-                    status="timeout",
-                    product=product,
-                    source="timeout",
-                    official_count=0,
-                    pricing_count=0,
-                    message=f"{product} 入口发现超时，进入降级采集",
-                )
+    # 合并：按产品去重（evidence_id），新数据覆盖旧的
+    for ev in evidences:
+        product = ev.get("product", "unknown")
+        if product not in existing:
+            existing[product] = {"count": 0, "by_source": {}, "by_claim_type": {}, "evidence": [], "_seen_ids": set()}
+        bucket = existing[product]
+        # 检查是否已存在
+        seen = bucket.get("_seen_ids", set())
+        eid = ev.get("evidence_id", "")
+        if eid not in seen:
+            bucket["evidence"].append(ev)
+            seen.add(eid)
+            bucket["_seen_ids"] = seen
 
-    return results
+    # 更新统计
+    for product, bucket in existing.items():
+        items = bucket["evidence"]
+        bucket["count"] = len(items)
+        bucket["by_source"] = _count_by(items, "source_type")
+        bucket["by_claim_type"] = _count_by(items, "claim_type")
+
+    # 写入（_seen_ids 不序列化）
+    output = {}
+    for product, bucket in existing.items():
+        output[product] = {
+            "count": bucket["count"],
+            "by_source": bucket["by_source"],
+            "by_claim_type": bucket["by_claim_type"],
+            "evidence": bucket["evidence"],
+        }
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(output, f, ensure_ascii=False, indent=2)
+
+    total = sum(v["count"] for v in output.values())
+    products = list(output.keys())
+    print(f"  [debug] evidence dump → {path} (run#{run_id}, total={total}, products={products})")
+    return path
+
+
+def _count_by(items: list[dict], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        k = item.get(key, "unknown")
+        counts[k] = counts.get(k, 0) + 1
+    return counts
 
 
 REQUIRED_CLAIM_TYPES = {
@@ -318,23 +287,6 @@ REQUIRED_CLAIM_TYPES = {
     "pricing",
     "user_pain",
 }
-
-_PROGRESS_CALLBACK: Optional[Callable[[dict], None]] = None
-
-
-def set_progress_callback(callback: Optional[Callable[[dict], None]]) -> None:
-    """Register a lightweight progress sink for UI streaming."""
-    global _PROGRESS_CALLBACK
-    _PROGRESS_CALLBACK = callback
-
-
-def _emit_progress(**event: object) -> None:
-    if _PROGRESS_CALLBACK is None:
-        return
-    try:
-        _PROGRESS_CALLBACK(dict(event))
-    except Exception:
-        pass
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -359,7 +311,11 @@ def patch_by_requirements(
     new: list[dict],
     requirements: list[dict],
 ) -> list[dict]:
-    """打回时:基于结构化 requirements 精准追加证据,不重复塞旧的"""
+    """打回时:基于结构化 requirements 精准追加证据,不重复塞旧的
+
+    当 requirements 中没有 collector 相关的 required_claim_types 时,
+    不做过滤,保留全部新证据(由后续 dedupe_evidence 去重)。
+    """
     existing_ids = {e["evidence_id"] for e in existing}
     needed_types: set[str] = set()
     for r in requirements:
@@ -367,11 +323,17 @@ def patch_by_requirements(
             continue
         for ct in r.get("required_claim_types", []) or []:
             needed_types.add(ct)
-    patches = [
-        e for e in new
-        if e["evidence_id"] not in existing_ids
-        and e["claim_type"] in needed_types
-    ]
+
+    if needed_types:
+        # 有明确需求:只补充缺失的 claim_type
+        patches = [
+            e for e in new
+            if e["evidence_id"] not in existing_ids
+            and e["claim_type"] in needed_types
+        ]
+    else:
+        # 无明确需求:保留全部新证据,由 dedupe 去重
+        patches = [e for e in new if e["evidence_id"] not in existing_ids]
     return existing + patches
 
 
@@ -449,6 +411,18 @@ class OfficialPageAdapter(SourceAdapter):
         print(f"  [OfficialPageAdapter] got {len(html)} chars from {url}")
         result = self._extract(product, url, html)
         print(f"  [OfficialPageAdapter] extracted {len(result)} evidence from {url}")
+
+        # SPA 兜底: httpx 提取 0 条时用 Playwright 渲染 JS 重试
+        if not result and url.startswith("http"):
+            print(f"  [OfficialPageAdapter] 0 evidence from httpx, retrying with Playwright ...")
+            try:
+                html_pw = self._read_playwright(url)
+                print(f"  [OfficialPageAdapter] Playwright got {len(html_pw)} chars from {url}")
+                result = self._extract(product, url, html_pw)
+                print(f"  [OfficialPageAdapter] Playwright extracted {len(result)} evidence from {url}")
+            except Exception as e:
+                print(f"  [OfficialPageAdapter] Playwright fallback FAILED: {type(e).__name__}: {e}")
+
         return result
 
     def _read(self, url: str) -> str:
@@ -469,6 +443,21 @@ class OfficialPageAdapter(SourceAdapter):
             r.raise_for_status()
             print(f"  [OfficialPageAdapter] HTTP {r.status_code}, {len(r.text)} chars from {url}")
             return r.text
+
+    @staticmethod
+    def _read_playwright(url: str) -> str:
+        """Playwright 渲染 JS 后取 innerText，用于 SPA 页面"""
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)  # 等 JS 渲染
+                html = page.content()
+                return html
+            finally:
+                browser.close()
 
     @staticmethod
     def _extract(product: str, url: str, html: str) -> list[dict]:
@@ -533,9 +522,10 @@ class OfficialPageAdapter(SourceAdapter):
         observed = datetime.now().strftime("%Y-%m-%d")
         out: list[dict] = []
         # 取前 15 段作为 evidence
-        for snippet in chunks[:15]:
+        for idx, snippet in enumerate(chunks[:15]):
             claim = snippet if len(snippet) <= 120 else snippet[:117] + "..."
-            eid = generate_evidence_id(product, url, claim)
+            # 加入 idx 避免同一页面内相同文本段产生相同 evidence_id
+            eid = generate_evidence_id(product, f"{url}#{idx}", claim)
 
             # 根据内容推断更精确的 claim_type
             claim_type = default_claim_type
@@ -576,7 +566,8 @@ class OfficialPageAdapter(SourceAdapter):
 class SearchAdapter(SourceAdapter):
     """Tavily 网络搜索 — 自主规划「该去哪搜」并真实抓取 UGC / 第三方来源。
 
-    重点补 performance_quality / user_pain（官网抓不到的部分）。
+    与 HN/V2EX skills 互补:skills 用平台官方 API 抓特定高价值源(精度),
+    SearchAdapter 用 Tavily 广撒网覆盖任意站 + 全 4 类证据(广度)。
     仅在 TAVILY_API_KEY 存在时激活。规划见 source_planner，抓取见 search。
     """
 
@@ -640,9 +631,7 @@ class MockAdapter(SourceAdapter):
         return self.path.exists()
 
     def fetch(self, product: str, focus: str) -> list[dict]:
-        cfg = _load_products_config()
-        aliases = set(product_query_candidates(product, cfg))
-        return [e for e in self._load() if e.get("product") in aliases]
+        return [e for e in self._load() if e.get("product") == product]
 
 
 class CacheAdapter(SourceAdapter):
@@ -658,8 +647,7 @@ class CacheAdapter(SourceAdapter):
         return self.cache_dir / f"{safe}.json"
 
     def can_fetch(self, product: str) -> bool:
-        cfg = _load_products_config()
-        return any(self._path(candidate).exists() for candidate in product_query_candidates(product, cfg))
+        return self._path(product).exists()
 
     def _load(self, product: str) -> list[dict]:
         p = self._path(product)
@@ -688,17 +676,7 @@ class CacheAdapter(SourceAdapter):
     def fetch(self, product: str, focus: str) -> list[dict]:
         """返回该产品全部缓存证据,按 TTL 重算 freshness。relevance 留给 Analyzer 判断。
         中文 focus + 英文 snippet 的过滤极不准确,所以这一层不做过滤。"""
-        cfg = _load_products_config()
-        evidences: list[dict] = []
-        seen_ids: set[str] = set()
-        for candidate in product_query_candidates(product, cfg):
-            for ev in self._load(candidate):
-                eid = ev.get("evidence_id")
-                if eid and eid in seen_ids:
-                    continue
-                if eid:
-                    seen_ids.add(eid)
-                evidences.append(ev)
+        evidences = self._load(product)
         today = date.today()
         out = []
         for ev in evidences:
@@ -728,8 +706,8 @@ class AdapterRegistry:
                              {product: {official_pages: [...], pricing_pages: [...]}}
         """
         self.live_adapters: list[SourceAdapter] = []
-        # 真实抓取默认关闭(避免 demo 时网络抖动);ENABLE_LIVE_FETCH=1 启用
-        if os.environ.get("ENABLE_LIVE_FETCH", "").strip() in ("1", "true", "True"):
+        # 真实抓取默认开启;DISABLE_LIVE_FETCH=1 关闭
+        if os.environ.get("DISABLE_LIVE_FETCH", "").strip() not in ("1", "true", "True"):
             # 合并 discovered URLs: official_pages + pricing_pages
             dynamic: dict[str, list[str]] = {}
             if discovered_urls:
@@ -738,11 +716,13 @@ class AdapterRegistry:
                     if urls:
                         dynamic[product] = urls
             self.live_adapters.append(OfficialPageAdapter(dynamic_urls=dynamic or None))
-        # Tavily 网络搜索:有 key 即启用(像 GPT 检索那样自主爬 UGC/第三方来源)
+        # Tavily 网络检索:有 TAVILY_API_KEY 即启用(广度补全,与 skills 互补)
         from . import search as _search
         if _search.tavily_available():
             self.live_adapters.append(SearchAdapter())
             print("  [Registry] SearchAdapter 已启用 (TAVILY_API_KEY 存在)")
+        # Skills（HN/V2EX 等高价值源,各自环境变量控制）
+        self.skills = create_skill_registry()
         self.cache = CacheAdapter()
         self.mock = MockAdapter()
 
@@ -752,9 +732,6 @@ class AdapterRegistry:
 
         print(f"\n[Registry] === fetch_all({product}) ===")
         print(f"  live_adapters count: {len(self.live_adapters)}")
-        cfg = _load_products_config()
-        canonical = canonical_product_name(product, cfg)
-        product_aliases = product_query_candidates(product, cfg)
 
         # 第一层:实时
         for adapter in self.live_adapters:
@@ -766,7 +743,7 @@ class AdapterRegistry:
                 evs = adapter.fetch(product, focus)
                 print(f"  [live] fetched {len(evs)} evidence from {type(adapter).__name__}")
                 for ev in evs:
-                    # SearchAdapter 已标 "search";其余 live 适配器默认 "live"
+                    # SearchAdapter 已标 "search";官网抓取默认 "live"
                     ev.setdefault("collection_source", "live")
                 all_evidences.extend(evs)
                 self.cache.save(product, evs)
@@ -782,6 +759,33 @@ class AdapterRegistry:
                     "status": "failed",
                     "reason": str(e),
                     "fallback": "cache",
+                })
+
+        # 第 1.5 层: Skills
+        for name, skill in self.skills.all().items():
+            if not skill.can_execute([product], product=product, focus=focus):
+                print(f"  [skill] {name}.can_execute({product}) = False")
+                continue
+            print(f"  [skill] {name}.can_execute({product}) = True")
+            try:
+                evs, skill_meta = skill.execute([product], product=product, focus=focus)
+                print(f"  [skill] {name} returned {len(evs)} evidence")
+                for ev in evs:
+                    ev["collection_source"] = f"skill:{name}"
+                all_evidences.extend(evs)
+                self.cache.save(product, evs)
+                adapter_events.append({
+                    "adapter": f"skill:{name}",
+                    "status": "success",
+                    "count": len(evs),
+                    "skill_meta": skill_meta,
+                })
+            except Exception as e:
+                print(f"  [skill] {name} FAILED: {type(e).__name__}: {e}")
+                adapter_events.append({
+                    "adapter": f"skill:{name}",
+                    "status": "failed",
+                    "reason": str(e),
                 })
 
         # 第二层:缓存
@@ -825,20 +829,26 @@ class AdapterRegistry:
         for ev in all_evidences:
             s = ev.get("collection_source", "unknown")
             source_summary[s] = source_summary.get(s, 0) + 1
-        missing_claim_types = sorted(REQUIRED_CLAIM_TYPES - {
-            e["claim_type"] for e in all_evidences
-        })
+        missing_claim_types = sorted(REQUIRED_CLAIM_TYPES - {e["claim_type"] for e in all_evidences})
         health = "ok" if not missing_claim_types else ("empty" if not all_evidences else "partial")
-        print(f"  result: {len(all_evidences)} evidence, sources: {source_summary}")
-        print(f"  coverage: {coverage}")
-        # 收集本产品的网络检索事件(哪些查询、命中哪些 URL)
+        # 收集本产品的 Tavily 检索事件(哪些查询命中哪些 URL)
         search_events: list[dict] = []
         for adapter in self.live_adapters:
             if isinstance(adapter, SearchAdapter):
                 search_events = adapter.events_by_product.get(product, [])
+        print(f"  result: {len(all_evidences)} evidence, sources: {source_summary}")
+        print(f"  coverage: {coverage}")
+        # 实时上报本产品采集完成(api 据此累计证据数,前端不再卡 0)
+        _emit_progress(
+            phase="fetch",
+            status="done",
+            product=product,
+            evidence_count=len(all_evidences),
+            source_counts=source_summary,
+            coverage=coverage,
+            message=f"{product} 已收集 {len(all_evidences)} 条证据",
+        )
         return all_evidences, {
-            "canonical_product": canonical,
-            "aliases_tried": product_aliases,
             "adapter_events": adapter_events,
             "coverage": coverage,
             "missing_claim_types": missing_claim_types,
@@ -867,22 +877,23 @@ def reset_registry() -> None:
 # Node
 # ────────────────────────────────────────────────────────────────────────────
 
+_collector_run_count = 0
+
+
 def collector_node(state: AgentState) -> AgentState:
     """v2.2.1: 多产品并发 + wall-clock timeout 兜底 + URL Discovery"""
+    global _collector_run_count
+    _collector_run_count += 1
+    run_id = _collector_run_count
+    print(f"\n[collector_node] ====== RUN #{run_id} ======")
+
     meta = state["analysis_meta"]
     products = [meta["target_product"]] + list(meta["competitors"])
     focus = meta["analysis_focus"][0] if meta.get("analysis_focus") else ""
-    _emit_progress(
-        phase="start",
-        status="running",
-        products=products,
-        focus=focus,
-        message=f"开始采集 {len(products)} 个产品的证据",
-    )
 
     # Step 0: URL Discovery — 让 LLM 为每个产品找到官网 URL
     print(f"[collector] discovering URLs for {products} ...")
-    discovered = discover_all_urls_with_progress(products)
+    discovered = discover_all_urls(products)
     for p, info in discovered.items():
         src = info.get("source", "?")
         op = info.get("official_pages", [])
@@ -897,90 +908,60 @@ def collector_node(state: AgentState) -> AgentState:
 
     fetched: list[dict] = []
     collection_meta: dict = {"products": {}, "discovered_urls": discovered}
-    reset_registry()
+    reset_registry()  # 每次运行重新创建，避免旧 discovered_urls 残留
     registry = get_registry(discovered_urls=discovered)
-    _emit_progress(
-        phase="fetch",
-        status="start",
-        product_count=len(products),
-        message="开始拉取 live/cache/mock 三层证据",
-    )
+    print(f"[collector_node] registry.live_adapters={len(registry.live_adapters)}, products={products}")
 
-    # 实时抓取/网络检索(含 LLM 规划)耗时远超 mock，按是否有 live 适配器自适应超时
-    fetch_timeout = 120 if registry.live_adapters else 25
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(registry.fetch_all, p, focus): p for p in products}
-        pending = set(futures)
-        try:
-            for fut in as_completed(futures, timeout=fetch_timeout):
-                pending.discard(fut)
-                product = futures[fut]
-                try:
-                    evs, meta_info = fut.result()
-                except Exception as e:
-                    evs, meta_info = [], {
-                        "adapter_events": [{"status": "fatal", "reason": str(e)}],
-                        "coverage": {ct: 0 for ct in REQUIRED_CLAIM_TYPES},
-                    }
-                fetched.extend(evs)
-                collection_meta["products"][product] = meta_info
-                source_counts: dict[str, int] = {}
-                for ev in evs:
-                    source = ev.get("collection_source", "unknown")
-                    source_counts[source] = source_counts.get(source, 0) + 1
-                coverage = meta_info.get("coverage") or {}
-                _emit_progress(
-                    phase="fetch",
-                    status="done",
-                    product=product,
-                    evidence_count=len(evs),
-                    source_counts=source_counts,
-                    coverage=coverage,
-                    message=f"{product} 已收集 {len(evs)} 条证据",
-                )
-        except TimeoutError:
-            _emit_progress(
-                phase="fetch",
-                status="timeout",
-                message="部分产品采集超时，已保留可用结果并继续流程",
-            )
+        done, not_done = wait(futures.keys(), timeout=80)
 
-        for fut in pending:
+        for fut in done:
+            product = futures[fut]
+            try:
+                evs, meta_info = fut.result()
+                print(f"  [collector_node] {product} future returned {len(evs)} evidence")
+            except Exception as e:
+                evs, meta_info = [], {
+                    "adapter_events": [{"status": "fatal", "reason": str(e)}],
+                    "coverage": {ct: 0 for ct in REQUIRED_CLAIM_TYPES},
+                }
+                print(f"  [collector_node] {product} future EXCEPTION: {type(e).__name__}: {e}")
+            fetched.extend(evs)
+            collection_meta["products"][product] = meta_info
+
+        print(f"  [collector_node] done={len(done)}, not_done={len(not_done)}, fetched={len(fetched)}")
+
+        for fut in not_done:
             product = futures[fut]
             fut.cancel()
             collection_meta["products"][product] = {
                 "adapter_events": [
-                    {"status": "timeout", "reason": f"wall-clock {fetch_timeout}s exceeded"}
+                    {"status": "timeout", "reason": "wall-clock 80s exceeded"}
                 ],
                 "coverage": {ct: 0 for ct in REQUIRED_CLAIM_TYPES},
             }
-            _emit_progress(
-                phase="fetch",
-                status="timeout",
-                product=product,
-                evidence_count=0,
-                coverage={ct: 0 for ct in REQUIRED_CLAIM_TYPES},
-                message=f"{product} 采集超时",
-            )
 
     # 打回时:按 requirements 精准追加
+    print(f"\n[collector_node] fetched={len(fetched)}, reject_requirements={state.get('reject_requirements')}")
     if state.get("reject_requirements"):
         merged = patch_by_requirements(
             existing=state.get("raw_evidence") or [],
             new=fetched,
             requirements=state["reject_requirements"],
         )
+        print(f"[collector_node] after patch: {len(merged)}")
     else:
         merged = fetched
 
     merged = dedupe_evidence(merged)
-    _emit_progress(
-        phase="complete",
-        status="done",
-        evidence_count=len(merged),
-        product_count=len(products),
-        message=f"证据采集完成，共 {len(merged)} 条",
-    )
+    print(f"[collector_node] after dedupe: {len(merged)}")
+
+    # 输出 debug 文件（cap 之前，展示全部 evidence）
+    dump_evidence_debug(merged, run_id=run_id)
+
+    # 每个产品按 confidence 取 top 40
+    merged = cap_evidence_per_product(merged)
 
     return {
         **state,
