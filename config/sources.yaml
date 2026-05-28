@@ -1,0 +1,48 @@
+# 推荐信息源配置 — 指导 source_planner「该去哪些站搜哪类证据」
+# 详见 docs/source-discovery-design.md
+#
+# 用途:
+#   1. source_planner 把这里的推荐源喂给 LLM，作为「该去哪搜」的先验
+#   2. LLM 会「参考这些源的形式」为新产品/新行业找同类站点（不止用这里列的）
+#   3. 用户可在 custom 段长期追加自己信任的源
+#
+# 字段:
+#   source_type: official_page | pricing_page | official_doc | reddit | hn | review | news | web_search
+#   site:        建议检索的域名/子版块（搜索时作为 site: 过滤；留空表示全网搜）
+#   bias:        vendor_claim(厂商) | user_generated(用户) | third_party(第三方)
+#   note:        说明
+
+defaults:
+  results_per_query: 5        # 每条搜索查询取回的结果数
+  max_queries_per_claim: 2    # 每个 claim_type 最多发几条查询
+
+# ─── 按证据类型推荐的来源（global，适用所有行业）──────────────────
+by_claim_type:
+  feature_existence:
+    - { source_type: official_page, bias: vendor_claim, note: 厂商官网功能页（已由 url_discovery 覆盖）}
+    - { source_type: official_doc, bias: vendor_claim, note: 官方文档 }
+  pricing:
+    - { source_type: pricing_page, bias: vendor_claim, note: 厂商定价页 }
+  performance_quality:
+    - { source_type: reddit, site: reddit.com, bias: user_generated, note: 真实使用性能反馈 }
+    - { source_type: third_party, bias: third_party, note: 第三方评测 / benchmark 文章 }
+  user_pain:
+    - { source_type: reddit, site: reddit.com, bias: user_generated }
+    - { source_type: hn, site: news.ycombinator.com, bias: user_generated }
+    - { source_type: review, site: g2.com, bias: third_party, note: 企业软件点评站 }
+
+# ─── 按行业细化的优质来源（domain key 对齐 config/domains.yaml）──────
+by_domain:
+  ai_coding:
+    - { source_type: reddit, site: reddit.com/r/cursor, bias: user_generated }
+    - { source_type: reddit, site: reddit.com/r/ChatGPTCoding, bias: user_generated }
+    - { source_type: hn, site: news.ycombinator.com, bias: user_generated }
+  pm:
+    - { source_type: reddit, site: reddit.com/r/projectmanagement, bias: user_generated }
+    - { source_type: review, site: g2.com, bias: third_party }
+
+# ─── 用户自定义源（长期复用，优先级最高）──────────────────────────
+# 例:
+#   custom:
+#     - { source_type: review, site: zhihu.com, bias: user_generated, note: 知乎专栏/回答 }
+custom: []

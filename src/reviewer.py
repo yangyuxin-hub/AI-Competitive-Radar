@@ -16,6 +16,7 @@ from .state import AgentState
 
 
 REVIEWER_RULES = {
+    "R0": "evidence_coverage_gate",
     "R1": "evidence_reference_integrity",
     "R2": "claim_type_compatibility",
     "R3": "aggregation_integrity",
@@ -27,12 +28,12 @@ REVIEWER_RULES = {
 
 MODE_CONFIG = {
     "minimal": {
-        "hard_gate": {"R1", "R4", "R5"},
+        "hard_gate": {"R0", "R1", "R4", "R5"},
         "soft": {"R2", "R3", "R7"},
         "llm": False,
     },
     "full": {
-        "hard_gate": {"R1", "R2", "R3", "R4", "R5"},
+        "hard_gate": {"R0", "R1", "R2", "R3", "R4", "R5"},
         "soft": {"R7"},
         "llm": True,
     },
@@ -49,6 +50,8 @@ ISSUE_TYPE_TO_TARGET = {
     "semantic_grounding_fail": "analyzer",
     "semantic_grounding_unavailable": "analyzer",
     "freshness_stale": "collector",
+    "missing_product_evidence": "collector",
+    "missing_claim_type_coverage": "collector",
 }
 
 
@@ -198,6 +201,41 @@ def check_freshness_and_confidence(schema: dict, evidence: list[dict]) -> list[d
                     "R7", "freshness_stale", f"evidence.{eid}",
                     f"evidence {eid} 已过期({ev.get('observed_at', '?')})",
                 ))
+    return issues
+
+
+def check_collection_coverage(collection_meta: dict, analysis_meta: dict) -> list[dict]:
+    """R0: every requested product needs all required claim types before analysis is trusted."""
+    issues: list[dict] = []
+    products = [analysis_meta.get("target_product")] + list(analysis_meta.get("competitors") or [])
+    products = [p for p in products if p]
+    by_product = collection_meta.get("products") or {}
+    if not by_product:
+        return []
+
+    for product in products:
+        info = by_product.get(product) or {}
+        coverage = info.get("coverage") or {}
+        missing = [
+            ct for ct in ("feature_existence", "performance_quality", "pricing", "user_pain")
+            if int(coverage.get(ct) or 0) <= 0
+        ]
+        if len(missing) == 4:
+            issues.append(_mk_issue(
+                "R0",
+                "missing_product_evidence",
+                f"collection_meta.products.{product}",
+                f"{product} 没有采集到任何必需证据; attempts={info.get('aliases_tried') or []}",
+                required_claim_types=missing,
+            ))
+        elif missing:
+            issues.append(_mk_issue(
+                "R0",
+                "missing_claim_type_coverage",
+                f"collection_meta.products.{product}.coverage",
+                f"{product} 缺少 claim_type 覆盖: {missing}",
+                required_claim_types=missing,
+            ))
     return issues
 
 
@@ -484,10 +522,15 @@ def make_reviewer_node(llm=None, mode: Optional[str] = None):
     def reviewer_node(state: AgentState) -> AgentState:
         schema = state.get("schema_draft") or {}
         evidence = state.get("raw_evidence") or []
+        collection_meta = state.get("collection_meta") or {}
+        analysis_meta = state.get("analysis_meta") or {}
 
         all_issues: list[dict] = []
-        executed_rules: set[str] = set()
+        executed_rules: set[str] = {"R0"}
         skipped_rules: set[str] = set()
+        for issue in check_collection_coverage(collection_meta, analysis_meta):
+            issue["severity"] = "error" if "R0" in cfg["hard_gate"] else "warning"
+            all_issues.append(issue)
         for rule_id, runner in RULE_RUNNERS.items():
             executed_rules.add(rule_id)
             for issue in runner(schema, evidence):

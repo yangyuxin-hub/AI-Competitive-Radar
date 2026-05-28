@@ -128,6 +128,12 @@ def _resolve_run_args(
 
     target_product = target_product or "Cursor"
     competitors = competitors or ["Windsurf", "GitHubCopilot"]
+    try:
+        from .collector import canonical_product_name
+        target_product = canonical_product_name(target_product)
+        competitors = [canonical_product_name(c) for c in competitors]
+    except Exception:
+        pass
     analysis_focus = analysis_focus or ["代码补全体验"]
     analysis_purpose = analysis_purpose or "学习竞品优点,优化自身产品"
     user_input = user_input or f"分析 {target_product} 与 {', '.join(competitors)} 在 {analysis_focus[0]} 上的差距"

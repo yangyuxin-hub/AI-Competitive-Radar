@@ -55,7 +55,7 @@ def _resolve_sample_path() -> Path:
 # ────────────────────────────────────────────────────────────────────────────
 
 def _load_products_config() -> dict:
-    """读取 products.yaml，返回 {product_name: {official_pages, pricing_pages}}"""
+    """读取 products.yaml，返回 {product_name: {aliases, official_pages, pricing_pages}}"""
     path = _ROOT / "config" / "products.yaml"
     try:
         import yaml
@@ -64,6 +64,7 @@ def _load_products_config() -> dict:
         out = {}
         for name, p in (cfg.get("products") or {}).items():
             out[name] = {
+                "aliases": list(p.get("aliases") or []),
                 "official_pages": list(p.get("official_pages") or []),
                 "pricing_pages": list(p.get("pricing_pages") or []),
             }
@@ -72,11 +73,42 @@ def _load_products_config() -> dict:
         return {}
 
 
+def _norm_product_key(name: str) -> str:
+    return re.sub(r"[^0-9a-zA-Z]+", "", name or "").lower()
+
+
+def canonical_product_name(product: str, products_config: Optional[dict] = None) -> str:
+    """Map aliases like 'GitHub Copilot' to the products.yaml key 'GitHubCopilot'."""
+    cfg = products_config or _load_products_config()
+    target = _norm_product_key(product)
+    for name, info in cfg.items():
+        candidates = [name] + list(info.get("aliases") or [])
+        if any(_norm_product_key(c) == target for c in candidates):
+            return name
+    return product
+
+
+def product_query_candidates(product: str, products_config: Optional[dict] = None) -> list[str]:
+    """Ordered names to try for URL discovery and cache/mock fallback."""
+    cfg = products_config or _load_products_config()
+    canonical = canonical_product_name(product, cfg)
+    candidates = [product]
+    if canonical not in candidates:
+        candidates.append(canonical)
+    if canonical in cfg:
+        candidates.extend(cfg[canonical].get("aliases") or [])
+    seen: list[str] = []
+    for c in candidates:
+        if c and c not in seen:
+            seen.append(c)
+    return seen
+
+
 def discover_urls(product: str, products_config: Optional[dict] = None) -> dict:
     """为单个产品发现官网 URL。
 
     Mock 模式:从 products.yaml 读取已配置的 URL。
-    真实模式:调用 LLM 让其搜索并返回官方 URL。
+    真实模式:先试 products.yaml key/alias,再调用 LLM 让其搜索并返回官方 URL。
 
     Returns: {"official_pages": [...], "pricing_pages": [...], "source": "config"|"llm"}
     """
@@ -84,12 +116,28 @@ def discover_urls(product: str, products_config: Optional[dict] = None) -> dict:
 
     # 先看 products.yaml 有没有配置
     cfg = products_config or _load_products_config()
-    if product in cfg and (cfg[product]["official_pages"] or cfg[product]["pricing_pages"]):
-        return {**cfg[product], "source": "config"}
+    canonical = canonical_product_name(product, cfg)
+    attempts: list[dict] = []
+    if canonical in cfg and (cfg[canonical]["official_pages"] or cfg[canonical]["pricing_pages"]):
+        attempts.append({"strategy": "products_yaml", "query": canonical, "status": "success"})
+        return {
+            "official_pages": cfg[canonical]["official_pages"],
+            "pricing_pages": cfg[canonical]["pricing_pages"],
+            "source": "config",
+            "canonical_product": canonical,
+            "attempts": attempts,
+        }
 
     # Mock 模式:没有配置就返回空，让 MockAdapter 兜底
     if is_mock_mode():
-        return {"official_pages": [], "pricing_pages": [], "source": "mock"}
+        attempts.append({"strategy": "products_yaml", "query": canonical, "status": "miss"})
+        return {
+            "official_pages": [],
+            "pricing_pages": [],
+            "source": "mock",
+            "canonical_product": canonical,
+            "attempts": attempts,
+        }
 
     # 真实模式:调用 LLM 发现 URL
     from .llm import get_llm
@@ -105,18 +153,38 @@ def discover_urls(product: str, products_config: Optional[dict] = None) -> dict:
             "只返回官方域名下的页面，不要第三方网站。"
         )
 
-    payload = {"product": product, "language": "en"}
-    try:
-        result = llm.call_json(system, payload, max_tokens=1024, label=f"url_discovery_{product}")
-        return {
-            "official_pages": result.get("official_pages") or [],
-            "pricing_pages": result.get("pricing_pages") or [],
-            "source": "llm",
-            "reasoning": result.get("reasoning", ""),
-        }
-    except Exception as e:
-        print(f"[collector] URL discovery failed for {product}: {e}")
-        return {"official_pages": [], "pricing_pages": [], "source": "error", "error": str(e)}
+    errors: list[str] = []
+    for query in product_query_candidates(product, cfg):
+        payload = {"product": query, "language": "en"}
+        try:
+            result = llm.call_json(system, payload, max_tokens=1024, label=f"url_discovery_{query}")
+            official = result.get("official_pages") or []
+            pricing = result.get("pricing_pages") or []
+            status = "success" if official or pricing else "empty"
+            attempts.append({"strategy": "llm_url_discovery", "query": query, "status": status})
+            if official or pricing:
+                return {
+                    "official_pages": official,
+                    "pricing_pages": pricing,
+                    "source": "llm",
+                    "canonical_product": canonical,
+                    "query_used": query,
+                    "reasoning": result.get("reasoning", ""),
+                    "attempts": attempts,
+                }
+        except Exception as e:
+            msg = f"{query}: {type(e).__name__}: {e}"
+            errors.append(msg)
+            attempts.append({"strategy": "llm_url_discovery", "query": query, "status": "error", "error": str(e)})
+            print(f"[collector] URL discovery failed for {query}: {e}")
+    return {
+        "official_pages": [],
+        "pricing_pages": [],
+        "source": "error" if errors else "empty",
+        "canonical_product": canonical,
+        "attempts": attempts,
+        "error": "; ".join(errors),
+    }
 
 
 def discover_all_urls(products: list[str]) -> dict[str, dict]:
@@ -398,6 +466,38 @@ class OfficialPageAdapter(SourceAdapter):
         return out
 
 
+class SearchAdapter(SourceAdapter):
+    """Tavily 网络搜索 — 自主规划「该去哪搜」并真实抓取 UGC / 第三方来源。
+
+    重点补 performance_quality / user_pain（官网抓不到的部分）。
+    仅在 TAVILY_API_KEY 存在时激活。规划见 source_planner，抓取见 search。
+    """
+
+    def __init__(self, domain: Optional[str] = None) -> None:
+        self.domain = domain or os.environ.get("DOMAIN")
+        # 按产品存检索事件，避免多产品并发共享一个 adapter 时互相覆盖
+        self.events_by_product: dict[str, list[dict]] = {}
+
+    def can_fetch(self, product: str) -> bool:
+        from . import search
+        return search.tavily_available()
+
+    def fetch(self, product: str, focus: str) -> list[dict]:
+        from . import search, source_planner
+        plan = source_planner.plan_sources(
+            product=product,
+            competitors=[],
+            analysis_focus=[focus] if focus else [],
+            domain=self.domain,
+        )
+        cfg = source_planner.load_sources_config()
+        per_query = int((cfg.get("defaults") or {}).get("results_per_query", 5))
+        evidences, events = search.search_plan_to_evidence(product, plan, per_query)
+        self.events_by_product[product] = events
+        print(f"  [search] plan={len(plan)} queries → {len(evidences)} evidence")
+        return evidences
+
+
 class MockAdapter(SourceAdapter):
     """从 data/sample_sources.json 读取证据 — Demo 兜底"""
 
@@ -416,7 +516,9 @@ class MockAdapter(SourceAdapter):
         return self.path.exists()
 
     def fetch(self, product: str, focus: str) -> list[dict]:
-        return [e for e in self._load() if e.get("product") == product]
+        cfg = _load_products_config()
+        aliases = set(product_query_candidates(product, cfg))
+        return [e for e in self._load() if e.get("product") in aliases]
 
 
 class CacheAdapter(SourceAdapter):
@@ -432,7 +534,8 @@ class CacheAdapter(SourceAdapter):
         return self.cache_dir / f"{safe}.json"
 
     def can_fetch(self, product: str) -> bool:
-        return self._path(product).exists()
+        cfg = _load_products_config()
+        return any(self._path(candidate).exists() for candidate in product_query_candidates(product, cfg))
 
     def _load(self, product: str) -> list[dict]:
         p = self._path(product)
@@ -461,7 +564,17 @@ class CacheAdapter(SourceAdapter):
     def fetch(self, product: str, focus: str) -> list[dict]:
         """返回该产品全部缓存证据,按 TTL 重算 freshness。relevance 留给 Analyzer 判断。
         中文 focus + 英文 snippet 的过滤极不准确,所以这一层不做过滤。"""
-        evidences = self._load(product)
+        cfg = _load_products_config()
+        evidences: list[dict] = []
+        seen_ids: set[str] = set()
+        for candidate in product_query_candidates(product, cfg):
+            for ev in self._load(candidate):
+                eid = ev.get("evidence_id")
+                if eid and eid in seen_ids:
+                    continue
+                if eid:
+                    seen_ids.add(eid)
+                evidences.append(ev)
         today = date.today()
         out = []
         for ev in evidences:
@@ -501,6 +614,11 @@ class AdapterRegistry:
                     if urls:
                         dynamic[product] = urls
             self.live_adapters.append(OfficialPageAdapter(dynamic_urls=dynamic or None))
+        # Tavily 网络搜索:有 key 即启用(像 GPT 检索那样自主爬 UGC/第三方来源)
+        from . import search as _search
+        if _search.tavily_available():
+            self.live_adapters.append(SearchAdapter())
+            print("  [Registry] SearchAdapter 已启用 (TAVILY_API_KEY 存在)")
         self.cache = CacheAdapter()
         self.mock = MockAdapter()
 
@@ -510,6 +628,9 @@ class AdapterRegistry:
 
         print(f"\n[Registry] === fetch_all({product}) ===")
         print(f"  live_adapters count: {len(self.live_adapters)}")
+        cfg = _load_products_config()
+        canonical = canonical_product_name(product, cfg)
+        product_aliases = product_query_candidates(product, cfg)
 
         # 第一层:实时
         for adapter in self.live_adapters:
@@ -521,7 +642,8 @@ class AdapterRegistry:
                 evs = adapter.fetch(product, focus)
                 print(f"  [live] fetched {len(evs)} evidence from {type(adapter).__name__}")
                 for ev in evs:
-                    ev["collection_source"] = "live"
+                    # SearchAdapter 已标 "search";其余 live 适配器默认 "live"
+                    ev.setdefault("collection_source", "live")
                 all_evidences.extend(evs)
                 self.cache.save(product, evs)
                 adapter_events.append({
@@ -579,11 +701,25 @@ class AdapterRegistry:
         for ev in all_evidences:
             s = ev.get("collection_source", "unknown")
             source_summary[s] = source_summary.get(s, 0) + 1
+        missing_claim_types = sorted(REQUIRED_CLAIM_TYPES - {
+            e["claim_type"] for e in all_evidences
+        })
+        health = "ok" if not missing_claim_types else ("empty" if not all_evidences else "partial")
         print(f"  result: {len(all_evidences)} evidence, sources: {source_summary}")
         print(f"  coverage: {coverage}")
+        # 收集本产品的网络检索事件(哪些查询、命中哪些 URL)
+        search_events: list[dict] = []
+        for adapter in self.live_adapters:
+            if isinstance(adapter, SearchAdapter):
+                search_events = adapter.events_by_product.get(product, [])
         return all_evidences, {
+            "canonical_product": canonical,
+            "aliases_tried": product_aliases,
             "adapter_events": adapter_events,
             "coverage": coverage,
+            "missing_claim_types": missing_claim_types,
+            "health": health,
+            "search_events": search_events,
         }
 
 
@@ -630,11 +766,14 @@ def collector_node(state: AgentState) -> AgentState:
 
     fetched: list[dict] = []
     collection_meta: dict = {"products": {}, "discovered_urls": discovered}
+    reset_registry()
     registry = get_registry(discovered_urls=discovered)
 
+    # 实时抓取/网络检索(含 LLM 规划)耗时远超 mock，按是否有 live 适配器自适应超时
+    fetch_timeout = 120 if registry.live_adapters else 25
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(registry.fetch_all, p, focus): p for p in products}
-        done, not_done = wait(futures.keys(), timeout=25)
+        done, not_done = wait(futures.keys(), timeout=fetch_timeout)
 
         for fut in done:
             product = futures[fut]
@@ -653,7 +792,7 @@ def collector_node(state: AgentState) -> AgentState:
             fut.cancel()
             collection_meta["products"][product] = {
                 "adapter_events": [
-                    {"status": "timeout", "reason": "wall-clock 25s exceeded"}
+                    {"status": "timeout", "reason": f"wall-clock {fetch_timeout}s exceeded"}
                 ],
                 "coverage": {ct: 0 for ct in REQUIRED_CLAIM_TYPES},
             }
