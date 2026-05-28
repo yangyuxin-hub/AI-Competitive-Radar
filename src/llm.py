@@ -49,6 +49,38 @@ def _save_raw(label: str, content: str) -> Path:
     return path
 
 
+_TRACE_PATH = _LOGS_DIR / "llm_calls.jsonl"
+
+
+def _trace_enabled() -> bool:
+    # 默认开启;LLM_TRACE=0 关闭
+    return os.environ.get("LLM_TRACE", "1").strip() not in ("0", "false", "False")
+
+
+def _trace_call(label: str, model: str, system_prompt: str, user_payload: dict,
+                raw: str, prompt_tokens: int, completion_tokens: int, elapsed: float) -> None:
+    """把每次 LLM 调用的完整输入/输出/token/耗时追加到 logs/llm_calls.jsonl,供离线分析优化。"""
+    if not _trace_enabled():
+        return
+    try:
+        _LOGS_DIR.mkdir(exist_ok=True)
+        rec = {
+            "ts": datetime.now().isoformat(),
+            "label": label,
+            "model": model,
+            "duration_sec": round(elapsed, 2),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "system_prompt": system_prompt,
+            "user_payload": user_payload,
+            "raw_output": raw,
+        }
+        with _TRACE_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as e:  # noqa: BLE001
+        print(f"[llm] trace 写入失败(忽略): {e}")
+
+
 # ───────────────────────────────────────────────────────────────────────
 # 进度回调(UI 实时刷新用)
 # ───────────────────────────────────────────────────────────────────────
@@ -159,6 +191,8 @@ class LLMClient:
             duration=elapsed, json_mode=False,
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
         )
+        _trace_call(label, model, system_prompt, user_payload, raw,
+                    prompt_tokens, completion_tokens, elapsed)
 
         # 解析
         try:
