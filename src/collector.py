@@ -181,19 +181,39 @@ MAX_EVIDENCE_PER_PRODUCT = 40
 
 
 def cap_evidence_per_product(evidences: list[dict], limit: int = MAX_EVIDENCE_PER_PRODUCT) -> list[dict]:
-    """每个产品按 evidence_confidence 降序取 top limit 条"""
+    """每个产品截顶,但**按 claim_type 均衡**保留,避免高置信的官网/HN 证据
+    把低置信的 UGC(Tavily user_pain)整类挤掉 —— 保证 4 类诉求都有代表。
+
+    每个产品每个 claim_type 取 top (limit // 4) 条(按置信度);若某类不足,
+    余额回填给其他类,既控总量又保覆盖。
+    """
+    per_type = max(1, limit // len(REQUIRED_CLAIM_TYPES))
     by_product: dict[str, list[dict]] = {}
     for ev in evidences:
-        p = ev.get("product", "unknown")
-        by_product.setdefault(p, []).append(ev)
+        by_product.setdefault(ev.get("product", "unknown"), []).append(ev)
 
     result: list[dict] = []
     for product, items in by_product.items():
-        items.sort(key=lambda e: e.get("evidence_confidence", 0), reverse=True)
-        kept = items[:limit]
-        dropped = len(items) - len(kept)
-        if dropped:
-            print(f"  [cap] {product}: {len(items)} → {limit} (dropped {dropped} low-confidence)")
+        if len(items) <= limit:
+            result.extend(items)
+            continue
+        by_ct: dict[str, list[dict]] = {}
+        for ev in items:
+            by_ct.setdefault(ev.get("claim_type", "?"), []).append(ev)
+        for lst in by_ct.values():
+            lst.sort(key=lambda e: e.get("evidence_confidence", 0), reverse=True)
+        kept: list[dict] = []
+        # 第一轮:每类取 top per_type
+        for ct, lst in by_ct.items():
+            kept.extend(lst[:per_type])
+        # 第二轮:还有余额则按置信度从各类剩余里回填
+        if len(kept) < limit:
+            rest = sorted(
+                (e for ct, lst in by_ct.items() for e in lst[per_type:]),
+                key=lambda e: e.get("evidence_confidence", 0), reverse=True,
+            )
+            kept.extend(rest[: limit - len(kept)])
+        print(f"  [cap] {product}: {len(items)} → {len(kept)} (按 claim_type 均衡)")
         result.extend(kept)
     return result
 
