@@ -4,7 +4,7 @@
 > 设计版本：**v2.2**（pre-mortem 修订）· Schema：v2.1（字段冻结）
 > 周期：3 周 Demo（2026-05-20 ~ 2026-06-10），答辩 6-12 ~ 6-19
 
-本文件是给 Claude Code 的项目指南。详细架构见 `docs/design-v2.2.md`（最新）+ `docs/design-v2.1.md`（基线历史）。变更速览见 v2.2 §十三。
+本文件是给 Claude Code 的项目指南。详细架构见 `docs/design-v2.2.md`（含答辩/合规/质量评测附录 A-D）。变更速览见 v2.2 §十三，v2.1 历史基线见 git 历史。
 
 ---
 
@@ -75,8 +75,10 @@ data/
   cache/<product>.json        # CacheAdapter 持久化
   mock/sample_sources.json    # Mock 兜底数据
 logs/agent_trace.jsonl        # 可观测性日志
-docs/design-v2.2.md           # 最新设计文档(v2.2)
-docs/design-v2.1.md           # 历史基线(v2.1-frozen)
+docs/design-v2.2.md           # 设计文档(v2.2) + 附录 A-D(对比/合规/judge/roadmap)
+docs/usage-scenarios.md       # 需求场景叙事 + MVP user journey
+docs/competitive-analysis-playbook.md  # 分析方法论
+docs/task-requirements.md     # 赛题需求
 ```
 
 ## 7. 开发节奏
