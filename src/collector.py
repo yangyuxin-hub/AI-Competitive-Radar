@@ -10,10 +10,10 @@ import json
 import os
 import re
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed, wait
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .state import AgentState
 
@@ -153,6 +153,12 @@ def discover_urls(product: str, products_config: Optional[dict] = None) -> dict:
             "只返回官方域名下的页面，不要第三方网站。"
         )
 
+    _emit_progress(
+        phase="url_discovery",
+        status="start",
+        product=product,
+        message=f"正在发现 {product} 的官方页和定价页",
+    )
     errors: list[str] = []
     for query in product_query_candidates(product, cfg):
         payload = {"product": query, "language": "en"}
@@ -163,6 +169,15 @@ def discover_urls(product: str, products_config: Optional[dict] = None) -> dict:
             status = "success" if official or pricing else "empty"
             attempts.append({"strategy": "llm_url_discovery", "query": query, "status": status})
             if official or pricing:
+                _emit_progress(
+                    phase="url_discovery",
+                    status="done",
+                    product=product,
+                    source="llm",
+                    official_count=len(official),
+                    pricing_count=len(pricing),
+                    message=f"{product} 已发现 {len(official)} 个官方页和 {len(pricing)} 个定价页",
+                )
                 return {
                     "official_pages": official,
                     "pricing_pages": pricing,
@@ -177,6 +192,13 @@ def discover_urls(product: str, products_config: Optional[dict] = None) -> dict:
             errors.append(msg)
             attempts.append({"strategy": "llm_url_discovery", "query": query, "status": "error", "error": str(e)})
             print(f"[collector] URL discovery failed for {query}: {e}")
+    _emit_progress(
+        phase="url_discovery",
+        status="error",
+        product=product,
+        source="error",
+        message=f"{product} URL 发现失败，后续将降级",
+    )
     return {
         "official_pages": [],
         "pricing_pages": [],
@@ -222,12 +244,97 @@ def discover_all_urls(products: list[str]) -> dict[str, dict]:
     return results
 
 
+def discover_all_urls_with_progress(products: list[str]) -> dict[str, dict]:
+    """Same as discover_all_urls, but emits lightweight progress events."""
+    cfg = _load_products_config()
+    results: dict[str, dict] = {}
+    _emit_progress(
+        phase="url_discovery",
+        status="start",
+        message=f"正在发现 {len(products)} 个产品的采集入口",
+    )
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(discover_urls, p, cfg): p for p in products}
+        pending = set(futures)
+        try:
+            for fut in as_completed(futures, timeout=60):
+                pending.discard(fut)
+                product = futures[fut]
+                try:
+                    results[product] = fut.result()
+                except Exception as e:
+                    results[product] = {
+                        "official_pages": [],
+                        "pricing_pages": [],
+                        "source": "error",
+                        "error": str(e),
+                    }
+                info = results[product]
+                official_count = len(info.get("official_pages") or [])
+                pricing_count = len(info.get("pricing_pages") or [])
+                _emit_progress(
+                    phase="url_discovery",
+                    status="done",
+                    product=product,
+                    source=info.get("source", "unknown"),
+                    official_count=official_count,
+                    pricing_count=pricing_count,
+                    message=(
+                        f"{product} 入口已就绪：{official_count} 个官方页，"
+                        f"{pricing_count} 个定价页"
+                    ),
+                )
+        except TimeoutError:
+            _emit_progress(
+                phase="url_discovery",
+                status="timeout",
+                message="部分产品入口发现超时，后续继续降级采集",
+            )
+
+        for fut, product in futures.items():
+            if product not in results:
+                results[product] = {
+                    "official_pages": [],
+                    "pricing_pages": [],
+                    "source": "timeout",
+                }
+                _emit_progress(
+                    phase="url_discovery",
+                    status="timeout",
+                    product=product,
+                    source="timeout",
+                    official_count=0,
+                    pricing_count=0,
+                    message=f"{product} 入口发现超时，进入降级采集",
+                )
+
+    return results
+
+
 REQUIRED_CLAIM_TYPES = {
     "feature_existence",
     "performance_quality",
     "pricing",
     "user_pain",
 }
+
+_PROGRESS_CALLBACK: Optional[Callable[[dict], None]] = None
+
+
+def set_progress_callback(callback: Optional[Callable[[dict], None]]) -> None:
+    """Register a lightweight progress sink for UI streaming."""
+    global _PROGRESS_CALLBACK
+    _PROGRESS_CALLBACK = callback
+
+
+def _emit_progress(**event: object) -> None:
+    if _PROGRESS_CALLBACK is None:
+        return
+    try:
+        _PROGRESS_CALLBACK(dict(event))
+    except Exception:
+        pass
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -748,10 +855,17 @@ def collector_node(state: AgentState) -> AgentState:
     meta = state["analysis_meta"]
     products = [meta["target_product"]] + list(meta["competitors"])
     focus = meta["analysis_focus"][0] if meta.get("analysis_focus") else ""
+    _emit_progress(
+        phase="start",
+        status="running",
+        products=products,
+        focus=focus,
+        message=f"开始采集 {len(products)} 个产品的证据",
+    )
 
     # Step 0: URL Discovery — 让 LLM 为每个产品找到官网 URL
     print(f"[collector] discovering URLs for {products} ...")
-    discovered = discover_all_urls(products)
+    discovered = discover_all_urls_with_progress(products)
     for p, info in discovered.items():
         src = info.get("source", "?")
         op = info.get("official_pages", [])
@@ -768,26 +882,53 @@ def collector_node(state: AgentState) -> AgentState:
     collection_meta: dict = {"products": {}, "discovered_urls": discovered}
     reset_registry()
     registry = get_registry(discovered_urls=discovered)
+    _emit_progress(
+        phase="fetch",
+        status="start",
+        product_count=len(products),
+        message="开始拉取 live/cache/mock 三层证据",
+    )
 
     # 实时抓取/网络检索(含 LLM 规划)耗时远超 mock，按是否有 live 适配器自适应超时
     fetch_timeout = 120 if registry.live_adapters else 25
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(registry.fetch_all, p, focus): p for p in products}
-        done, not_done = wait(futures.keys(), timeout=fetch_timeout)
+        pending = set(futures)
+        try:
+            for fut in as_completed(futures, timeout=fetch_timeout):
+                pending.discard(fut)
+                product = futures[fut]
+                try:
+                    evs, meta_info = fut.result()
+                except Exception as e:
+                    evs, meta_info = [], {
+                        "adapter_events": [{"status": "fatal", "reason": str(e)}],
+                        "coverage": {ct: 0 for ct in REQUIRED_CLAIM_TYPES},
+                    }
+                fetched.extend(evs)
+                collection_meta["products"][product] = meta_info
+                source_counts: dict[str, int] = {}
+                for ev in evs:
+                    source = ev.get("collection_source", "unknown")
+                    source_counts[source] = source_counts.get(source, 0) + 1
+                coverage = meta_info.get("coverage") or {}
+                _emit_progress(
+                    phase="fetch",
+                    status="done",
+                    product=product,
+                    evidence_count=len(evs),
+                    source_counts=source_counts,
+                    coverage=coverage,
+                    message=f"{product} 已收集 {len(evs)} 条证据",
+                )
+        except TimeoutError:
+            _emit_progress(
+                phase="fetch",
+                status="timeout",
+                message="部分产品采集超时，已保留可用结果并继续流程",
+            )
 
-        for fut in done:
-            product = futures[fut]
-            try:
-                evs, meta_info = fut.result()
-            except Exception as e:
-                evs, meta_info = [], {
-                    "adapter_events": [{"status": "fatal", "reason": str(e)}],
-                    "coverage": {ct: 0 for ct in REQUIRED_CLAIM_TYPES},
-                }
-            fetched.extend(evs)
-            collection_meta["products"][product] = meta_info
-
-        for fut in not_done:
+        for fut in pending:
             product = futures[fut]
             fut.cancel()
             collection_meta["products"][product] = {
@@ -796,6 +937,14 @@ def collector_node(state: AgentState) -> AgentState:
                 ],
                 "coverage": {ct: 0 for ct in REQUIRED_CLAIM_TYPES},
             }
+            _emit_progress(
+                phase="fetch",
+                status="timeout",
+                product=product,
+                evidence_count=0,
+                coverage={ct: 0 for ct in REQUIRED_CLAIM_TYPES},
+                message=f"{product} 采集超时",
+            )
 
     # 打回时:按 requirements 精准追加
     if state.get("reject_requirements"):
@@ -808,6 +957,13 @@ def collector_node(state: AgentState) -> AgentState:
         merged = fetched
 
     merged = dedupe_evidence(merged)
+    _emit_progress(
+        phase="complete",
+        status="done",
+        evidence_count=len(merged),
+        product_count=len(products),
+        message=f"证据采集完成，共 {len(merged)} 条",
+    )
 
     return {
         **state,

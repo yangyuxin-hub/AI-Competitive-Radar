@@ -91,6 +91,14 @@ export type ProgressEvent =
         health: string;
         missing_claim_types: string[];
       }[];
+      collector_phase?: string;
+      message?: string;
+      product?: string;
+      source_counts?: Record<string, number>;
+      coverage?: Record<string, number>;
+      official_count?: number;
+      pricing_count?: number;
+      product_count?: number;
       quality?: {
         quality_score?: number;
         passed_rules?: string[];

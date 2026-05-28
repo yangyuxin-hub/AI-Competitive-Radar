@@ -342,6 +342,10 @@ function AgentProgress({ events }: { events: ProgressEvent[] }) {
       : last
         ? `${last.label}完成，准备进入下一步`
         : "正在连接分析服务";
+  const collectorEvents = progress.filter((e) => e.node === "collector");
+  const collectorPhase = collectorEvents.at(-1)?.collector_phase;
+  const collectorMessage = collectorEvents.at(-1)?.message;
+  const recentCollector = collectorEvents.slice(-4).reverse();
 
   return (
     <div className="space-y-6 py-6">
@@ -407,6 +411,38 @@ function AgentProgress({ events }: { events: ProgressEvent[] }) {
             </div>
           );
         })}
+      </div>
+
+      <div className="mx-auto max-w-lg rounded-xl border border-white/10 bg-white/[0.02] p-4">
+        <div className="mb-3 flex items-center justify-between text-sm text-neutral-300">
+          <div className="flex items-center gap-2">
+            <span className="text-base">{collectorEvents.at(-1)?.icon ?? "📥"}</span>
+            <span className="font-medium">收集进度</span>
+            {collectorPhase && (
+              <span className="rounded bg-sky-500/15 px-2 py-0.5 text-[11px] text-sky-300">
+                {collectorPhase}
+              </span>
+            )}
+          </div>
+          <span className="font-mono text-neutral-500">{collectorEvents.at(-1)?.evidence_count ?? 0} 证据</span>
+        </div>
+        <div className="space-y-1.5">
+          {(collectorMessage || recentCollector.length === 0) && (
+            <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-neutral-400">
+              {collectorMessage ?? "正在等待采集结果"}
+            </div>
+          )}
+          {recentCollector.map((e, idx) => (
+            <div
+              key={`${e.node}-${idx}-${e.message ?? ""}`}
+              className="flex items-center gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-neutral-400"
+            >
+              <span className="text-neutral-200">{e.icon}</span>
+              <span className="text-neutral-300">{e.message ?? e.label}</span>
+              <span className="ml-auto font-mono text-neutral-600">{e.evidence_count} 条</span>
+            </div>
+          ))}
+        </div>
       </div>
 
       {quality && (
