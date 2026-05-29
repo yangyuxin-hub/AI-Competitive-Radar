@@ -582,18 +582,32 @@ function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel
               正在等待采集结果
             </div>
           )}
-          {shownCollector.map((e, idx) => (
-            <div
-              key={`c-${idx}`}
-              className="flex items-start gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-neutral-400"
-            >
-              <span className="shrink-0 text-neutral-200">{e.icon}</span>
-              <span className="text-neutral-300">
-                {(e as { message?: string }).message ?? e.label}
-              </span>
-              <span className="ml-auto shrink-0 font-mono text-neutral-600">{e.evidence_count} 条</span>
-            </div>
-          ))}
+          {shownCollector.map((e, idx) => {
+            const samples = (e as { samples?: { product: string; source: string; text: string }[] }).samples;
+            return (
+              <div
+                key={`c-${idx}`}
+                className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-neutral-400"
+              >
+                <div className="flex items-start gap-2">
+                  <span className="shrink-0 text-neutral-200">{e.icon}</span>
+                  <span className="text-neutral-300">
+                    {(e as { message?: string }).message ?? e.label}
+                  </span>
+                  <span className="ml-auto shrink-0 font-mono text-neutral-600">{e.evidence_count} 条</span>
+                </div>
+                {samples && samples.length > 0 && (
+                  <ul className="mt-1.5 space-y-1 border-l border-white/10 pl-3">
+                    {samples.map((s, i) => (
+                      <li key={i} className="text-[11px] leading-relaxed text-neutral-500">
+                        <span className="text-neutral-600">[{s.source}]</span> {s.text}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 

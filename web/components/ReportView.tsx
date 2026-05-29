@@ -3,7 +3,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Report } from "@/lib/types";
+import type { Report, Completeness } from "@/lib/types";
 import type {
   Feature,
   Recommendation,
@@ -233,6 +233,7 @@ export default function ReportView({ report }: { report: Report }) {
 
         <section className="space-y-3">
           <SectionTitle id="evidence">证据覆盖与质量</SectionTitle>
+          {report.completeness && <CompletenessCard data={report.completeness} />}
           <div className="grid gap-3 lg:grid-cols-[1fr_1fr]">
             <QualityBreakdown dimensions={dimensions} />
             <EvidenceCoverage byClaim={stats.byClaim} byBias={stats.byBias} byType={stats.byType} />
@@ -330,6 +331,53 @@ function DecisionPill({ label, value }: { label: string; value: string }) {
     <div className="min-w-0 rounded-lg border border-white/10 bg-neutral-950/40 p-3">
       <div className="text-[11px] text-neutral-500">{label}</div>
       <div className="mt-1 line-clamp-2 text-xs font-medium leading-relaxed text-neutral-200">{value}</div>
+    </div>
+  );
+}
+
+function CompletenessCard({ data }: { data: Completeness }) {
+  const tone =
+    data.overall >= 75 ? "text-emerald-400" : data.overall >= 50 ? "text-amber-400" : "text-red-400";
+  return (
+    <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.06] p-4">
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="text-sm font-medium text-neutral-200">任务完成度</div>
+        <div className={`font-mono text-2xl font-semibold ${tone}`}>
+          {data.overall}
+          <span className="text-sm text-neutral-500">/100</span>
+        </div>
+      </div>
+      <div className="mt-1 text-[11px] text-neutral-500">
+        {data.counts.features} 功能 · {data.counts.products} 产品 · {data.counts.recommendations} 建议 ·{" "}
+        {data.counts.swot_items} SWOT 项
+      </div>
+      <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
+        {data.aspects.map((a) => {
+          const pct = Math.round((a.value || 0) * 100);
+          return (
+            <div key={a.key}>
+              <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                <span className="text-neutral-300">{a.label}</span>
+                <span className="font-mono text-neutral-400">{pct}%</span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-sky-500 to-emerald-400"
+                  style={{ width: `${Math.max(4, Math.min(100, pct))}%` }}
+                />
+              </div>
+              {a.detail && (
+                <div className="mt-1 text-[11px] leading-relaxed text-neutral-600">{a.detail}</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {data.missing_action_fields && data.missing_action_fields.length > 0 && (
+        <div className="mt-3 text-[11px] text-amber-400/80">
+          ⚠ 建议普遍缺字段：{data.missing_action_fields.join("、")}
+        </div>
+      )}
     </div>
   );
 }

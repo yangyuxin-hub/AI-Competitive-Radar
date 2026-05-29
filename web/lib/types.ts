@@ -48,6 +48,25 @@ export interface ReportMeta {
   generated_at?: string;
 }
 
+export interface CompletenessAspect {
+  key: string;
+  label: string;
+  value: number; // 0-1
+  detail?: string;
+}
+
+export interface Completeness {
+  overall: number; // 0-100
+  aspects: CompletenessAspect[];
+  counts: {
+    features: number;
+    recommendations: number;
+    swot_items: number;
+    products: number;
+  };
+  missing_action_fields?: string[];
+}
+
 export interface Report {
   report_id: string;
   meta: ReportMeta;
@@ -55,6 +74,7 @@ export interface Report {
   schema_draft: import("./schema").SchemaDraft | null;
   report_draft: string | null;
   quality_report: QualityReport | null;
+  completeness?: Completeness | null;
   raw_evidence: Evidence[];
   status: string;
   stage_timings?: {
@@ -120,6 +140,8 @@ export type ProgressEvent =
       product?: string;
       source_counts?: Record<string, number>;
       coverage?: Record<string, number>;
+      eta_sec?: number;
+      samples?: { product: string; source: string; text: string }[];
     }
   | {
       type: "progress";
@@ -153,7 +175,20 @@ export type ProgressEvent =
       };
     }
   | { type: "done"; report_id: string; report: Report }
+  | { type: "judge"; report_id: string; scorecard: JudgeScorecard }
+  | { type: "judge_error"; message: string }
   | { type: "error"; message: string };
+
+export interface JudgeScorecard {
+  weighted_score: number;
+  weights_profile?: string;
+  dimensions: Record<
+    string,
+    { name: string; score: number; scale: number; weight: number;
+      justification?: string; fix_suggestion?: string }
+  >;
+  warnings?: string[];
+}
 
 export interface NodeDetail {
   kind: "collection" | "analysis" | "review";
