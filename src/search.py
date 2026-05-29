@@ -8,11 +8,16 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import time
 from datetime import date
+from pathlib import Path
 from typing import Optional
 
 _TAVILY_URL = "https://api.tavily.com/search"
+_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "cache" / "tavily"
 
 # 不同立场的来源可信度先验(可后续下沉 config)
 _RELIABILITY_BY_BIAS = {
@@ -34,13 +39,56 @@ def _domain_of(site: str) -> Optional[str]:
     return site.split("/")[0]
 
 
+def _cache_enabled() -> bool:
+    return os.environ.get("TAVILY_CACHE", "1").strip() not in ("0", "false", "False")
+
+
+def _cache_path(query: str, site: str, max_results: int) -> Path:
+    key = hashlib.sha1(f"{query}|{site}|{max_results}".encode("utf-8")).hexdigest()[:16]
+    return _CACHE_DIR / f"{key}.json"
+
+
+def _cache_get(query: str, site: str, max_results: int) -> Optional[list[dict]]:
+    if not _cache_enabled():
+        return None
+    path = _cache_path(query, site, max_results)
+    if not path.exists():
+        return None
+    ttl_h = float(os.environ.get("TAVILY_CACHE_TTL_HOURS", "72"))
+    try:
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        if time.time() - rec.get("ts", 0) > ttl_h * 3600:
+            return None  # 过期
+        return rec.get("results")
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _cache_set(query: str, site: str, max_results: int, results: list[dict]) -> None:
+    if not _cache_enabled():
+        return
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _cache_path(query, site, max_results).write_text(
+            json.dumps({"ts": time.time(), "query": query, "results": results}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
 def tavily_search(query: str, site: str = "", max_results: int = 5) -> list[dict]:
-    """调 Tavily,返回 [{title, url, content, score}]。失败抛异常由上层兜底。"""
+    """调 Tavily,返回 [{title, url, content, score}]。失败抛异常由上层兜底。
+    带磁盘缓存(TTL 默认 72h):同一查询跨 run 复用,省去重复 HTTP+延迟。
+    TAVILY_CACHE=0 关缓存,TAVILY_CACHE_TTL_HOURS 调 TTL。"""
     import httpx
 
     api_key = os.environ.get("TAVILY_API_KEY", "").strip()
     if not api_key:
         return []
+    cached = _cache_get(query, site, max_results)
+    if cached is not None:
+        return cached
     payload = {
         "api_key": api_key,
         "query": query,
@@ -54,7 +102,9 @@ def tavily_search(query: str, site: str = "", max_results: int = 5) -> list[dict
         resp = client.post(_TAVILY_URL, json=payload)
         resp.raise_for_status()
         data = resp.json()
-    return data.get("results") or []
+    results = data.get("results") or []
+    _cache_set(query, site, max_results, results)
+    return results
 
 
 def _result_to_evidence(product: str, result: dict, q: dict) -> Optional[dict]:
