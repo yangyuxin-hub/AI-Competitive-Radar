@@ -195,7 +195,9 @@ def check_structured_contradiction(schema: dict, evidence: list[dict]) -> list[d
         gap = feat.get("gap") or {}
         winner = gap.get("winner")
         products = list((feat.get("products") or {}).keys())
-        if winner and winner not in products:
+        # "unknown" 是合法的"证据不足、暂不判胜负"状态,不算结构矛盾;
+        # 只有 winner 指向一个不存在于 products 的具体产品名才是真矛盾。
+        if winner and winner != "unknown" and winner not in products:
             issues.append(_mk_issue(
                 "R5", "structured_contradiction",
                 f"feature_tree.{fid}.gap.winner",

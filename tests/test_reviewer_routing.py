@@ -111,5 +111,31 @@ class ReviewerRoutingTest(unittest.TestCase):
         self.assertIsNone(out["reject_target"])
 
 
+class R5UnknownWinnerTest(unittest.TestCase):
+    """winner='unknown'(证据不足,诚实不判胜负)不应被 R5 判为结构矛盾。"""
+
+    def test_unknown_winner_not_contradiction(self):
+        from src.reviewer import check_structured_contradiction
+
+        schema = {"feature_tree": {"features": [
+            {"feature_id": "F001", "name": "x",
+             "products": {"Cursor": {}, "Windsurf": {}},
+             "gap": {"winner": "unknown"}},
+        ]}}
+        issues = check_structured_contradiction(schema, [])
+        self.assertEqual([i for i in issues if "gap.winner" in i["location"]], [])
+
+    def test_winner_not_in_products_still_flagged(self):
+        from src.reviewer import check_structured_contradiction
+
+        schema = {"feature_tree": {"features": [
+            {"feature_id": "F001", "name": "x",
+             "products": {"Cursor": {}, "Windsurf": {}},
+             "gap": {"winner": "GhostProduct"}},  # 不在 products → 真矛盾
+        ]}}
+        issues = check_structured_contradiction(schema, [])
+        self.assertTrue([i for i in issues if "gap.winner" in i["location"]])
+
+
 if __name__ == "__main__":
     unittest.main()
