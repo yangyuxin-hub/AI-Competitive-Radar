@@ -139,7 +139,22 @@ def check_reasoning_chain(schema: dict, evidence: list[dict]) -> list[dict]:
     issues = []
     valid_fids = {f["feature_id"] for f in schema.get("feature_tree", {}).get("features", [])}
     valid_pids = {p["pain_id"] for p in schema.get("user_persona", {}).get("pain_points", [])}
-    for r in schema.get("recommendations", []):
+    recs = schema.get("recommendations") or []
+    if len(recs) < 2:
+        issues.append(_mk_issue(
+            "R4", "broken_reasoning_chain", "recommendations",
+            "recommendations 为空或数量不足；竞品报告必须给出可执行建议",
+        ))
+
+    swot = schema.get("swot") or {}
+    swot_count = sum(len(swot.get(k) or []) for k in ("strengths", "weaknesses", "opportunities", "threats"))
+    if swot_count == 0:
+        issues.append(_mk_issue(
+            "R4", "broken_reasoning_chain", "swot",
+            "SWOT 四象限全部为空；缺少从事实层到结论层的推导",
+        ))
+
+    for r in recs:
         rid = r.get("rec_id", "?")
         fids = set(r.get("source_feature_ids") or [])
         pids = set(r.get("source_pain_ids") or [])
@@ -511,6 +526,154 @@ def check_semantic_grounding(schema: dict, evidence: list[dict], llm) -> list[di
     return issues
 
 
+def _clamp_score(v: float) -> int:
+    return int(round(max(0, min(100, v))))
+
+
+def _schema_refs_with_coverage(schema: dict) -> tuple[int, int]:
+    """Return (claims_with_evidence, total_claims) for user-facing report quality."""
+    total = 0
+    with_ev = 0
+
+    def add(eids) -> None:
+        nonlocal total, with_ev
+        total += 1
+        if eids:
+            with_ev += 1
+
+    for feat in (schema.get("feature_tree") or {}).get("features", []):
+        add((feat.get("gap") or {}).get("evidence_ids"))
+        for pdata in (feat.get("products") or {}).values():
+            add(pdata.get("support_evidence_ids"))
+            add((pdata.get("quality_score") or {}).get("evidence_ids"))
+    for product in (schema.get("pricing_model") or {}).get("products", []):
+        for tier in product.get("tiers") or []:
+            add(tier.get("evidence_ids"))
+    if (schema.get("pricing_model") or {}).get("pricing_gap"):
+        add(((schema.get("pricing_model") or {}).get("pricing_gap") or {}).get("evidence_ids"))
+    for pain in (schema.get("user_persona") or {}).get("pain_points", []):
+        add((pain.get("frequency") or {}).get("evidence_ids") or pain.get("evidence_ids"))
+    for rec in schema.get("recommendations") or []:
+        add(rec.get("evidence_ids"))
+    for dim in ("strengths", "weaknesses", "opportunities", "threats"):
+        for item in (schema.get("swot") or {}).get(dim) or []:
+            add(item.get("evidence_ids"))
+    return with_ev, total
+
+
+def _quality_dimensions(
+    schema: dict,
+    evidence: list[dict],
+    collection_meta: dict,
+    analysis_meta: dict,
+    errors: list[dict],
+    warnings: list[dict],
+) -> tuple[dict, int]:
+    """Deterministic user-facing quality dimensions.
+
+    R1-R7 answer "is this structurally safe"; these dimensions answer
+    "how useful/trustworthy is this report for a PM".
+    """
+    products = [analysis_meta.get("target_product"), *list(analysis_meta.get("competitors") or [])]
+    products = [p for p in products if p]
+    required = ("feature_existence", "performance_quality", "pricing", "user_pain")
+
+    coverage_scores: list[float] = []
+    by_product = (collection_meta.get("products") or {}) if collection_meta else {}
+    if by_product:
+        for product in products:
+            cov = (by_product.get(product) or {}).get("coverage") or {}
+            coverage_scores.append(sum(1 for ct in required if int(cov.get(ct) or 0) > 0) / len(required))
+    elif products:
+        for product in products:
+            seen = {e.get("claim_type") for e in evidence if e.get("product") == product}
+            coverage_scores.append(sum(1 for ct in required if ct in seen) / len(required))
+    evidence_coverage = _clamp_score((sum(coverage_scores) / len(coverage_scores)) * 100 if coverage_scores else 0)
+
+    bias_counts = Counter(e.get("source_bias") or "unknown" for e in evidence)
+    source_types = {e.get("source_type") for e in evidence if e.get("source_type")}
+    has_user = bias_counts.get("user_generated", 0) > 0
+    has_third = bias_counts.get("third_party", 0) > 0
+    vendor_only = bool(evidence) and set(bias_counts) <= {"vendor_claim"}
+    source_trust = 45 + min(len(source_types), 4) * 7 + (18 if has_user else 0) + (14 if has_third else 0)
+    if vendor_only:
+        source_trust -= 22
+    source_credibility = _clamp_score(source_trust)
+
+    refs_with, refs_total = _schema_refs_with_coverage(schema)
+    traceability = _clamp_score((refs_with / refs_total) * 100 if refs_total else 0)
+
+    stale = sum(1 for e in evidence if e.get("source_freshness") == "stale")
+    freshness = _clamp_score(((len(evidence) - stale) / len(evidence)) * 100 if evidence else 0)
+
+    recs = schema.get("recommendations") or []
+    swot = schema.get("swot") or {}
+    swot_count = sum(len(swot.get(k) or []) for k in ("strengths", "weaknesses", "opportunities", "threats"))
+    completeness_checks = [
+        bool((schema.get("feature_tree") or {}).get("features")),
+        bool((schema.get("pricing_model") or {}).get("products")),
+        bool((schema.get("user_persona") or {}).get("pain_points")),
+        len(recs) >= 2,
+        swot_count > 0,
+    ]
+    report_completeness = _clamp_score(sum(1 for x in completeness_checks if x) / len(completeness_checks) * 100)
+
+    conflict_handling = 70
+    if has_user and has_third:
+        conflict_handling += 15
+    elif has_user or has_third:
+        conflict_handling += 8
+    if vendor_only:
+        conflict_handling -= 18
+    if not recs or swot_count == 0:
+        conflict_handling -= 12
+    conflict_handling = _clamp_score(conflict_handling)
+
+    dimensions = {
+        "evidence_coverage": {
+            "label": "证据覆盖度",
+            "score": evidence_coverage,
+            "note": "目标产品与竞品是否覆盖功能、质量、定价、痛点四类证据",
+        },
+        "source_credibility": {
+            "label": "来源可信度",
+            "score": source_credibility,
+            "note": "综合来源类型、厂商/第三方/用户侧占比；vendor-only 会降权",
+        },
+        "traceability": {
+            "label": "结论可追溯性",
+            "score": traceability,
+            "note": f"{refs_with}/{refs_total} 个结构化结论带证据引用",
+        },
+        "freshness": {
+            "label": "时效性",
+            "score": freshness,
+            "note": f"{stale} 条证据超过 TTL",
+        },
+        "report_completeness": {
+            "label": "报告完整度",
+            "score": report_completeness,
+            "note": "功能、定价、痛点、建议、SWOT 是否齐全",
+        },
+        "conflict_handling": {
+            "label": "冲突处理",
+            "score": conflict_handling,
+            "note": "是否有用户/第三方证据帮助校验厂商叙事",
+        },
+    }
+    weights = {
+        "evidence_coverage": 0.22,
+        "source_credibility": 0.18,
+        "traceability": 0.22,
+        "freshness": 0.10,
+        "report_completeness": 0.18,
+        "conflict_handling": 0.10,
+    }
+    dimensional_score = _clamp_score(sum(dimensions[k]["score"] * weights[k] for k in weights))
+    rule_score = max(0, 100 - len(errors) * 10 - len(warnings) * 3)
+    return dimensions, min(rule_score, dimensional_score)
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Node
 # ────────────────────────────────────────────────────────────────────────────
@@ -567,11 +730,14 @@ def make_reviewer_node(llm=None, mode: Optional[str] = None):
             wrns = [i for i in warnings if i["location"].startswith(module)]
             module_status[module] = "failed" if errs else ("warning" if wrns else "passed")
 
-        quality_score = max(0, 100 - len(errors) * 10 - len(warnings) * 3)
+        quality_dimensions, quality_score = _quality_dimensions(
+            schema, evidence, collection_meta, analysis_meta, errors, warnings
+        )
 
         quality_report = {
             "mode": mode,
             "quality_score": quality_score,
+            "quality_dimensions": quality_dimensions,
             "passed_rules": passed_rules,
             "failed_rules": sorted(failed_rules),
             "warning_rules": sorted(warning_rules),

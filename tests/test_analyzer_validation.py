@@ -1,6 +1,7 @@
 import unittest
 
-from src.analyzer import quick_validate_facts, sanitize_facts_evidence_refs
+from src.analyzer import quick_validate_derivations, quick_validate_facts, sanitize_facts_evidence_refs
+from src.reviewer import check_reasoning_chain
 
 
 META = {
@@ -165,6 +166,20 @@ class AnalyzerFactsValidationTest(unittest.TestCase):
 
         self.assertEqual(dropped, 3)
         self.assertFalse([i for i in issues if "claim_type" in i], issues)
+
+    def test_derivations_reject_empty_recommendations_and_swot(self):
+        issues = quick_validate_derivations({"recommendations": [], "swot": {}}, _base_facts(), EVIDENCE)
+
+        self.assertTrue([i for i in issues if i.startswith("recommendations:")], issues)
+        self.assertTrue([i for i in issues if i.startswith("swot:")], issues)
+
+    def test_reviewer_rejects_report_without_recommendations_and_swot(self):
+        schema = {**_base_facts(), "recommendations": [], "swot": {}}
+        issues = check_reasoning_chain(schema, EVIDENCE)
+        locations = {i["location"] for i in issues}
+
+        self.assertIn("recommendations", locations)
+        self.assertIn("swot", locations)
 
 
 if __name__ == "__main__":

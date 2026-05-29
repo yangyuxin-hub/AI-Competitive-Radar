@@ -131,17 +131,17 @@ class LLMClient:
         except ImportError as e:
             raise RuntimeError("openai SDK 未安装。pip install -r requirements.txt") from e
 
-        # 默认走小米 MiMo(TTFT ~2-5s,远快于 Doubao EP 的 25-38s);ARK_* 仍可回退兼容
         api_key = os.environ.get("LLM_API_KEY") or os.environ.get("ARK_API_KEY")
         if not api_key:
             raise RuntimeError(
                 "LLM_API_KEY / ARK_API_KEY 未设置。若要无 API key 跑骨架,设置 ANALYZER_MOCK=1"
             )
-        base_url = (
-            os.environ.get("LLM_BASE_URL")
-            or os.environ.get("ARK_BASE_URL")
-            or "https://token-plan-cn.xiaomimimo.com/v1"
-        )
+        # 显式 LLM_* 优先;否则只要使用 ARK_API_KEY/ARK_EP,就走火山 ARK 端点。
+        # 避免把 ARK key 误发到默认 MiMo 地址,造成 401 后被上层误判为超时。
+        if os.environ.get("LLM_BASE_URL") or os.environ.get("LLM_MODEL") or os.environ.get("LLM_API_KEY"):
+            base_url = os.environ.get("LLM_BASE_URL") or "https://token-plan-cn.xiaomimimo.com/v1"
+        else:
+            base_url = os.environ.get("ARK_BASE_URL") or "https://ark.cn-beijing.volces.com/api/v3"
         timeout = float(os.environ.get("LLM_TIMEOUT", os.environ.get("ARK_TIMEOUT", "200")))
         import httpx  # 关掉系统代理(实测代理给 LLM 调用平添 ~10s)
         self._client = OpenAI(
@@ -174,9 +174,11 @@ class LLMClient:
             )
 
         client = self._ensure()
-        # 默认 mimo-v2.5-pro;切回 Doubao 需显式设 LLM_MODEL=ep-... + LLM_BASE_URL=ark
-        # (不再隐式回退 ARK_EP,否则 .env 里残留的 Doubao EP 会被错发给 MiMo 端点)
-        model = model or os.environ.get("LLM_MODEL") or "mimo-v2.5-pro"
+        if model is None:
+            if os.environ.get("LLM_MODEL") or os.environ.get("LLM_API_KEY"):
+                model = os.environ.get("LLM_MODEL") or "mimo-v2.5-pro"
+            else:
+                model = os.environ.get("ARK_EP") or "doubao-seed-2-0-lite-250428"
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},

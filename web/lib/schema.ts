@@ -81,6 +81,9 @@ export interface PainPoint {
   description: string;
   frequency?: { level?: string; count?: string; sample_size?: number; evidence_ids?: string[] };
   affected_products?: string[];
+  affected_segments?: string[];
+  user_expectation?: string;
+  confidence?: number;
   evidence_ids?: string[];
 }
 
@@ -110,6 +113,11 @@ export interface Recommendation {
   rec_id: string;
   action: string;
   rationale?: string;
+  expected_impact?: string;
+  success_metric?: string;
+  risk?: string;
+  time_horizon?: string;
+  validation_method?: string;
   source_feature_ids?: string[];
   source_pain_ids?: string[];
   evidence_ids?: string[];

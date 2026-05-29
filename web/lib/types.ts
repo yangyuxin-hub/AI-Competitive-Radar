@@ -26,6 +26,10 @@ export interface Evidence {
 export interface QualityReport {
   mode?: string;
   quality_score?: number;
+  quality_dimensions?: Record<
+    string,
+    { label: string; score: number; note?: string }
+  >;
   passed_rules?: string[];
   failed_rules?: string[];
   warning_rules?: string[];
@@ -47,6 +51,7 @@ export interface ReportMeta {
 export interface Report {
   report_id: string;
   meta: ReportMeta;
+  summary?: string;
   schema_draft: import("./schema").SchemaDraft | null;
   report_draft: string | null;
   quality_report: QualityReport | null;
@@ -67,6 +72,9 @@ export interface ReportIndexItem {
   target_product: string;
   competitors: string[];
   analysis_focus: string[];
+  summary?: string;
+  runtime_profile?: string;
+  evidence_count?: number;
   status: string;
   quality_score?: number;
   created_at: string;

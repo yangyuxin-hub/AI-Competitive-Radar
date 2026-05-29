@@ -84,9 +84,39 @@ def _schema():
                     "final_score": 3.8,
                     "priority": "P1",
                 },
+            },
+            {
+                "rec_id": "R002",
+                "action": "补充跨文件召回失败时的可解释提示",
+                "rationale": "P001 显示跨文件补全不稳定，提示缺失上下文可减少用户误判",
+                "source_feature_ids": ["F001"],
+                "source_pain_ids": ["P001"],
+                "evidence_ids": ["SABC002"],
+                "priority_score": {
+                    "pain_frequency": 3,
+                    "business_impact": 3,
+                    "implementation_feasibility": 4,
+                    "evidence_confidence": 3,
+                    "weights": {
+                        "pain_frequency": 0.35,
+                        "business_impact": 0.30,
+                        "implementation_feasibility": 0.20,
+                        "evidence_confidence": 0.15,
+                    },
+                    "final_score": 3.2,
+                    "priority": "P2",
+                },
             }
         ],
-        "swot": {"target": "Cursor", "strengths": [], "weaknesses": [], "opportunities": [], "threats": []},
+        "swot": {
+            "target": "Cursor",
+            "strengths": [
+                {"point": "支持跨文件编辑", "evidence_ids": ["SABC001"], "confidence": 0.7}
+            ],
+            "weaknesses": [],
+            "opportunities": [],
+            "threats": [],
+        },
     }
 
 

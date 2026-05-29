@@ -5,6 +5,7 @@
 - 有 hard_gate error 且未超配额 → status=running,reject_target 命中,retry_count 自增
 - 配额用尽 → status=degraded,不再打回
 """
+import copy
 import unittest
 
 from src.reviewer import make_reviewer_node
@@ -25,19 +26,64 @@ def _state_with(schema: dict, evidence: list[dict], retry_count=None):
     return st
 
 
-# 引用了不存在 evidence_id 的 feature gap → R1(evidence_id_not_found → collector)
-_BAD_SCHEMA = {
+_EVIDENCE = [
+    {"evidence_id": "SFEAT001", "claim_type": "feature_existence"},
+    {"evidence_id": "SPAIN001", "claim_type": "user_pain"},
+]
+
+
+_GOOD_SCHEMA = {
     "feature_tree": {
         "features": [
             {
                 "feature_id": "F001",
                 "name": "Tab 补全",
-                "products": {},
-                "gap": {"winner": "Cursor", "evidence_ids": ["SNOTEXIST"], "confidence": 0.5},
+                "products": {
+                    "Cursor": {
+                        "support_status": "supported",
+                        "support_evidence_ids": ["SFEAT001"],
+                    }
+                },
+                "gap": {"winner": "Cursor", "evidence_ids": ["SFEAT001"], "confidence": 0.5},
             }
         ]
+    },
+    "user_persona": {
+        "pain_points": [
+            {
+                "pain_id": "P001",
+                "description": "补全不稳",
+                "frequency": {"evidence_ids": ["SPAIN001"]},
+            }
+        ],
+    },
+    "recommendations": [
+        {
+            "rec_id": "R001",
+            "source_feature_ids": ["F001"],
+            "source_pain_ids": ["P001"],
+            "evidence_ids": ["SPAIN001"],
+        },
+        {
+            "rec_id": "R002",
+            "source_feature_ids": ["F001"],
+            "source_pain_ids": [],
+            "evidence_ids": ["SFEAT001"],
+        },
+    ],
+    "swot": {
+        "strengths": [{"point": "补全能力明确", "evidence_ids": ["SFEAT001"]}],
+        "weaknesses": [],
+        "opportunities": [],
+        "threats": [],
     }
 }
+
+
+def _bad_schema() -> dict:
+    schema = copy.deepcopy(_GOOD_SCHEMA)
+    schema["feature_tree"]["features"][0]["gap"]["evidence_ids"] = ["SNOTEXIST"]
+    return schema
 
 
 class ReviewerRoutingTest(unittest.TestCase):
@@ -45,12 +91,12 @@ class ReviewerRoutingTest(unittest.TestCase):
         self.review = make_reviewer_node(mode="minimal")
 
     def test_passed_when_no_errors(self):
-        out = self.review(_state_with({}, []))
+        out = self.review(_state_with(_GOOD_SCHEMA, _EVIDENCE))
         self.assertEqual(out["status"], "passed")
         self.assertIsNone(out["reject_target"])
 
     def test_running_and_increments_retry(self):
-        out = self.review(_state_with(_BAD_SCHEMA, []))
+        out = self.review(_state_with(_bad_schema(), _EVIDENCE))
         self.assertEqual(out["status"], "running")
         self.assertEqual(out["reject_target"], "collector")
         self.assertEqual(out["retry_count"]["collector"], 1)
@@ -59,7 +105,7 @@ class ReviewerRoutingTest(unittest.TestCase):
     def test_degraded_when_quota_exhausted(self):
         # collector 配额默认 1,先把 retry_count 顶到上限
         out = self.review(
-            _state_with(_BAD_SCHEMA, [], retry_count={"collector": 1, "analyzer": 0, "writer": 0})
+            _state_with(_bad_schema(), _EVIDENCE, retry_count={"collector": 1, "analyzer": 0, "writer": 0})
         )
         self.assertEqual(out["status"], "degraded")
         self.assertIsNone(out["reject_target"])

@@ -90,6 +90,7 @@ Step 1 已经把 evidence 整理成事实(features / pricing / personas / pains)
 9. **action 与 rationale 必须互相支撑**:rationale 中必须出现至少 1 个 source_feature_id / source_pain_id / evidence_id 的引用,说明该建议的依据。
 10. **每项评分需有理由**:在 rationale 中至少用一句话说明 pain_frequency / business_impact / implementation_feasibility 为什么是这个分,避免随手填。
 11. **建议必须可操作**:每条 recommendation 的 action 应该包含:具体做什么 + 针对谁(object/segment) + 预期指标或验收方式。禁止只写"提升体验""加强能力""优化流程"。
+12. **建议必须像轻量 PRD**:除 action/rationale 外,每条 recommendation 必须补充 `expected_impact` / `success_metric` / `risk` / `time_horizon` / `validation_method`。证据不足时写 `unknown` 或 `待验证`,不要编造精确数值。
 
 ---
 
@@ -110,6 +111,11 @@ Step 1 已经把 evidence 整理成事实(features / pricing / personas / pains)
       "rec_id": "R001",
       "action": "string  // 动词开头,含对象+指标,如'推出中端价档($12-15/月)降低中小团队采购门槛,目标 6 个月内 30% 新用户选此档'",
       "rationale": "string  // 2-3 句,引用 feature/pain/evidence,说明各评分项依据",
+      "expected_impact": "string  // 预期业务/体验收益,如'降低价格敏感团队流失'",
+      "success_metric": "string  // 可验收指标,如'14 天 Pro 转化率 +8%'；证据不足可写'待 A/B 验证'",
+      "risk": "string  // 潜在代价或副作用",
+      "time_horizon": "string  // 建议周期: <1 周 / 1 sprint / 1-2 sprint / 3+ sprint",
+      "validation_method": "string  // A/B 测试、用户访谈、埋点观察、灰度实验等",
       "source_feature_ids": ["F001"],
       "source_pain_ids":    ["P001"],
       "evidence_ids":       ["S........"],

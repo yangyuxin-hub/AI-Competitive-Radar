@@ -403,10 +403,26 @@ def _llm_status(evt: dict, elapsed: int) -> Optional[dict]:
     return None
 
 
+def _section_fallback_message(scope: str, section_label: str, note: str | None) -> str:
+    reason = "子任务失败"
+    if note:
+        low = note.lower()
+        if "timeout" in low or "timed out" in low:
+            reason = "子任务超时"
+        elif "authentication" in low or "invalid api key" in low or "401" in low:
+            reason = "模型鉴权失败"
+        elif "json" in low:
+            reason = "模型输出解析失败"
+        else:
+            reason = "模型调用失败"
+    return f"⚠️ {scope}：{section_label} {reason}，已用兜底"
+
+
 def _analyzer_status(evt: dict, elapsed: int) -> dict:
     step = evt.get("step")
     phase = evt.get("phase")
     summary = evt.get("summary")
+    note = evt.get("note")
     if step == "overview":
         msg = summary or "Analyzer 已读取证据，准备抽取事实层"
     elif step == "facts" and phase == "start":
@@ -420,7 +436,7 @@ def _analyzer_status(evt: dict, elapsed: int) -> dict:
         msg = f"事实层：{_names.get(evt.get('section'), evt.get('section'))} 完成"
     elif step == "facts" and phase == "section_fallback":
         _names = {"feature_tree": "功能对比", "pricing_model": "定价模型", "user_persona": "用户画像"}
-        msg = f"⚠️ 事实层：{_names.get(evt.get('section'), evt.get('section'))} 子任务超时，已用兜底"
+        msg = _section_fallback_message("事实层", _names.get(evt.get("section"), evt.get("section")), note)
     elif step == "facts":
         msg = f"✅ 事实层完成 — {summary}" if summary else "事实层完成，进入推导层"
     elif step == "derivations" and phase == "start":
@@ -430,7 +446,7 @@ def _analyzer_status(evt: dict, elapsed: int) -> dict:
         msg = f"推导层：{_names.get(evt.get('section'), evt.get('section'))} 完成"
     elif step == "derivations" and phase == "section_fallback":
         _names = {"swot": "SWOT 四象限", "recommendations": "优先级建议"}
-        msg = f"⚠️ 推导层：{_names.get(evt.get('section'), evt.get('section'))} 子任务超时，已用兜底"
+        msg = _section_fallback_message("推导层", _names.get(evt.get("section"), evt.get("section")), note)
     elif step == "derivations" and phase == "repair":
         msg = f"推导层自检发现 {evt.get('issues', '?')} 个问题，正在修复"
     elif step == "derivations" and phase == "fallback":
@@ -444,6 +460,8 @@ def _analyzer_status(evt: dict, elapsed: int) -> dict:
     event["analysis_phase"] = phase
     if summary:
         event["analysis_summary"] = summary
+    if note:
+        event["analysis_warning"] = str(note)[:240]
     if evt.get("preview") is not None:
         event["analysis_preview"] = evt.get("preview")
     return event
@@ -600,6 +618,31 @@ def _load_index() -> list[dict]:
     return []
 
 
+def _report_summary(state: dict) -> str:
+    schema = state.get("schema_draft") or {}
+    meta = state.get("analysis_meta") or {}
+    target = meta.get("target_product") or "目标产品"
+    recs = schema.get("recommendations") or []
+    if recs:
+        top = recs[0].get("action") or ""
+        if top:
+            return f"建议优先处理: {top}"
+    gaps = []
+    for feat in (schema.get("feature_tree") or {}).get("features") or []:
+        gap = feat.get("gap") or {}
+        if gap.get("winner") and feat.get("name"):
+            gaps.append((float(gap.get("confidence") or 0), feat.get("name"), gap.get("winner")))
+    if gaps:
+        _conf, name, winner = max(gaps)
+        if winner == target:
+            return f"结论: {target} 在「{name}」上相对领先。"
+        return f"结论: {winner} 在「{name}」上对 {target} 形成主要压力。"
+    pricing_gap = (schema.get("pricing_model") or {}).get("pricing_gap") or {}
+    if pricing_gap.get("summary"):
+        return f"定价判断: {pricing_gap.get('summary')}"
+    return "报告已生成，建议查看证据覆盖与结论详情。"
+
+
 def _persist_report(state: dict, stage_timings: Optional[list[dict]] = None) -> dict:
     _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     meta = state.get("analysis_meta") or {}
@@ -610,6 +653,7 @@ def _persist_report(state: dict, stage_timings: Optional[list[dict]] = None) -> 
     report = {
         "report_id": report_id,
         "meta": meta,
+        "summary": _report_summary(state),
         "schema_draft": state.get("schema_draft"),
         "report_draft": state.get("report_draft"),
         "quality_report": state.get("quality_report"),
@@ -628,6 +672,9 @@ def _persist_report(state: dict, stage_timings: Optional[list[dict]] = None) -> 
         "target_product": meta.get("target_product"),
         "competitors": meta.get("competitors") or [],
         "analysis_focus": meta.get("analysis_focus") or [],
+        "summary": report["summary"],
+        "runtime_profile": meta.get("runtime_profile"),
+        "evidence_count": len(state.get("raw_evidence") or []),
         "status": state.get("status"),
         "quality_score": qr.get("quality_score"),
         "created_at": now.isoformat(),
