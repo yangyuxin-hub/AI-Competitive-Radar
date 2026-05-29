@@ -12,6 +12,7 @@ from collections import Counter
 from typing import Optional
 
 from .analyzer import collect_all_evidence_refs
+from .judge import completeness_metrics
 from .state import AgentState
 
 
@@ -609,14 +610,19 @@ def _quality_dimensions(
     recs = schema.get("recommendations") or []
     swot = schema.get("swot") or {}
     swot_count = sum(len(swot.get(k) or []) for k in ("strengths", "weaknesses", "opportunities", "threats"))
-    completeness_checks = [
-        bool((schema.get("feature_tree") or {}).get("features")),
-        bool((schema.get("pricing_model") or {}).get("products")),
-        bool((schema.get("user_persona") or {}).get("pain_points")),
-        len(recs) >= 2,
-        swot_count > 0,
-    ]
-    report_completeness = _clamp_score(sum(1 for x in completeness_checks if x) / len(completeness_checks) * 100)
+    # 完成度统一走 judge.completeness_metrics(单一计算来源,与 API 附带的 report.completeness 一致)
+    # 失败时退回粗粒度布尔检查兜底,保证评分不中断。
+    try:
+        report_completeness = _clamp_score(completeness_metrics(schema, analysis_meta).get("overall") or 0)
+    except Exception:  # noqa: BLE001
+        _checks = [
+            bool((schema.get("feature_tree") or {}).get("features")),
+            bool((schema.get("pricing_model") or {}).get("products")),
+            bool((schema.get("user_persona") or {}).get("pain_points")),
+            len(recs) >= 2,
+            swot_count > 0,
+        ]
+        report_completeness = _clamp_score(sum(1 for x in _checks if x) / len(_checks) * 100)
 
     conflict_handling = 70
     if has_user and has_third:
