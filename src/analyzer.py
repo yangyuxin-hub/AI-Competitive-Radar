@@ -893,6 +893,8 @@ def _feature_spine(system_base: str, evidence: list[dict], meta: dict) -> list[d
     ft_ev = [e for e in evidence if e.get("claim_type") in _FT_CLAIM_TYPES]
     spine_instruct = (
         f"本次只做一件事:基于证据,列出 {focus} 维度下 4-6 个**适合跨产品横向对比**的功能点。\n"
+        "要求:功能维度必须**产品中立**(是该品类的通用对比维度,不能是某个产品的专有叫法/卖点),"
+        "这样每个产品都能在同一维度被公平评估;优先选证据里反复出现、各产品都可能涉及的维度。\n"
         '只输出 JSON: {"features":[{"feature_id":"F001","name":"功能名"}]}。\n'
         "feature_id 用 F001/F002…;name 尽量简洁(≤10字);不要输出 products / gap / quality 等其它字段。"
     )
@@ -983,8 +985,22 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
             'not_supported|unknown","support_evidence_ids":["..."],"quality_score":{"score":0-5,'
             '"scale":5,"basis":"一句话依据","evidence_ids":["..."]}}}}。\n'
             "support_evidence_ids 只能用 feature_existence 证据;quality_score.evidence_ids 只能用 "
-            "performance_quality / user_pain 证据。证据不足填 support_status:unknown、score:0。"
-            "严禁编造 evidence_id。"
+            "performance_quality / user_pain 证据。\n"
+            "## 评分锚点(务必拉开区分度,不要都给 3-4 分)\n"
+            "- 5=多条第三方/用户证据一致称该功能体验业界领先;4=明确优于同类,证据较强;\n"
+            "- 3=可用但中规中矩 / 评价不一;2=明显短板或负面反馈较多;1=几乎不可用;\n"
+            "- 0=**该功能无任何质量证据** → 必须同时 support_status:unknown(不是真实低分)。\n"
+            "## 纪律\n"
+            "- 证据不足就给 unknown + score 0,**严禁用常识或厂商营销话术补分**;\n"
+            "- 质量分优先采信 user_generated / third_party 证据,vendor_claim 仅作功能具备性佐证;\n"
+            "- basis 写成**可对比**的一句话(点出快/慢、准/糙的具体程度),不要泛泛而谈;\n"
+            "- 严禁编造 evidence_id。\n"
+            "## 微示例\n"
+            '正面: {"support_status":"supported","support_evidence_ids":["SAAA1111"],'
+            '"quality_score":{"score":4,"scale":5,"basis":"第三方实测延迟100-200ms,优于多数同类",'
+            '"evidence_ids":["SBBB2222"]}}\n'
+            '无证据: {"support_status":"unknown","support_evidence_ids":[],'
+            '"quality_score":{"score":0,"scale":5,"basis":"未检索到该功能的质量证据","evidence_ids":[]}}'
         )
         out = get_llm().call_json(
             f"{system_base}\n\n## 本次任务范围(重要)\n{fill_instruct}",

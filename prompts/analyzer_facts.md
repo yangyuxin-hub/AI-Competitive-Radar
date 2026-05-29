@@ -35,7 +35,9 @@
   `source_reliability` / `claim_relevance` / `evidence_confidence`
 
 ### 你必须输出
-一个**纯 JSON 对象**,**只**包含这三个顶层 key:
+一个**纯 JSON 对象**。完整事实层含以下三个顶层 key;但**系统通常会在本 prompt 末尾的「本次任务范围」
+里把任务收窄到只要求其中一个字段**(三个 section 并行生成,feature_tree 还会进一步拆成
+「骨架」与「按产品填充」两小步)。**始终以末尾「本次任务范围」为准**:
 ```json
 {
   "feature_tree":   { ... },

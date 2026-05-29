@@ -52,7 +52,9 @@ Step 1 已经把 evidence 整理成事实(features / pricing / personas / pains)
 
 ### 你必须输出
 
-一个纯 JSON 对象,**只**包含这两个顶层 key:
+一个纯 JSON 对象。**本次任务范围可能在本 prompt 末尾被收窄到只要求其中一个顶层 key**
+(系统会并行分别生成 `swot` 与 `recommendations`),**以末尾「本次任务范围」为准**;
+未收窄时则两个 key 都要输出:
 ```
 {
   "swot":            { ... },
@@ -270,7 +272,8 @@ Step 1 已经把 evidence 整理成事实(features / pricing / personas / pains)
 }
 ```
 
-> 注意:真实输出必须遵守"按 final_score 降序"的规则,rec_id 按 R001/R002... 顺序。SWOT 与 recommendations 共同输出,不要分成两次调用。
+> 注意:真实输出必须遵守"按 final_score 降序"的规则,rec_id 按 R001/R002... 顺序。
+> 系统会把 swot 与 recommendations **拆成两次并行调用**分别生成(每次只要求一个顶层字段,以「本次任务范围」为准);上面的双字段骨架仅示意完整结构。
 
 ---
 
