@@ -24,6 +24,7 @@ _GAP_LABELS = {
     "feature_completeness": "功能完整度",
     "usability": "易用性",
     "performance": "性能",
+    "insufficient_evidence": "证据不足",
     "unknown": "待确认",
 }
 
@@ -43,7 +44,6 @@ def _render_header(meta: dict, target: str, competitors: list[str], focus: list[
         f"> 报告 ID: {meta.get('report_id', '?')} · "
         f"数据截止: {meta.get('data_cutoff', '?')} · "
         f"目的: {meta.get('analysis_purpose', '?')}\n"
-        f"> (质检评分由前端从 quality_report 单独渲染,不在正文)\n"
     )
 
 
@@ -176,6 +176,41 @@ def _render_evidence_coverage(evidence: list[dict]) -> str:
 
 def _render_uncertainty(evidence: list[dict], schema: dict) -> str:
     notes: list[str] = []
+    meta = schema.get("analysis_meta") or {}
+    products = _products(meta) or list(
+        ((schema.get("feature_tree") or {}).get("features") or [{}])[0].get("products") or {}
+    )
+
+    # (1) 对比矩阵稀疏度:统计每个产品 unknown/未评分的格子,点名覆盖不足的产品
+    features = (schema.get("feature_tree") or {}).get("features") or []
+    if features and products:
+        unknown_by_product = {p: 0 for p in products}
+        insufficient = 0
+        for feat in features:
+            for p in products:
+                if _score_cell((feat.get("products") or {}).get(p) or {}) is None:
+                    unknown_by_product[p] += 1
+            if (feat.get("gap") or {}).get("gap_type") == "insufficient_evidence":
+                insufficient += 1
+        weak = [f"{p}（{n}/{len(features)} 项无质量证据）"
+                for p, n in unknown_by_product.items() if n >= max(2, len(features) // 2)]
+        if weak:
+            notes.append("以下产品在多数功能维度证据不足，对比结论偏单薄，建议补采："
+                         + "、".join(weak) + "。")
+        if insufficient:
+            notes.append(f"{insufficient} 个功能仅单个产品有证据（差距类型 insufficient_evidence），"
+                         "其胜负判断为弱结论，不宜直接用于决策。")
+
+    # (2) 定价完整度:统计有归一化价格数值的档位占比
+    tiers = [t for p in (schema.get("pricing_model") or {}).get("products") or []
+             for t in (p.get("tiers") or [])]
+    if tiers:
+        priced = sum(1 for t in tiers if (t.get("price") or {}).get("normalized_usd_month") is not None)
+        if priced < max(1, len(tiers) // 2):
+            notes.append(f"定价档位中仅 {priced}/{len(tiers)} 个有明确价格数值，价格高低对比不完整，"
+                         "需补采官方定价页的具体金额。")
+
+    # (3) 来源结构 / 时效
     bias_counts = Counter(e.get("source_bias") or "unknown" for e in evidence)
     if evidence and set(bias_counts) <= {"vendor_claim"}:
         notes.append("当前证据主要来自厂商官方材料，用户体验与痛点结论需要第三方/用户侧证据补强。")
@@ -218,9 +253,13 @@ def _render_score_overview(feature_tree: dict, products: list[str]) -> str:
         gap = feat.get("gap") or {}
         winner = gap.get("winner")
         reason = gap.get("reason", "")
+        insufficient = gap.get("gap_type") == "insufficient_evidence"
         if not scored_in_row:
             reason = "各产品均缺少质量证据，未评分"
             implication = "证据不足，需补采"
+        elif insufficient:
+            # 只有单个产品有分,不能据此宣称"放大优势";如实提示补齐竞品
+            implication = f"仅 {winner} 有数据，需补齐竞品对比再下结论"
         elif winner and winner == products[0]:
             implication = "可作为优势叙事继续放大"
         elif winner and winner != "unknown":
@@ -405,22 +444,6 @@ def _render_personas(user_persona: dict) -> str:
             exp = p.get("user_expectation", "")
             lines.append(f"| {pid} {desc} | {level} | {count} | {affected or '—'} | {exp or '待分析'} | {ev} |")
         lines.append("")
-        for p in pains:
-            pid = p.get("pain_id", "?")
-            desc = p.get("description", "")
-            freq = p.get("frequency") or {}
-            level = freq.get("level", "?")
-            count = freq.get("count", "")
-            ev = cite(freq.get("evidence_ids") or [])
-            affected = ", ".join(p.get("affected_products") or [])
-            exp = p.get("user_expectation", "")
-            lines.append(f"#### {pid} · 频度 {level}({count})\n")
-            lines.append(f"**问题**:{desc} {ev}\n")
-            if affected:
-                lines.append(f"- 影响产品:{affected}")
-            if exp:
-                lines.append(f"- 用户期望:{exp}")
-            lines.append("")
     return "\n".join(lines)
 
 
