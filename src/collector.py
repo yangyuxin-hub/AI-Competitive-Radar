@@ -10,7 +10,7 @@ import json
 import os
 import re
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -829,32 +829,46 @@ class AdapterRegistry:
                     "fallback": "cache",
                 })
 
-        # 第 1.5 层: Skills
-        for name, skill in self.skills.all().items():
-            if not skill.can_execute([product], product=product, focus=focus):
-                print(f"  [skill] {name}.can_execute({product}) = False")
-                continue
+        # 第 1.5 层: Skills — 并行执行。各 skill 独立做 LLM 关键词+抓取(HN ~14s、V2EX ~17s),
+        # 串行会把两者叠加;并行后该产品的 skill 阶段 ≈ max(各 skill)。
+        # 结果回主线程后再 extend/cache.save → 规避并发写同一缓存文件的竞态。
+        applicable = [
+            (name, skill) for name, skill in self.skills.all().items()
+            if skill.can_execute([product], product=product, focus=focus)
+        ]
+        for name, _ in applicable:
             print(f"  [skill] {name}.can_execute({product}) = True")
-            try:
-                evs, skill_meta = skill.execute([product], product=product, focus=focus)
-                print(f"  [skill] {name} returned {len(evs)} evidence")
-                for ev in evs:
-                    ev["collection_source"] = f"skill:{name}"
-                all_evidences.extend(evs)
-                self.cache.save(product, evs)
-                adapter_events.append({
-                    "adapter": f"skill:{name}",
-                    "status": "success",
-                    "count": len(evs),
-                    "skill_meta": skill_meta,
-                })
-            except Exception as e:
-                print(f"  [skill] {name} FAILED: {type(e).__name__}: {e}")
-                adapter_events.append({
-                    "adapter": f"skill:{name}",
-                    "status": "failed",
-                    "reason": str(e),
-                })
+
+        def _run_skill(item):
+            name, skill = item
+            evs, skill_meta = skill.execute([product], product=product, focus=focus)
+            return name, evs, skill_meta
+
+        if applicable:
+            with ThreadPoolExecutor(max_workers=len(applicable)) as sp:
+                sfuts = {sp.submit(_run_skill, it): it[0] for it in applicable}
+                for sfut in as_completed(sfuts):
+                    name = sfuts[sfut]
+                    try:
+                        _name, evs, skill_meta = sfut.result()
+                        print(f"  [skill] {name} returned {len(evs)} evidence")
+                        for ev in evs:
+                            ev["collection_source"] = f"skill:{name}"
+                        all_evidences.extend(evs)
+                        self.cache.save(product, evs)
+                        adapter_events.append({
+                            "adapter": f"skill:{name}",
+                            "status": "success",
+                            "count": len(evs),
+                            "skill_meta": skill_meta,
+                        })
+                    except Exception as e:
+                        print(f"  [skill] {name} FAILED: {type(e).__name__}: {e}")
+                        adapter_events.append({
+                            "adapter": f"skill:{name}",
+                            "status": "failed",
+                            "reason": str(e),
+                        })
 
         # 第二层:缓存
         missing = REQUIRED_CLAIM_TYPES - {e["claim_type"] for e in all_evidences}
@@ -906,6 +920,18 @@ class AdapterRegistry:
                 search_events = adapter.events_by_product.get(product, [])
         print(f"  result: {len(all_evidences)} evidence, sources: {source_summary}")
         print(f"  coverage: {coverage}")
+        # 抓到的代表性内容样本(让采集阶段不只显示计数,用户能看到"抓到了什么")
+        samples: list[dict] = []
+        for ev in all_evidences:
+            txt = (ev.get("claim") or ev.get("extracted_snippet") or "").strip().replace("\n", " ")
+            if txt:
+                samples.append({
+                    "product": product,
+                    "source": ev.get("collection_source", "?"),
+                    "text": txt[:80],
+                })
+            if len(samples) >= 4:
+                break
         # 实时上报本产品采集完成(api 据此累计证据数,前端不再卡 0)
         _emit_progress(
             phase="fetch",
@@ -914,6 +940,7 @@ class AdapterRegistry:
             evidence_count=len(all_evidences),
             source_counts=source_summary,
             coverage=coverage,
+            samples=samples,
             message=f"{product} 已收集 {len(all_evidences)} 条证据",
         )
         return all_evidences, {

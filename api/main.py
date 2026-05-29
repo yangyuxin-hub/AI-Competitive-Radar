@@ -487,7 +487,7 @@ def _run_stream(args: dict):
                 return
             event = _status_event("collector", msg, elapsed())
             event["collector_phase"] = evt.get("phase")
-            for key in ("product", "source_counts", "coverage"):
+            for key in ("product", "source_counts", "coverage", "samples"):
                 if evt.get(key) is not None:
                     event[key] = evt.get(key)
             if evt.get("phase") == "fetch" and evt.get("status") == "done" and evt.get("product"):
