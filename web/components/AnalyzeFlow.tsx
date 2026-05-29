@@ -362,6 +362,136 @@ function useElapsed(running: boolean) {
   return sec;
 }
 
+// LangGraph DAG 可视化:前向边 collector→analyzer→writer→reviewer→END,
+// 加质检打回的回边(reviewer→采集/分析/撰写),实时按状态着色 + 标注重试次数。
+const _DAG = [
+  { id: "collector", icon: "📥", label: "采集", cx: 78 },
+  { id: "analyzer", icon: "🧠", label: "分析", cx: 246 },
+  { id: "writer", icon: "✍️", label: "撰写", cx: 414 },
+  { id: "reviewer", icon: "🧪", label: "质检", cx: 582 },
+];
+const _END_CX = 672;
+const _ROW_Y = 150;
+const _NODE_W = 96;
+const _NODE_H = 56;
+
+function DagFlow({
+  counts,
+  currentNode,
+  retry,
+  degraded,
+  passed,
+}: {
+  counts: Map<string, number>;
+  currentNode?: string;
+  retry: Record<string, number>;
+  degraded: boolean;
+  passed: boolean;
+}) {
+  const top = _ROW_Y - _NODE_H / 2;
+  const cxOf = (id: string) => _DAG.find((n) => n.id === id)!.cx;
+  const stateOf = (id: string) =>
+    id === currentNode ? "active" : (counts.get(id) ?? 0) > 0 ? "done" : "pending";
+  const stroke = (s: string) =>
+    s === "active" ? "#38bdf8" : s === "done" ? "#34d399" : "rgba(255,255,255,0.15)";
+  const fillBg = (s: string) =>
+    s === "active" ? "rgba(56,189,248,0.12)" : s === "done" ? "rgba(52,211,153,0.08)" : "rgba(255,255,255,0.03)";
+
+  // 回边:reviewer 顶部弧线回到目标顶部;retry>0 表示真实触发过(高亮 amber + ×N)
+  const feedback = (target: string, lift: number) => {
+    const sx = cxOf("reviewer");
+    const tx = cxOf(target);
+    const apexY = top - lift;
+    const midX = (sx + tx) / 2;
+    const fired = (retry[target] ?? 0) > 0;
+    return (
+      <g key={`fb-${target}`}>
+        <path
+          d={`M ${sx} ${top} Q ${midX} ${apexY} ${tx} ${top}`}
+          fill="none"
+          stroke={fired ? "#f59e0b" : "rgba(255,255,255,0.12)"}
+          strokeWidth={fired ? 2 : 1}
+          strokeDasharray="5 4"
+          markerEnd={fired ? "url(#fb-arrow-on)" : "url(#fb-arrow-off)"}
+        />
+        {fired && (
+          <text x={midX} y={apexY - 4} textAnchor="middle" fontSize="11" fill="#fbbf24">
+            打回 ×{retry[target]}
+          </text>
+        )}
+      </g>
+    );
+  };
+
+  return (
+    <svg viewBox="0 0 712 200" className="w-full" role="img" aria-label="Agent DAG 任务流转">
+      <defs>
+        <marker id="fwd-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="rgba(255,255,255,0.4)" />
+        </marker>
+        <marker id="fb-arrow-on" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#f59e0b" />
+        </marker>
+        <marker id="fb-arrow-off" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="rgba(255,255,255,0.2)" />
+        </marker>
+      </defs>
+
+      {/* 前向边 */}
+      {_DAG.slice(0, -1).map((n, i) => {
+        const next = _DAG[i + 1];
+        const on = (counts.get(n.id) ?? 0) > 0;
+        return (
+          <line key={`fwd-${n.id}`}
+            x1={n.cx + _NODE_W / 2} y1={_ROW_Y} x2={next.cx - _NODE_W / 2} y2={_ROW_Y}
+            stroke={on ? "#34d399" : "rgba(255,255,255,0.15)"} strokeWidth="2" markerEnd="url(#fwd-arrow)" />
+        );
+      })}
+      {/* reviewer → END */}
+      <line x1={cxOf("reviewer") + _NODE_W / 2} y1={_ROW_Y} x2={_END_CX - 16} y2={_ROW_Y}
+        stroke={passed ? "#34d399" : "rgba(255,255,255,0.15)"} strokeWidth="2" markerEnd="url(#fwd-arrow)" />
+
+      {/* 回边(打回闭环)*/}
+      {feedback("writer", 34)}
+      {feedback("analyzer", 64)}
+      {feedback("collector", 94)}
+
+      {/* 节点 */}
+      {_DAG.map((n) => {
+        const s = stateOf(n.id);
+        const rep = (counts.get(n.id) ?? 0) > 1;
+        return (
+          <g key={n.id}>
+            <rect x={n.cx - _NODE_W / 2} y={top} width={_NODE_W} height={_NODE_H} rx="10"
+              fill={fillBg(s)} stroke={stroke(s)} strokeWidth="1.5" />
+            <text x={n.cx} y={_ROW_Y - 6} textAnchor="middle" fontSize="20">{n.icon}</text>
+            <text x={n.cx} y={_ROW_Y + 16} textAnchor="middle" fontSize="12" fill="#d4d4d8">{n.label}</text>
+            {rep && (
+              <>
+                <circle cx={n.cx + _NODE_W / 2 - 4} cy={top + 4} r="9" fill="#f59e0b" />
+                <text x={n.cx + _NODE_W / 2 - 4} y={top + 7} textAnchor="middle" fontSize="10" fontWeight="bold" fill="#000">
+                  {counts.get(n.id)}
+                </text>
+              </>
+            )}
+          </g>
+        );
+      })}
+
+      {/* END 节点 */}
+      <circle cx={_END_CX} cy={_ROW_Y} r="16"
+        fill={degraded ? "rgba(245,158,11,0.15)" : passed ? "rgba(52,211,153,0.15)" : "rgba(255,255,255,0.03)"}
+        stroke={degraded ? "#f59e0b" : passed ? "#34d399" : "rgba(255,255,255,0.15)"} strokeWidth="1.5" />
+      <text x={_END_CX} y={_ROW_Y + 5} textAnchor="middle" fontSize="14">
+        {degraded ? "⚠️" : passed ? "✅" : "🏁"}
+      </text>
+      <text x={_END_CX} y={_ROW_Y + 30} textAnchor="middle" fontSize="11" fill="#a1a1aa">
+        {degraded ? "降级" : "完成"}
+      </text>
+    </svg>
+  );
+}
+
 function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel: () => void }) {
   const [collectExpanded, setCollectExpanded] = useState(false);
   const progress = events.filter((e) => e.type === "progress") as Extract<
@@ -507,6 +637,23 @@ function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel
           latest={latestAnalysisPreview}
         />
       )}
+
+      {/* LangGraph DAG 任务流转(含质检打回回边,实时着色)*/}
+      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+        <div className="mb-1 flex items-center gap-3 px-1 text-[11px] text-neutral-500">
+          <span>LangGraph 任务流转</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-sky-400" />进行中</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />完成</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 bg-amber-500" style={{ clipPath: "polygon(0 40%,100% 40%,100% 60%,0 60%)" }} />质检打回</span>
+        </div>
+        <DagFlow
+          counts={counts}
+          currentNode={currentNode}
+          retry={retry as Record<string, number>}
+          degraded={progress.some((e) => e.status === "degraded")}
+          passed={progress.some((e) => e.status === "passed")}
+        />
+      </div>
 
       <div className="flex items-stretch justify-center gap-1">
         {PIPELINE.map((p, i) => {
