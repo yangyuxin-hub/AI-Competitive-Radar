@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -587,6 +588,20 @@ def _run_stream(args: dict):
 
         report = _persist_report(final_state, stage_timings)
         yield _sse({"type": "done", "report_id": report["report_id"], "report": report})
+
+        # 可选 LLM-as-Judge:在 done 之后单独发,不阻塞报告显示(RUN_JUDGE=1 开启)
+        if os.environ.get("RUN_JUDGE", "").strip() in ("1", "true", "True"):
+            try:
+                from src.judge import score_report  # noqa: WPS433
+                yield _sse(_status_event("reviewer", "正在做 LLM 质量评分(4 维)…", elapsed()))
+                card = score_report(
+                    final_state.get("report_draft") or "",
+                    final_state.get("schema_draft") or {},
+                    final_state.get("analysis_meta") or {},
+                )
+                yield _sse({"type": "judge", "report_id": report["report_id"], "scorecard": card})
+            except Exception as e:  # noqa: BLE001
+                yield _sse({"type": "judge_error", "message": str(e)})
     except Exception as e:  # noqa: BLE001
         yield _sse({"type": "error", "message": str(e)})
 
@@ -650,6 +665,13 @@ def _persist_report(state: dict, stage_timings: Optional[list[dict]] = None) -> 
     # report_id 唯一化：原 meta.report_id 可能跨次重复，加时间戳后缀
     base_id = meta.get("report_id") or "CR"
     report_id = f"{base_id}-{now.strftime('%H%M%S')}"
+    # 确定性「任务完成度」指标(零 LLM,不增加延迟)
+    completeness = None
+    try:
+        from src.judge import completeness_metrics  # noqa: WPS433
+        completeness = completeness_metrics(state.get("schema_draft") or {}, meta)
+    except Exception as e:  # noqa: BLE001
+        print(f"[api] completeness_metrics 失败(忽略): {e}")
     report = {
         "report_id": report_id,
         "meta": meta,
@@ -657,6 +679,7 @@ def _persist_report(state: dict, stage_timings: Optional[list[dict]] = None) -> 
         "schema_draft": state.get("schema_draft"),
         "report_draft": state.get("report_draft"),
         "quality_report": state.get("quality_report"),
+        "completeness": completeness,
         "raw_evidence": state.get("raw_evidence") or [],
         "status": state.get("status"),
         "stage_timings": stage_timings or [],
@@ -677,6 +700,7 @@ def _persist_report(state: dict, stage_timings: Optional[list[dict]] = None) -> 
         "evidence_count": len(state.get("raw_evidence") or []),
         "status": state.get("status"),
         "quality_score": qr.get("quality_score"),
+        "completeness": (completeness or {}).get("overall"),
         "created_at": now.isoformat(),
     })
     _INDEX.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")

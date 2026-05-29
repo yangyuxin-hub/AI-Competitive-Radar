@@ -123,6 +123,64 @@ def extract_features(schema: dict, meta: dict) -> dict:
     }
 
 
+def completeness_metrics(schema: dict, meta: dict) -> dict:
+    """确定性「任务完成度」评分(零 LLM,可随报告即时附带)。
+    衡量这份竞品分析「做全了没有」,与 R1-R7(自洽)、judge(好不好)互补。"""
+    feats = extract_features(schema, meta)
+    products = [p for p in [meta.get("target_product"), *(meta.get("competitors") or [])] if p]
+    rows = _iter_feature_rows(schema)
+
+    cells = filled = decided = 0
+    for row in rows:
+        pb = row.get("products") or {}
+        for p in products:
+            cells += 1
+            d = pb.get(p)
+            if isinstance(d, dict) and d.get("support_status") not in (None, "", "unknown"):
+                filled += 1
+        winner = (row.get("gap") or {}).get("winner")
+        if winner and winner != "unknown":
+            decided += 1
+
+    matrix_fill = _ratio(filled, cells)
+    gap_decisiveness = _ratio(decided, len(rows))
+    has_pricing = 1.0 if (schema.get("pricing_model") or {}).get("products") else 0.0
+    has_pains = 1.0 if (schema.get("user_persona") or {}).get("pain_points") else 0.0
+    feature_depth = min(1.0, len(rows) / 4)  # 4+ 个对比功能算到顶
+
+    overall = round(100 * (
+        0.25 * feats["evidence_coverage_ratio"]
+        + 0.20 * matrix_fill
+        + 0.20 * gap_decisiveness
+        + 0.15 * feats["recs_with_priority_ratio"]
+        + 0.10 * feature_depth
+        + 0.05 * has_pricing
+        + 0.05 * has_pains
+    ), 1)
+
+    return {
+        "overall": overall,
+        "aspects": [
+            {"key": "feature_coverage", "label": "功能对比覆盖", "value": matrix_fill,
+             "detail": f"{filled}/{cells} 个产品×功能单元格有结论"},
+            {"key": "evidence", "label": "结论溯源率", "value": feats["evidence_coverage_ratio"],
+             "detail": "有 evidence 支撑的结论占比"},
+            {"key": "gap_decisiveness", "label": "差距判定率", "value": gap_decisiveness,
+             "detail": f"{decided}/{len(rows)} 个功能给出了明确胜负"},
+            {"key": "rec_priority", "label": "建议带优先级", "value": feats["recs_with_priority_ratio"]},
+            {"key": "rec_actionable", "label": "建议含落地字段", "value": feats["recs_with_action_fields_ratio"],
+             "detail": "动作/收益/指标/风险/周期"},
+        ],
+        "counts": {
+            "features": feats["n_feature_rows"],
+            "recommendations": feats["n_recommendations"],
+            "swot_items": feats["n_swot_items"],
+            "products": len(products),
+        },
+        "missing_action_fields": feats["missing_action_fields"],
+    }
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # LLM 打分
 # ────────────────────────────────────────────────────────────────────────────

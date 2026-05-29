@@ -967,7 +967,10 @@ _DERIV_SECTIONS = {
     "swot": "本次任务只输出 `swot` 这一个顶层字段(target 的四象限,每条可定位到 facts 依据)。"
             "不要输出 recommendations。",
     "recommendations": "本次任务只输出 `recommendations` 这一个顶层字段(可执行、带 priority_score、"
-                       "引用 facts 的 source_feature_ids / source_pain_ids)。不要输出 swot。",
+                       "引用 facts 的 source_feature_ids / source_pain_ids)。不要输出 swot。\n"
+                       "每条建议尽量补齐可落地字段(让 PM 能直接立项):"
+                       "`expected_impact`(预期收益)、`success_metric`(验收指标)、"
+                       "`risk`(主要风险)、`time_horizon`(周期,如 1-2 周/1 季度)。无把握的字段可省略,不要编造。",
 }
 
 
