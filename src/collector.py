@@ -11,7 +11,7 @@ import os
 import re
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, wait
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -263,19 +263,17 @@ def reset_debug_file() -> None:
 
 
 def dump_evidence_debug(evidences: list[dict], path: Optional[Path] = None, run_id: int = 0) -> Path:
-    """将 evidence 输出到 data/ 下的 debug 文件，按产品分组，跨 run 追加"""
-    import json
-    from datetime import datetime
-
+    """将 evidence 输出到 data/debug/ 下的 debug 文件，按产品分组，跨 run 追加"""
     global _debug_file_path
 
     print(f"  [debug] dump_evidence_debug called with {len(evidences)} items (run #{run_id})")
 
     # 首次调用时创建文件路径，后续复用（追加）
+    # 落到 data/debug/（已 gitignore），不再污染 data/ 根目录与 git status
     if path is None:
         if _debug_file_path is None:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            _debug_file_path = _ROOT / "data" / f"evidence_debug_{ts}.json"
+            _debug_file_path = _ROOT / "data" / "debug" / f"evidence_debug_{ts}.json"
         path = _debug_file_path
 
     # 加载已有数据（追加模式）
@@ -573,7 +571,6 @@ class OfficialPageAdapter(SourceAdapter):
 
         chunks.sort(key=_info_density, reverse=True)
 
-        from datetime import datetime
         observed = datetime.now().strftime("%Y-%m-%d")
         out: list[dict] = []
         # 取前 15 段作为 evidence

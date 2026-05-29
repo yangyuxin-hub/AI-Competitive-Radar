@@ -30,9 +30,15 @@ secrets/
 # 运行产物
 logs/
 data/cache/
+data/debug/
+data/evidence_debug_*.json
 out/
 *.log
 agent_trace.jsonl
+
+# 本地临时/生成物
+tmp_*.py
+*.mmd
 
 # 前端
 node_modules/
