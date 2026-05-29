@@ -184,6 +184,9 @@ export default function ReportView({ report }: { report: Report }) {
           ))}
         </nav>
 
+        {/* 综合评级 — 一眼看懂这份报告几分 */}
+        <OverallGrade report={report} />
+
         {/* Overview */}
         <section className="space-y-3">
           <SectionTitle id="overview">概览</SectionTitle>
@@ -331,6 +334,52 @@ function DecisionPill({ label, value }: { label: string; value: string }) {
     <div className="min-w-0 rounded-lg border border-white/10 bg-neutral-950/40 p-3">
       <div className="text-[11px] text-neutral-500">{label}</div>
       <div className="mt-1 line-clamp-2 text-xs font-medium leading-relaxed text-neutral-200">{value}</div>
+    </div>
+  );
+}
+
+function gradeOf(score: number): { letter: string; label: string; tone: string } {
+  if (score >= 85) return { letter: "A", label: "优秀", tone: "text-emerald-400" };
+  if (score >= 70) return { letter: "B", label: "良好", tone: "text-sky-400" };
+  if (score >= 55) return { letter: "C", label: "及格", tone: "text-amber-400" };
+  return { letter: "D", label: "待补强", tone: "text-red-400" };
+}
+
+function OverallGrade({ report }: { report: Report }) {
+  const quality = report.quality_report?.quality_score;
+  const completeness = report.completeness?.overall;
+  const parts: { label: string; value: number }[] = [];
+  if (typeof quality === "number") parts.push({ label: "质检规范", value: quality });
+  if (typeof completeness === "number") parts.push({ label: "任务完成度", value: completeness });
+  if (parts.length === 0) return null;
+
+  const overall = Math.round(parts.reduce((a, p) => a + p.value, 0) / parts.length);
+  const g = gradeOf(overall);
+  const statusLabel =
+    report.status === "passed" ? "已通过质检" : report.status === "degraded" ? "降级输出" : report.status;
+
+  return (
+    <div className="flex items-center gap-5 rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.06] to-white/[0.02] p-5">
+      <div className="flex flex-col items-center">
+        <div className={`font-mono text-5xl font-bold leading-none ${g.tone}`}>{g.letter}</div>
+        <div className="mt-1 text-xs text-neutral-400">{g.label}</div>
+      </div>
+      <div className="h-12 w-px bg-white/10" />
+      <div className="flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="text-sm text-neutral-400">综合评级</span>
+          <span className={`font-mono text-2xl font-semibold ${g.tone}`}>{overall}</span>
+          <span className="text-xs text-neutral-600">/100 · {statusLabel}</span>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1">
+          {parts.map((p) => (
+            <div key={p.label} className="flex items-center gap-2 text-xs">
+              <span className="text-neutral-500">{p.label}</span>
+              <span className="font-mono text-neutral-300">{Math.round(p.value)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
