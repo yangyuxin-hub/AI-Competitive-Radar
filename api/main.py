@@ -401,6 +401,12 @@ def _analyzer_status(evt: dict, elapsed: int) -> dict:
         msg = f"事实层自检发现 {evt.get('issues', '?')} 个问题，正在修复引用"
     elif step == "facts" and phase == "fallback":
         msg = f"⚠️ {summary}" if summary else "⚠️ 事实层模型超时，已使用保守降级结果"
+    elif step == "facts" and phase == "section_done":
+        _names = {"feature_tree": "功能对比", "pricing_model": "定价模型", "user_persona": "用户画像"}
+        msg = f"事实层：{_names.get(evt.get('section'), evt.get('section'))} 完成"
+    elif step == "facts" and phase == "section_fallback":
+        _names = {"feature_tree": "功能对比", "pricing_model": "定价模型", "user_persona": "用户画像"}
+        msg = f"⚠️ 事实层：{_names.get(evt.get('section'), evt.get('section'))} 子任务超时，已用兜底"
     elif step == "facts":
         msg = f"✅ 事实层完成 — {summary}" if summary else "事实层完成，进入推导层"
     elif step == "derivations" and phase == "start":

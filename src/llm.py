@@ -157,8 +157,9 @@ class LLMClient:
         system_prompt: str,
         user_payload: dict,
         model: Optional[str] = None,
-        max_tokens: int = 4096,
+        max_tokens: Optional[int] = None,
         label: str = "call",
+        timeout: Optional[float] = None,
     ) -> dict:
         """调用 LLM,要求返回 JSON 对象。Mock 模式下不实际调用。
 
@@ -184,12 +185,14 @@ class LLMClient:
         t0 = time.time()
         _emit_llm(label=label, phase="start")
         # 本 EP(豆包)不支持 response_format=json_object,直接走文本模式(省掉一轮被拒的往返)。
-        resp = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.2,
-            max_tokens=max_tokens,
-        )
+        # max_tokens=None → 不传上限,让模型按内容自然结束(报告生成切忌中途截断 → 残缺 JSON)。
+        kwargs = {"model": model, "messages": messages, "temperature": 0.2}
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        # 单次调用可覆写超时(facts 并行子调用用更短的超时 → hung 的 section 快速降级,
+        # 不必等共享 client 的 200s)。其余字段沿用 _ensure() 建好的 client。
+        call_client = client.with_options(timeout=timeout) if timeout is not None else client
+        resp = call_client.chat.completions.create(**kwargs)
         elapsed = time.time() - t0
         raw = resp.choices[0].message.content or "{}"
         usage = getattr(resp, "usage", None)

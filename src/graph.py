@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -42,8 +43,6 @@ def build_app(llm: Optional[object] = None, reviewer_mode: Optional[str] = None)
         raise RuntimeError(
             "langgraph 未安装。pip install -r requirements.txt"
         ) from e
-
-    import os
 
     mode = reviewer_mode or os.environ.get("REVIEWER_MODE", "minimal")
     if llm is None and mode == "full":
@@ -97,7 +96,6 @@ def build_app(llm: Optional[object] = None, reviewer_mode: Optional[str] = None)
 
 def _load_domain_config() -> Optional[dict]:
     """读取 config/domains.yaml,按 DOMAIN env 选行业。返回 None 表示走 ai_coding 默认"""
-    import os
     domain = os.environ.get("DOMAIN", "").strip()
     if not domain:
         return None
@@ -287,7 +285,6 @@ def main() -> int:
     final = run_demo()
 
     # 写报告 — 按 DOMAIN 分子目录,避免覆盖
-    import os
     domain_tag = os.environ.get("DOMAIN", "").strip() or "ai_coding"
     out_dir = _ROOT / "out" / domain_tag
     out_dir.mkdir(parents=True, exist_ok=True)

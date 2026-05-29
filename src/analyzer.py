@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
@@ -741,6 +742,41 @@ def _build_repair_hint(issues: list[str]) -> str:
     )
 
 
+# facts 三个顶层 section 各自独立 → 拆成并行子问答,每个只喂相关 claim_type、只输出该 section,
+# 输出量天然减半/三分,既躲开"顶满 max_tokens 被截断 → 残缺 JSON"悬崖,又并行更快。
+# 注意:feature_tree 是跨产品对比(gap.winner),所以按 section 拆而不是按产品拆,保对比结构完整。
+_FACTS_SECTIONS = {
+    "feature_tree": {
+        "claim_types": ("feature_existence", "performance_quality", "user_pain"),
+        "instruct": "本次任务只输出 `feature_tree` 这一个顶层字段(覆盖所有有证据的功能,每个 feature 必须覆盖 "
+                    "target + ≥1 competitor)。不要输出 pricing_model / user_persona。",
+    },
+    "pricing_model": {
+        "claim_types": ("pricing", "user_pain", "market_signal"),
+        "instruct": "本次任务只输出 `pricing_model` 这一个顶层字段(覆盖所有有定价证据的产品 + pricing_gap)。"
+                    "不要输出 feature_tree / user_persona。",
+    },
+    "user_persona": {
+        "claim_types": ("user_pain", "market_signal", "performance_quality"),
+        "instruct": "本次任务只输出 `user_persona` 这一个顶层字段(user_segments + pain_points)。"
+                    "不要输出 feature_tree / pricing_model。",
+    },
+}
+
+
+def _facts_section_call(section: str, system_base: str, evidence: list[dict], meta: dict) -> tuple[str, dict]:
+    """单个 section 的子问答:只喂相关 claim_type 的证据、只要求输出该 section。"""
+    cfg = _FACTS_SECTIONS[section]
+    sub_ev = _compact_evidence([e for e in evidence if e.get("claim_type") in cfg["claim_types"]])
+    system = f"{system_base}\n\n## 本次任务范围(重要)\n{cfg['instruct']}\n仍需遵守上面所有 HARD CONSTRAINTS。"
+    payload = {"analysis_meta": meta, "raw_evidence": sub_ev}
+    # facts 三 section 并行,任意一个 hang 不该拖到共享 client 的 200s 才降级。
+    # 单独给一个更短超时(ANALYZER_FACTS_TIMEOUT,默认 90s),超时即抛 → 上层用兜底填充。
+    timeout = float(os.environ.get("ANALYZER_FACTS_TIMEOUT", "90"))
+    out = get_llm().call_json(system, payload, label=f"facts:{section}", timeout=timeout)  # 不设 max_tokens,杜绝截断
+    return section, (out.get(section) or out)
+
+
 def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0) -> dict:
     """Step 1 — 事实层"""
     if is_mock_mode():
@@ -758,51 +794,40 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0) -> d
         _emit_progress(step="facts", phase="done", attempt=1, summary=_facts_summary(facts), preview=_facts_preview(facts))
         return facts
 
-    llm = get_llm()
     system = load_prompt("analyzer_facts")
-    payload = {"analysis_meta": meta, "raw_evidence": _compact_evidence(evidence)}
-    _emit_progress(step="facts", phase="start", attempt=1)
-    try:
-        facts = llm.call_json(system, payload, max_tokens=8192, label="facts")
-    except Exception as e:  # noqa: BLE001
-        reason = f"{type(e).__name__}: {e}"
-        print(f"[analyzer] facts call failed; using timeout fallback: {reason}")
-        facts = _fallback_facts(evidence, meta, reason)
-        _emit_progress(
-            step="facts",
-            phase="fallback",
-            attempt=1,
-            summary="模型请求超时，已用证据生成保守事实层",
-            preview={**_facts_preview(facts), "fallback": True, "note": reason},
-        )
-        return facts
-    _emit_progress(step="facts", phase="done", attempt=1, summary=_facts_summary(facts), preview=_facts_preview(facts))
+    _emit_progress(step="facts", phase="start", attempt=1,
+                   summary=f"并行抽取 {len(_FACTS_SECTIONS)} 个事实 section")
+    # 三个 section 并行子问答,各自只输出一个顶层字段 → 不会顶满被截断
+    facts: dict = {}
+    fb = None  # 懒构造的兜底(整套 facts)
+    with ThreadPoolExecutor(max_workers=len(_FACTS_SECTIONS)) as ex:
+        futs = {ex.submit(_facts_section_call, s, system, evidence, meta): s
+                for s in _FACTS_SECTIONS}
+        for fut in as_completed(futs):
+            section = futs[fut]
+            try:
+                sec, data = fut.result()
+                facts[sec] = data
+                _emit_progress(step="facts", phase="section_done", section=sec)
+            except Exception as e:  # noqa: BLE001
+                reason = f"{type(e).__name__}: {e}"
+                print(f"[analyzer] facts section '{section}' failed; 用兜底填充: {reason}")
+                if fb is None:
+                    fb = _fallback_facts(evidence, meta, reason)
+                facts[section] = fb.get(section, {})
+                _emit_progress(step="facts", phase="section_fallback", section=section, note=reason)
 
-    # issue 过多时 LLM 重跑(~80s)既慢又难全修 → 直接走确定性 sanitize(秒级)
-    _MAX_LLM_REPAIR_ISSUES = int(os.environ.get("ANALYZER_FACTS_REPAIR_THRESHOLD", "6"))
+    _emit_progress(step="facts", phase="done", attempt=1,
+                   summary=_facts_summary(facts), preview=_facts_preview(facts))
+
+    # 拆分后不再走 LLM 重跑(那会退回大调用);引用问题统一用确定性 sanitize(秒级)。
     issues = quick_validate_facts(facts, evidence, meta)
-    if issues and len(issues) > _MAX_LLM_REPAIR_ISSUES:
-        print(f"[analyzer] facts found {len(issues)} issues (> {_MAX_LLM_REPAIR_ISSUES}); 跳过 LLM 重跑，直接 sanitize")
+    if issues:
+        print(f"[analyzer] facts quick_validate found {len(issues)} issues; 确定性 sanitize")
         _emit_progress(step="facts", phase="repair", issues=len(issues))
         facts, dropped = sanitize_facts_evidence_refs(facts, evidence)
-        print(f"[analyzer] facts deterministic sanitize dropped {dropped} invalid evidence refs")
-    elif issues:
-        print(f"[analyzer] facts quick_validate found {len(issues)} issues; repairing")
-        _emit_progress(step="facts", phase="repair", issues=len(issues))
-        try:
-            facts = llm.call_json(
-                system + _build_repair_hint(issues), payload,
-                max_tokens=8192, label="facts_repair",
-            )
-            _emit_progress(step="facts", phase="done", attempt=2, summary=_facts_summary(facts), preview=_facts_preview(facts))
-        except Exception as e:
-            print(f"[analyzer] facts repair failed; applying deterministic sanitize: {e}")
-
-        remaining = quick_validate_facts(facts, evidence, meta)
-        if remaining:
-            facts, dropped = sanitize_facts_evidence_refs(facts, evidence)
-            if dropped:
-                print(f"[analyzer] facts deterministic sanitize dropped {dropped} invalid evidence refs")
+        if dropped:
+            print(f"[analyzer] facts deterministic sanitize dropped {dropped} invalid evidence refs")
     return facts
 
 
@@ -827,7 +852,7 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
     payload = {"analysis_meta": meta, "raw_evidence": _compact_evidence(evidence), "facts": facts}
     _emit_progress(step="derivations", phase="start", attempt=1, preview=_facts_preview(facts))
     try:
-        der = llm.call_json(system, payload, max_tokens=3072, label="derivations")
+        der = llm.call_json(system, payload, label="derivations")  # 不设上限,杜绝截断
     except Exception as e:  # noqa: BLE001
         reason = f"{type(e).__name__}: {e}"
         print(f"[analyzer] derivations call failed; using timeout fallback: {reason}")
@@ -849,7 +874,7 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
         try:
             der = llm.call_json(
                 system + _build_repair_hint(issues), payload,
-                max_tokens=3072, label="derivations_repair",
+                label="derivations_repair",
             )
             _emit_progress(step="derivations", phase="done", attempt=2, summary=_der_summary(der), preview=_derivations_preview(der))
         except Exception as e:
