@@ -6,6 +6,7 @@
 - 配额用尽 → status=degraded,不再打回
 """
 import copy
+import os
 import unittest
 
 from src.reviewer import make_reviewer_node
@@ -109,6 +110,40 @@ class ReviewerRoutingTest(unittest.TestCase):
         )
         self.assertEqual(out["status"], "degraded")
         self.assertIsNone(out["reject_target"])
+
+
+class _DummyLLM:
+    def call_json(self, *a, **k):
+        return {"issues": []}  # 无语义问题
+
+
+class TerminalR6Test(unittest.TestCase):
+    """minimal 模式终轮 R6:注入 llm 时执行(软校验),REVIEWER_R6_FINAL=0 时跳过。"""
+
+    def setUp(self):
+        os.environ.pop("REVIEWER_R6_FINAL", None)
+
+    def tearDown(self):
+        os.environ.pop("REVIEWER_R6_FINAL", None)
+
+    def test_r6_runs_in_minimal_when_llm_injected(self):
+        review = make_reviewer_node(llm=_DummyLLM(), mode="minimal")
+        out = review(_state_with(_GOOD_SCHEMA, _EVIDENCE))  # 结构干净 → R6 终轮执行
+        qr = out["quality_report"]
+        self.assertIn("R6", qr["passed_rules"])  # 执行且无 R6 错误
+        self.assertNotIn("R6", qr["skipped_rules"])
+        self.assertEqual(out["status"], "passed")
+
+    def test_r6_skipped_when_disabled(self):
+        os.environ["REVIEWER_R6_FINAL"] = "0"
+        review = make_reviewer_node(llm=_DummyLLM(), mode="minimal")
+        out = review(_state_with(_GOOD_SCHEMA, _EVIDENCE))
+        self.assertIn("R6", out["quality_report"]["skipped_rules"])
+
+    def test_r6_skipped_when_no_llm(self):
+        review = make_reviewer_node(mode="minimal")  # 无 llm
+        out = review(_state_with(_GOOD_SCHEMA, _EVIDENCE))
+        self.assertIn("R6", out["quality_report"]["skipped_rules"])
 
 
 class R5UnknownWinnerTest(unittest.TestCase):

@@ -714,13 +714,22 @@ def make_reviewer_node(llm=None, mode: Optional[str] = None):
 
         errors_pre = [i for i in all_issues if i["severity"] == "error"]
 
-        # R6 仅在 full 模式 + 结构通过后跑一次。
-        if cfg["llm"]:
+        # R6 语义落地校验(抗幻觉):full 模式为硬门;minimal 模式可作"终轮"软校验
+        # (REVIEWER_R6_FINAL=1 默认开,需注入 llm)——结论须被引用 snippet 支撑,
+        # 但仅记 warning 不打回(避免 demo 流程被语义判定反复降级)。
+        r6_final = os.environ.get("REVIEWER_R6_FINAL", "1").strip() not in ("0", "false", "False")
+        run_r6 = (cfg["llm"] or r6_final) and llm is not None
+        if run_r6:
             if errors_pre:
-                skipped_rules.add("R6")
+                skipped_rules.add("R6")  # 结构未过先不浪费语义校验
             else:
                 executed_rules.add("R6")
-                all_issues += check_semantic_grounding(schema, evidence, llm)
+                r6_issues = check_semantic_grounding(schema, evidence, llm)
+                if not cfg["llm"]:  # minimal 终轮:R6 发现仅作 warning
+                    for i in r6_issues:
+                        if i.get("severity") == "error":
+                            i["severity"] = "warning"
+                all_issues += r6_issues
         else:
             skipped_rules.add("R6")
 

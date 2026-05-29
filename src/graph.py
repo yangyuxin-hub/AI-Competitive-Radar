@@ -45,10 +45,12 @@ def build_app(llm: Optional[object] = None, reviewer_mode: Optional[str] = None)
         ) from e
 
     mode = reviewer_mode or os.environ.get("REVIEWER_MODE", "minimal")
-    if llm is None and mode == "full":
+    # full 模式 R6 是硬门;minimal 终轮 R6(REVIEWER_R6_FINAL,默认开)也需注入 llm
+    r6_final = os.environ.get("REVIEWER_R6_FINAL", "1").strip() not in ("0", "false", "False")
+    if llm is None and (mode == "full" or r6_final):
         try:
             from .llm import get_llm, is_mock_mode
-            if not is_mock_mode() and os.environ.get("ARK_API_KEY"):
+            if not is_mock_mode() and (os.environ.get("LLM_API_KEY") or os.environ.get("ARK_API_KEY")):
                 llm = get_llm()
         except Exception as e:
             print(f"[graph] WARN: R6 LLM 注入失败,Reviewer 将记录 warning: {e}")
