@@ -6,7 +6,7 @@ import {
   answersToRunArgs,
   runAnalysis,
 } from "@/lib/api";
-import type { Question, Answers, ProgressEvent, Report, NodeDetail } from "@/lib/types";
+import type { Question, Answers, ProgressEvent, Report, NodeDetail, AnalysisPreview } from "@/lib/types";
 import { domainOf } from "@/lib/source";
 import ReportView from "./ReportView";
 
@@ -403,6 +403,18 @@ function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel
   ) as Extract<ProgressEvent, { type: "status" | "progress" }>[];
   const collectorPhase = allCollector.findLast((e) => e.collector_phase)?.collector_phase;
   const shownCollector = collectExpanded ? allCollector : allCollector.slice(-5);
+  const analysisStatus = timeline.filter(
+    (e): e is Extract<ProgressEvent, { type: "status" }> =>
+      e.type === "status" && e.node === "analyzer"
+  );
+  const analysisPreviews = analysisStatus
+    .map((e) => e.analysis_preview)
+    .filter(Boolean) as AnalysisPreview[];
+  const overviewPreview = analysisPreviews.findLast((p) => p.kind === "overview");
+  const factsPreview = analysisPreviews.findLast((p) => p.kind === "facts");
+  const derivationsPreview = analysisPreviews.findLast((p) => p.kind === "derivations");
+  const latestAnalysisPreview = analysisPreviews.at(-1) ?? null;
+  const showAnalysisPreview = currentNode === "analyzer" || analysisPreviews.length > 0;
 
   // ── 进度条 + ETA(自校准:用已耗时与当前进度反推总时长,适配不同 runtime profile)──
   const STAGE_SPAN: Record<string, [number, number]> = {
@@ -486,6 +498,15 @@ function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel
         </div>
         <p className="text-sm leading-relaxed text-neutral-300">{currentMessage}</p>
       </div>
+
+      {showAnalysisPreview && (
+        <AnalysisLivePanel
+          overview={overviewPreview}
+          facts={factsPreview}
+          derivations={derivationsPreview}
+          latest={latestAnalysisPreview}
+        />
+      )}
 
       <div className="flex items-stretch justify-center gap-1">
         {PIPELINE.map((p, i) => {
@@ -672,6 +693,139 @@ function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel
         <p className="text-center text-xs text-neutral-500">
           Reviewer 发现问题并打回重跑 — 这正是质量自愈闭环在工作
         </p>
+      )}
+    </div>
+  );
+}
+
+function AnalysisLivePanel({
+  overview,
+  facts,
+  derivations,
+  latest,
+}: {
+  overview?: AnalysisPreview;
+  facts?: AnalysisPreview;
+  derivations?: AnalysisPreview;
+  latest: AnalysisPreview | null;
+}) {
+  const fallback = Boolean(latest?.fallback || facts?.fallback || derivations?.fallback);
+  const productCounts = overview?.evidence?.products ?? [];
+  const claimCounts = overview?.evidence?.claim_types ?? [];
+  const features = facts?.features ?? [];
+  const signals = overview?.signals ?? [];
+  const pains = facts?.pain_points ?? [];
+  const pricing = facts?.pricing ?? [];
+  const recs = derivations?.recommendations ?? [];
+  const swot = derivations?.swot;
+
+  return (
+    <div className="mx-auto max-w-xl rounded-xl border border-cyan-500/20 bg-cyan-500/[0.06] p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-medium text-cyan-100">实时分析结论</div>
+          <div className="mt-0.5 text-xs text-neutral-500">
+            先展示已抽取内容，最终报告仍会经过 Writer 与 Reviewer
+          </div>
+        </div>
+        {fallback && (
+          <span className="rounded-md border border-amber-400/30 bg-amber-400/10 px-2 py-1 text-xs text-amber-200">
+            已启用保守降级
+          </span>
+        )}
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-[0.9fr_1.1fr]">
+        <section className="min-w-0">
+          <div className="mb-2 text-xs font-medium text-neutral-400">已读证据</div>
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-1.5">
+              {productCounts.length > 0 ? productCounts.map((p) => (
+                <span key={p.product} className="rounded bg-white/[0.06] px-2 py-1 text-xs text-neutral-300">
+                  {p.product} <span className="font-mono text-cyan-300">{p.count}</span>
+                </span>
+              )) : (
+                <span className="text-xs text-neutral-500">等待证据概览</span>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {claimCounts.slice(0, 4).map((c) => (
+                <span key={c.label} className="rounded bg-emerald-500/10 px-2 py-1 text-xs text-emerald-200/90">
+                  {c.label} ×{c.count}
+                </span>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="min-w-0">
+          <div className="mb-2 text-xs font-medium text-neutral-400">事实层预览</div>
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-1.5">
+              {features.length > 0 ? features.map((f) => (
+                <span key={f} className="max-w-full truncate rounded bg-sky-500/10 px-2 py-1 text-xs text-sky-200">
+                  {f}
+                </span>
+              )) : (
+                <span className="text-xs text-neutral-500">功能/定价/痛点抽取中</span>
+              )}
+            </div>
+            {pricing.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {pricing.map((p) => (
+                  <span key={p} className="max-w-full truncate rounded bg-white/[0.06] px-2 py-1 text-xs text-neutral-300">
+                    {p}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <section className="min-w-0">
+          <div className="mb-2 text-xs font-medium text-neutral-400">
+            {pains.length > 0 ? "用户痛点" : "证据线索"}
+          </div>
+          <div className="space-y-1.5">
+            {pains.length > 0 ? pains.map((p, i) => (
+              <div key={`${p}-${i}`} className="line-clamp-2 text-xs leading-relaxed text-neutral-300">
+                {i + 1}. {p}
+              </div>
+            )) : signals.length > 0 ? signals.map((s, i) => (
+              <div key={`${s}-${i}`} className="line-clamp-2 text-xs leading-relaxed text-neutral-300">
+                {i + 1}. {s}
+              </div>
+            )) : (
+              <div className="text-xs text-neutral-500">等待事实层返回</div>
+            )}
+          </div>
+        </section>
+
+        <section className="min-w-0">
+          <div className="mb-2 text-xs font-medium text-neutral-400">初步建议</div>
+          <div className="space-y-1.5">
+            {recs.length > 0 ? recs.map((r, i) => (
+              <div key={`${r.action}-${i}`} className="text-xs leading-relaxed text-neutral-300">
+                {r.priority && <span className="mr-1 text-cyan-300">{r.priority}</span>}
+                {r.action}
+              </div>
+            )) : (
+              <div className="text-xs text-neutral-500">事实层完成后开始推导</div>
+            )}
+          </div>
+        </section>
+      </div>
+
+      {swot && (
+        <div className="mt-4 flex flex-wrap gap-1.5 border-t border-white/10 pt-3">
+          <span className="rounded bg-white/[0.05] px-2 py-1 text-xs text-neutral-400">SWOT</span>
+          <span className="rounded bg-emerald-500/10 px-2 py-1 text-xs text-emerald-300">优势 {swot.strengths ?? 0}</span>
+          <span className="rounded bg-red-500/10 px-2 py-1 text-xs text-red-300">劣势 {swot.weaknesses ?? 0}</span>
+          <span className="rounded bg-sky-500/10 px-2 py-1 text-xs text-sky-300">机会 {swot.opportunities ?? 0}</span>
+          <span className="rounded bg-amber-500/10 px-2 py-1 text-xs text-amber-300">威胁 {swot.threats ?? 0}</span>
+        </div>
       )}
     </div>
   );

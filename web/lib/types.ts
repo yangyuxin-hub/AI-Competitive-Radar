@@ -72,6 +72,28 @@ export interface ReportIndexItem {
   created_at: string;
 }
 
+export interface AnalysisPreview {
+  kind: "overview" | "facts" | "derivations";
+  fallback?: boolean;
+  note?: string;
+  evidence?: {
+    products?: { product: string; count: number }[];
+    claim_types?: { label: string; count: number }[];
+    sources?: { label: string; count: number }[];
+  };
+  features?: string[];
+  signals?: string[];
+  pain_points?: string[];
+  pricing?: string[];
+  recommendations?: { action: string; priority?: string | null }[];
+  swot?: {
+    strengths?: number;
+    weaknesses?: number;
+    opportunities?: number;
+    threats?: number;
+  };
+}
+
 export type ProgressEvent =
   | {
       type: "status";
@@ -83,6 +105,10 @@ export type ProgressEvent =
       evidence_count: number;
       retry_count: Record<string, number>;
       collector_phase?: string;
+      analysis_step?: string;
+      analysis_phase?: string;
+      analysis_summary?: string;
+      analysis_preview?: AnalysisPreview;
       product?: string;
       source_counts?: Record<string, number>;
       coverage?: Record<string, number>;

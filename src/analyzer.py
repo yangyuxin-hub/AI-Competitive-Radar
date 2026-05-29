@@ -68,6 +68,326 @@ def _der_summary(der: dict) -> str:
     return "；".join(parts)
 
 
+_CLAIM_LABELS = {
+    "feature_existence": "功能具备性",
+    "performance_quality": "性能与质量",
+    "pricing": "定价信息",
+    "user_pain": "用户痛点",
+    "market_signal": "市场信号",
+}
+
+
+def _short(text: object, limit: int = 72) -> str:
+    s = str(text or "").strip().replace("\n", " ")
+    if len(s) <= limit:
+        return s
+    return s[: limit - 1].rstrip() + "…"
+
+
+def _target_products(meta: dict) -> list[str]:
+    products = [meta.get("target_product"), *(meta.get("competitors") or [])]
+    return [str(p) for p in products if p]
+
+
+def _evidence_ids(
+    evidence: list[dict],
+    claim_types: set[str] | tuple[str, ...] | list[str],
+    product: Optional[str] = None,
+    limit: int = 4,
+) -> list[str]:
+    wanted = set(claim_types)
+    ids: list[str] = []
+    for ev in evidence:
+        if product and ev.get("product") != product:
+            continue
+        if ev.get("claim_type") not in wanted:
+            continue
+        eid = ev.get("evidence_id")
+        if eid and eid not in ids:
+            ids.append(eid)
+        if len(ids) >= limit:
+            break
+    return ids
+
+
+def _evidence_preview(evidence: list[dict], meta: dict) -> dict:
+    products = _target_products(meta)
+    by_product = [
+        {
+            "product": product,
+            "count": sum(1 for ev in evidence if ev.get("product") == product),
+        }
+        for product in products
+    ]
+    by_claim: dict[str, int] = {}
+    by_source: dict[str, int] = {}
+    for ev in evidence:
+        ct = ev.get("claim_type") or "unknown"
+        by_claim[ct] = by_claim.get(ct, 0) + 1
+        src = ev.get("collection_source") or ev.get("source_type") or "unknown"
+        by_source[src] = by_source.get(src, 0) + 1
+    signals: list[str] = []
+    for claim_type in ("user_pain", "performance_quality", "feature_existence", "pricing"):
+        for ev in evidence:
+            if ev.get("claim_type") != claim_type:
+                continue
+            text = _short(ev.get("claim") or ev.get("extracted_snippet"), 68)
+            if not text:
+                continue
+            signal = f"{ev.get('product', 'unknown')}: {text}"
+            if signal not in signals:
+                signals.append(signal)
+            if len(signals) >= 4:
+                break
+        if len(signals) >= 4:
+            break
+    return {
+        "kind": "overview",
+        "evidence": {
+            "products": by_product,
+            "claim_types": [
+                {"label": _CLAIM_LABELS.get(k, k), "count": v}
+                for k, v in sorted(by_claim.items(), key=lambda kv: -kv[1])
+            ],
+            "sources": [
+                {"label": str(k), "count": v}
+                for k, v in sorted(by_source.items(), key=lambda kv: -kv[1])[:5]
+            ],
+        },
+        "signals": signals,
+    }
+
+
+def _facts_preview(facts: dict) -> dict:
+    pricing = []
+    for product in (facts.get("pricing_model") or {}).get("products") or []:
+        tiers = product.get("tiers") or []
+        if tiers:
+            pricing.append(f"{product.get('name')}: {len(tiers)} 个价位")
+        else:
+            pricing.append(f"{product.get('name')}: 暂无价位")
+    return {
+        "kind": "facts",
+        "features": [
+            _short(f.get("name"), 32)
+            for f in (facts.get("feature_tree") or {}).get("features", [])
+            if f.get("name")
+        ][:6],
+        "pain_points": [
+            _short(p.get("description"), 56)
+            for p in (facts.get("user_persona") or {}).get("pain_points", [])
+            if p.get("description")
+        ][:5],
+        "pricing": pricing[:5],
+    }
+
+
+def _derivations_preview(der: dict) -> dict:
+    swot = der.get("swot") or {}
+    return {
+        "kind": "derivations",
+        "recommendations": [
+            {
+                "action": _short(r.get("action"), 72),
+                "priority": (r.get("priority_score") or {}).get("priority"),
+            }
+            for r in (der.get("recommendations") or [])[:5]
+        ],
+        "swot": {
+            "strengths": len(swot.get("strengths") or []),
+            "weaknesses": len(swot.get("weaknesses") or []),
+            "opportunities": len(swot.get("opportunities") or []),
+            "threats": len(swot.get("threats") or []),
+        },
+    }
+
+
+def _safe_price_tier(product: str, evidence_ids: list[str]) -> dict:
+    return {
+        "tier_name": "待确认价位",
+        "billing_cycle": "unknown",
+        "price": {"amount": None, "currency": "USD", "normalized_usd_month": None},
+        "limits": [],
+        "display_limits": "模型调用超时后保守保留定价证据，详情以来源为准",
+        "observed_at": "",
+        "source_freshness": "unknown",
+        "evidence_ids": evidence_ids,
+    }
+
+
+def _fallback_facts(evidence: list[dict], meta: dict, reason: str) -> dict:
+    products = _target_products(meta)
+    focus = " / ".join(meta.get("analysis_focus") or []) or "核心体验"
+    all_feature_ids = _evidence_ids(evidence, ("feature_existence",), limit=5)
+    all_quality_ids = _evidence_ids(evidence, ("performance_quality", "user_pain"), limit=5)
+    gap_ids = (all_quality_ids or all_feature_ids)[:5]
+
+    feature_products = {}
+    for product in products:
+        support_ids = _evidence_ids(evidence, ("feature_existence",), product=product, limit=3)
+        quality_ids = _evidence_ids(evidence, ("performance_quality", "user_pain"), product=product, limit=3)
+        sample_size = len(quality_ids)
+        feature_products[product] = {
+            "support_status": "supported" if support_ids else "unknown",
+            "support_evidence_ids": support_ids,
+            "quality_score": {
+                "score": 3 if quality_ids else 0,
+                "scale": 5,
+                "basis": (
+                    f"模型请求超时，暂按已采集证据保守汇总；{product} 的质量判断需在报告中结合引用复核"
+                    if quality_ids else "模型请求超时，且当前证据不足以判断质量"
+                ),
+                "aggregation": {
+                    "aggregation_type": "timeout_fallback",
+                    "positive_mentions": 0,
+                    "negative_mentions": 0,
+                    "neutral_mentions": sample_size,
+                    "sample_size": sample_size,
+                    "representative_evidence_ids": quality_ids,
+                    "method": f"fallback after analyzer timeout: {reason}",
+                },
+                "evidence_ids": quality_ids,
+            },
+        }
+
+    pricing_products = []
+    for product in products:
+        ids = _evidence_ids(evidence, ("pricing",), product=product, limit=3)
+        pricing_products.append({
+            "name": product,
+            "tiers": [_safe_price_tier(product, ids)] if ids else [],
+        })
+
+    persona_ids = _evidence_ids(evidence, ("user_pain", "performance_quality", "market_signal"), limit=4)
+    pain_ids = _evidence_ids(evidence, ("user_pain", "performance_quality"), limit=4)
+    pain_snippets = [
+        _short(ev.get("claim") or ev.get("extracted_snippet"), 80)
+        for ev in evidence
+        if ev.get("evidence_id") in pain_ids[:2]
+    ]
+    pain_description = "；".join([p for p in pain_snippets if p]) or "证据不足，暂无法稳定归纳用户痛点"
+
+    return {
+        "feature_tree": {
+            "category": focus,
+            "features": [
+                {
+                    "feature_id": "F001",
+                    "name": focus,
+                    "products": feature_products,
+                    "gap": {
+                        "winner": meta.get("target_product") if products else "unknown",
+                        "gap_type": "unknown",
+                        "reason": "Analyzer 模型请求超时，当前仅输出基于证据覆盖的保守事实层，暂不做强胜负判断",
+                        "evidence_ids": gap_ids,
+                        "confidence": 0.35 if gap_ids else 0.0,
+                    },
+                }
+            ],
+        },
+        "pricing_model": {
+            "products": pricing_products,
+            "pricing_gap": {
+                "target_position": "unknown",
+                "summary": "Analyzer 模型请求超时，定价差距需结合引用证据人工复核",
+                "evidence_ids": _evidence_ids(evidence, ("pricing", "user_pain", "market_signal"), limit=6),
+                "confidence": 0.25,
+            },
+        },
+        "user_persona": {
+            "user_segments": [
+                {
+                    "segment_id": "U001",
+                    "name": "待确认用户群",
+                    "description": "模型请求超时，暂按已采集用户反馈保守归纳",
+                    "evidence_ids": persona_ids,
+                    "confidence": 0.35 if persona_ids else 0.0,
+                }
+            ] if persona_ids else [],
+            "pain_points": [
+                {
+                    "pain_id": "P001",
+                    "description": pain_description,
+                    "frequency": {
+                        "level": "unknown",
+                        "count": f"{len(pain_ids)} 条可用反馈证据",
+                        "sample_size": len(pain_ids),
+                        "evidence_ids": pain_ids,
+                    },
+                    "affected_products": products,
+                    "affected_segments": ["U001"] if persona_ids else [],
+                    "user_expectation": "需要更多证据或重跑深度分析后确认",
+                    "confidence": 0.35 if pain_ids else 0.0,
+                }
+            ] if pain_ids else [],
+        },
+    }
+
+
+def _fallback_derivations(facts: dict, evidence: list[dict], meta: dict, reason: str) -> dict:
+    feature_ids = [
+        f.get("feature_id")
+        for f in (facts.get("feature_tree") or {}).get("features", [])
+        if f.get("feature_id")
+    ]
+    pain_ids = [
+        p.get("pain_id")
+        for p in (facts.get("user_persona") or {}).get("pain_points", [])
+        if p.get("pain_id")
+    ]
+    rec_eids = _evidence_ids(
+        evidence,
+        ("user_pain", "performance_quality", "pricing", "feature_existence", "market_signal"),
+        limit=6,
+    )
+    weights = {
+        "pain_frequency": 0.35,
+        "business_impact": 0.30,
+        "implementation_feasibility": 0.20,
+        "evidence_confidence": 0.15,
+    }
+    score_parts = {
+        "pain_frequency": 2,
+        "business_impact": 3,
+        "implementation_feasibility": 4,
+        "evidence_confidence": 2 if rec_eids else 1,
+    }
+    final_score = round(sum(score_parts[k] * weights[k] for k in weights), 2)
+    swot_eids = rec_eids[:3]
+    return {
+        "swot": {
+            "target": meta.get("target_product"),
+            "note": f"Analyzer 模型请求超时，SWOT 为保守降级视图: {reason}",
+            "strengths": [],
+            "weaknesses": [
+                {
+                    "point": "当前证据已采集，但模型推导阶段超时，结论置信度需要标注为部分可信",
+                    "evidence_ids": swot_eids,
+                    "confidence": 0.25,
+                }
+            ] if swot_eids else [],
+            "opportunities": [],
+            "threats": [],
+        },
+        "recommendations": [
+            {
+                "rec_id": "R001",
+                "action": "先基于已采集证据输出保守报告，并补跑深度推导以确认优先级",
+                "rationale": "Analyzer 模型请求超时；为了不中断用户流程，系统保留可溯源证据并输出低置信度建议",
+                "source_feature_ids": feature_ids[:1],
+                "source_pain_ids": pain_ids[:1],
+                "evidence_ids": rec_eids,
+                "priority_score": {
+                    **score_parts,
+                    "weights": weights,
+                    "final_score": final_score,
+                    "priority": "P2",
+                },
+            }
+        ],
+    }
+
+
 def _corrupt_facts_for_demo(facts: dict) -> dict:
     """注入一个 R1 错误(evidence_id 不存在)演示打回。深拷贝后修改,不污染原 sample。"""
     out = copy.deepcopy(facts)
@@ -91,6 +411,33 @@ def _corrupt_derivations_for_demo(derivations: dict) -> dict:
         if len(recs) > 1:
             recs[1]["source_feature_ids"] = []
             recs[1]["source_pain_ids"] = []
+    return out
+
+
+_REQUIRED_CT = ("feature_existence", "performance_quality", "pricing", "user_pain")
+
+
+def _compact_evidence(evidence: list[dict]) -> list[dict]:
+    """给 LLM 的精简证据:按 claim_type 取 top-K(按可信度)+ 截短片段 + 只留必要字段。
+    防止证据过多时 prompt 爆炸 → 调用超时。全量证据仍用于本地 evidence_id 校验。
+    可调:ANALYZER_MAX_EVIDENCE_PER_TYPE(默认8)、ANALYZER_SNIPPET_LEN(默认180)。"""
+    per_type = int(os.environ.get("ANALYZER_MAX_EVIDENCE_PER_TYPE", "8"))
+    snip = int(os.environ.get("ANALYZER_SNIPPET_LEN", "180"))
+    by_ct: dict[str, list[dict]] = {}
+    for e in evidence:
+        by_ct.setdefault(e.get("claim_type", "?"), []).append(e)
+    out: list[dict] = []
+    for lst in by_ct.values():
+        top = sorted(lst, key=lambda e: e.get("evidence_confidence", 0) or 0, reverse=True)[:per_type]
+        for e in top:
+            out.append({
+                "evidence_id": e.get("evidence_id"),
+                "product": e.get("product"),
+                "claim_type": e.get("claim_type"),
+                "source_bias": e.get("source_bias"),
+                "claim": e.get("claim"),
+                "extracted_snippet": (e.get("extracted_snippet") or "")[:snip],
+            })
     return out
 
 
@@ -408,14 +755,28 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0) -> d
         if _is_demo_loop() and analyzer_retry == 0:
             print("[analyzer] DEMO_LOOP: 注入 R1 错误(SDEMOFAK)到 facts")
             facts = _corrupt_facts_for_demo(facts)
+        _emit_progress(step="facts", phase="done", attempt=1, summary=_facts_summary(facts), preview=_facts_preview(facts))
         return facts
 
     llm = get_llm()
     system = load_prompt("analyzer_facts")
-    payload = {"analysis_meta": meta, "raw_evidence": evidence}
+    payload = {"analysis_meta": meta, "raw_evidence": _compact_evidence(evidence)}
     _emit_progress(step="facts", phase="start", attempt=1)
-    facts = llm.call_json(system, payload, max_tokens=8192, label="facts")
-    _emit_progress(step="facts", phase="done", attempt=1, summary=_facts_summary(facts))
+    try:
+        facts = llm.call_json(system, payload, max_tokens=8192, label="facts")
+    except Exception as e:  # noqa: BLE001
+        reason = f"{type(e).__name__}: {e}"
+        print(f"[analyzer] facts call failed; using timeout fallback: {reason}")
+        facts = _fallback_facts(evidence, meta, reason)
+        _emit_progress(
+            step="facts",
+            phase="fallback",
+            attempt=1,
+            summary="模型请求超时，已用证据生成保守事实层",
+            preview={**_facts_preview(facts), "fallback": True, "note": reason},
+        )
+        return facts
+    _emit_progress(step="facts", phase="done", attempt=1, summary=_facts_summary(facts), preview=_facts_preview(facts))
 
     # issue 过多时 LLM 重跑(~80s)既慢又难全修 → 直接走确定性 sanitize(秒级)
     _MAX_LLM_REPAIR_ISSUES = int(os.environ.get("ANALYZER_FACTS_REPAIR_THRESHOLD", "6"))
@@ -433,7 +794,7 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0) -> d
                 system + _build_repair_hint(issues), payload,
                 max_tokens=8192, label="facts_repair",
             )
-            _emit_progress(step="facts", phase="done", attempt=2, summary=_facts_summary(facts))
+            _emit_progress(step="facts", phase="done", attempt=2, summary=_facts_summary(facts), preview=_facts_preview(facts))
         except Exception as e:
             print(f"[analyzer] facts repair failed; applying deterministic sanitize: {e}")
 
@@ -457,14 +818,29 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
         if _is_demo_loop() and analyzer_retry == 0:
             print("[analyzer] DEMO_LOOP: 注入 R5/R4 错误到 derivations")
             der = _corrupt_derivations_for_demo(der)
+        _emit_progress(step="derivations", phase="done", attempt=1, summary=_der_summary(der), preview=_derivations_preview(der))
         return der
 
     llm = get_llm()
     system = load_prompt("analyzer_derivations")
-    payload = {"analysis_meta": meta, "raw_evidence": evidence, "facts": facts}
-    _emit_progress(step="derivations", phase="start", attempt=1)
-    der = llm.call_json(system, payload, max_tokens=3072, label="derivations")
-    _emit_progress(step="derivations", phase="done", attempt=1, summary=_der_summary(der))
+    # derivations 主要基于 facts;证据用精简版即可(不再重复塞全量,防 prompt 爆炸)
+    payload = {"analysis_meta": meta, "raw_evidence": _compact_evidence(evidence), "facts": facts}
+    _emit_progress(step="derivations", phase="start", attempt=1, preview=_facts_preview(facts))
+    try:
+        der = llm.call_json(system, payload, max_tokens=3072, label="derivations")
+    except Exception as e:  # noqa: BLE001
+        reason = f"{type(e).__name__}: {e}"
+        print(f"[analyzer] derivations call failed; using timeout fallback: {reason}")
+        der = _fallback_derivations(facts, evidence, meta, reason)
+        _emit_progress(
+            step="derivations",
+            phase="fallback",
+            attempt=1,
+            summary="模型请求超时，已用事实层生成保守建议",
+            preview={**_derivations_preview(der), "fallback": True, "note": reason},
+        )
+        return der
+    _emit_progress(step="derivations", phase="done", attempt=1, summary=_der_summary(der), preview=_derivations_preview(der))
 
     issues = quick_validate_derivations(der, facts, evidence)
     if issues:
@@ -475,7 +851,7 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
                 system + _build_repair_hint(issues), payload,
                 max_tokens=3072, label="derivations_repair",
             )
-            _emit_progress(step="derivations", phase="done", attempt=2, summary=_der_summary(der))
+            _emit_progress(step="derivations", phase="done", attempt=2, summary=_der_summary(der), preview=_derivations_preview(der))
         except Exception as e:
             print(f"[analyzer] derivations repair failed; reviewer will handle remaining issues: {e}")
     return der
@@ -493,6 +869,12 @@ def analyzer_node(state: AgentState) -> AgentState:
     meta = state["analysis_meta"]
     analyzer_retry = (state.get("retry_count") or {}).get("analyzer", 0)
 
+    _emit_progress(
+        step="overview",
+        phase="ready",
+        summary=f"已读取 {len(evidence)} 条证据，开始抽取事实层",
+        preview=_evidence_preview(evidence, meta),
+    )
     facts = _step1_facts(evidence, meta, analyzer_retry=analyzer_retry)
     derivations = _step2_derivations(facts, evidence, meta, analyzer_retry=analyzer_retry)
 

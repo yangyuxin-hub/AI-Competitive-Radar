@@ -102,6 +102,112 @@ def _all_focus_options() -> list[str]:
     return seen
 
 
+def _dedupe(items: list[str]) -> list[str]:
+    seen: list[str] = []
+    for item in items:
+        if item and item not in seen:
+            seen.append(item)
+    return seen
+
+
+def _domain_products(dom: dict) -> list[str]:
+    return _dedupe([dom.get("target_product", ""), *(dom.get("competitors") or [])])
+
+
+def _infer_domain_key(
+    domains: dict,
+    hit_products: list[str],
+    domain_hint: Optional[str],
+    user_input: str,
+) -> Optional[str]:
+    """根据显式 hint、命中产品、行业名/焦点词推断本次任务所属 domain。"""
+    if domain_hint in domains:
+        return domain_hint
+
+    if hit_products:
+        ranked: list[tuple[int, str]] = []
+        hit_set = set(hit_products)
+        for key, dom in domains.items():
+            score = len(hit_set & set(_domain_products(dom)))
+            if score:
+                ranked.append((score, key))
+        if ranked:
+            ranked.sort(key=lambda x: x[0], reverse=True)
+            return ranked[0][1]
+
+    text = (user_input or "").lower()
+    for key, dom in domains.items():
+        signals = [key, dom.get("name", ""), *(dom.get("analysis_focus") or [])]
+        if any(str(s).lower() in text for s in signals if s):
+            return key
+    return None
+
+
+def _focus_options_for_domain(dom_cfg: dict, user_input: str) -> list[str]:
+    """按任务域收窄焦点选项，避免项目管理任务里出现代码补全这类噪音。"""
+    text = (user_input or "").lower()
+    opts: list[str] = []
+    opts.extend(dom_cfg.get("analysis_focus") or [])
+    if any(k in text for k in ("价格", "定价", "pricing", "price", "收费")):
+        opts.append("定价策略")
+    if any(k in text for k in ("代码", "补全", "coding", "autocomplete")):
+        opts.append("代码补全体验")
+    if any(k in text for k in ("任务", "项目", "协作", "project", "task")):
+        opts.append("团队任务管理体验")
+    opts.extend(["核心功能完整度", "用户体验与上手成本", "集成与生态"])
+    return _dedupe(opts)
+
+
+def _suggest_focus(dom_cfg: dict, focus_candidates: list[str], user_input: str) -> str:
+    text = (user_input or "").lower()
+    keyed = [
+        (("价格", "定价", "pricing", "price", "收费"), "定价策略"),
+        (("代码", "补全", "coding", "autocomplete"), "代码补全体验"),
+        (("任务", "项目", "协作", "project", "task"), "团队任务管理体验"),
+    ]
+    for keywords, focus in keyed:
+        if focus in focus_candidates and any(k in text for k in keywords):
+            return focus
+    return (dom_cfg.get("analysis_focus") or focus_candidates or [""])[0]
+
+
+def _filter_known_to_domain(items: list[str], products: dict, domain_products: list[str]) -> list[str]:
+    """过滤已知但跨域的产品；未知项保留给 LLM/用户自定义场景。"""
+    domain_set = set(domain_products)
+    return [
+        item for item in items
+        if item not in products or item in domain_set
+    ]
+
+
+def _scope_draft_to_domain(draft: dict, base: dict, products: dict) -> dict:
+    """LLM 草稿如果混进跨域已知产品，用启发式 domain 结果收窄。"""
+    domain_products = base.get("_domain_products") or []
+    if not domain_products:
+        return draft
+
+    out = dict(draft)
+    target = _filter_known_to_domain(out.get("target_candidates") or [], products, domain_products)
+    comp = _filter_known_to_domain(out.get("competitors_candidates") or [], products, domain_products)
+    if target:
+        out["target_candidates"] = _dedupe(target + (base.get("target_candidates") or []))
+    else:
+        out["target_candidates"] = base.get("target_candidates") or []
+    if comp:
+        out["competitors_candidates"] = _dedupe(comp + (base.get("competitors_candidates") or []))
+    else:
+        out["competitors_candidates"] = base.get("competitors_candidates") or []
+    out["competitors_suggested"] = [
+        c for c in (out.get("competitors_suggested") or base.get("competitors_suggested") or [])
+        if c in out["competitors_candidates"]
+    ] or (base.get("competitors_suggested") or [])
+    out["focus_candidates"] = out.get("focus_candidates") or base.get("focus_candidates")
+    out["focus_suggested"] = out.get("focus_suggested") or base.get("focus_suggested")
+    out["domain_name"] = out.get("domain_name") or base.get("domain_name")
+    out["domain_key"] = out.get("domain_key") or base.get("domain_key")
+    return out
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # 意图草拟:LLM 优先,启发式兜底
 # ────────────────────────────────────────────────────────────────────────────
@@ -166,26 +272,32 @@ def _propose_heuristic(user_input: str, domain_hint: Optional[str]) -> dict:
         return any(c.lower() in text for c in cands if c)
 
     hit_products = [p for p in products if _hit(p)]
-    dom_cfg = domains.get(domain_hint or "", {})
+    domain_key = _infer_domain_key(domains, hit_products, domain_hint, user_input)
+    dom_cfg = domains.get(domain_key or "", {})
+    scoped_products = _domain_products(dom_cfg) if dom_cfg else list(products)
+    if not scoped_products:
+        scoped_products = list(products)
 
     # target 候选:命中的产品在前,然后是行业默认 target,再补其它已知产品
-    target_candidates: list[str] = list(hit_products)
+    target_candidates: list[str] = [p for p in hit_products if p in scoped_products]
     if dom_cfg.get("target_product") and dom_cfg["target_product"] not in target_candidates:
         target_candidates.append(dom_cfg["target_product"])
-    for p in products:
+    for p in scoped_products:
         if p not in target_candidates:
             target_candidates.append(p)
 
     target = target_candidates[0] if target_candidates else ""
-    competitors_candidates = [p for p in products if p != target]
-    competitors_suggested = [
-        c for c in (dom_cfg.get("competitors") or []) if c != target
+    competitors_candidates = [p for p in scoped_products if p != target]
+    explicit_competitors = [p for p in hit_products if p != target and p in competitors_candidates]
+    competitors_suggested = explicit_competitors or [
+        c for c in (dom_cfg.get("competitors") or []) if c != target and c in competitors_candidates
     ][:3] or competitors_candidates[:2]
 
-    focus_candidates = _all_focus_options()
-    focus_suggested = (dom_cfg.get("analysis_focus") or focus_candidates or [""])[0]
+    focus_candidates = _focus_options_for_domain(dom_cfg, user_input) if dom_cfg else _all_focus_options()
+    focus_suggested = _suggest_focus(dom_cfg, focus_candidates, user_input)
 
     return {
+        "domain_key": domain_key or "",
         "domain_name": dom_cfg.get("name", ""),
         "target_candidates": target_candidates,
         "competitors_candidates": competitors_candidates,
@@ -194,6 +306,8 @@ def _propose_heuristic(user_input: str, domain_hint: Optional[str]) -> dict:
         "focus_suggested": focus_suggested,
         "purpose_candidates": _FALLBACK_PURPOSE,
         "purpose_suggested": dom_cfg.get("analysis_purpose") or _FALLBACK_PURPOSE[0],
+        "_domain_products": scoped_products if dom_cfg else [],
+        "_hit_products": hit_products,
     }
 
 
@@ -206,7 +320,7 @@ def propose(user_input: str, domain_hint: Optional[str] = None) -> dict:
             base = _propose_heuristic(user_input, domain_hint)
             for k, v in base.items():
                 draft.setdefault(k, v)
-            return draft
+            return _scope_draft_to_domain(draft, base, load_products())
     return _propose_heuristic(user_input, domain_hint)
 
 

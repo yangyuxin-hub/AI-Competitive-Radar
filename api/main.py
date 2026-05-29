@@ -393,21 +393,34 @@ def _analyzer_status(evt: dict, elapsed: int) -> dict:
     step = evt.get("step")
     phase = evt.get("phase")
     summary = evt.get("summary")
-    if step == "facts" and phase == "start":
+    if step == "overview":
+        msg = summary or "Analyzer 已读取证据，准备抽取事实层"
+    elif step == "facts" and phase == "start":
         msg = "Analyzer Step 1：从证据中抽取功能、定价、用户痛点"
     elif step == "facts" and phase == "repair":
         msg = f"事实层自检发现 {evt.get('issues', '?')} 个问题，正在修复引用"
+    elif step == "facts" and phase == "fallback":
+        msg = f"⚠️ {summary}" if summary else "⚠️ 事实层模型超时，已使用保守降级结果"
     elif step == "facts":
         msg = f"✅ 事实层完成 — {summary}" if summary else "事实层完成，进入推导层"
     elif step == "derivations" and phase == "start":
         msg = "Analyzer Step 2：基于事实推导 SWOT 和优先级建议"
     elif step == "derivations" and phase == "repair":
         msg = f"推导层自检发现 {evt.get('issues', '?')} 个问题，正在修复"
+    elif step == "derivations" and phase == "fallback":
+        msg = f"⚠️ {summary}" if summary else "⚠️ 推导层模型超时，已使用保守降级建议"
     elif step == "derivations":
         msg = f"✅ 推导完成 — {summary}" if summary else "推导层完成"
     else:
         msg = "Analyzer 正在整理结构化结论"
-    return _status_event("analyzer", msg, elapsed)
+    event = _status_event("analyzer", msg, elapsed)
+    event["analysis_step"] = step
+    event["analysis_phase"] = phase
+    if summary:
+        event["analysis_summary"] = summary
+    if evt.get("preview") is not None:
+        event["analysis_preview"] = evt.get("preview")
+    return event
 
 
 def _run_stream(args: dict):

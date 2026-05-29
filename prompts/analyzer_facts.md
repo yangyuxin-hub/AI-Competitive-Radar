@@ -54,10 +54,7 @@
 3. **每个 feature 必须覆盖 target + ≥1 competitor**。
    - `feature_tree.features[]` 中每个 feature 的 `products` 字段必须同时包含 `analysis_meta.target_product` 和至少 1 个 `analysis_meta.competitors`
    - 如果某个维度只有 target 数据而所有 competitor 都无证据:给缺失的 competitor 填 `support_status: unknown`、`quality_score` 取保守值(≤2)、`support_evidence_ids` 留空——**不要删掉整条 feature**（quick_validate 会检测覆盖率并触发修复，丢失整条 feature 比缺少证据更差）
-4. **aggregation 规范**:
-   - 必须字段:`aggregation_type` / `positive_mentions` / `negative_mentions` / `neutral_mentions` / `sample_size` / `representative_evidence_ids` / `method`
-   - `sample_size` 等于 `positive + negative + neutral`(R3 会检验)
-   - 禁止使用 `sample_evidence_ids` 字段(避免列不全触发 R3)
+4. **aggregation 可省略(精简输出,优先)**:为控制输出体积与速度,默认**不要**输出 `aggregation` 块;`quality_score` 只给 `score` / `scale` / `basis` / `evidence_ids` 即可。仅当确有多条用户反馈需要量化分歧时才给 `aggregation`,且给出时 `sample_size` 必须等于 `positive+negative+neutral`。
 5. **support_status 取值**:`supported` / `partially_supported` / `not_supported` / `unknown`(只能这 4 个)
 6. **quality_score**:`score` 1-5 整数,`scale: 5`;`basis` 用中文说明依据并引用 evidence_id
 7. **pricing 必须含 `observed_at` 和 `source_freshness`**(从 evidence 同步,默认 `current`)
@@ -150,14 +147,8 @@
           "support_status": "...",
           "support_evidence_ids": ["S........"],
           "quality_score": {
-            "score": 3, "scale": 5, "basis": "string  // 引用 evidence_id",
-            "aggregation": {
-              "aggregation_type": "sampled_evidence",
-              "positive_mentions": 0, "negative_mentions": 0, "neutral_mentions": 0,
-              "sample_size": 0,
-              "representative_evidence_ids": ["S........"],
-              "method": "string  // 采样来源说明"
-            },
+            "score": 3, "scale": 5,
+            "basis": "string  // ≤25字,引用 evidence_id",
             "evidence_ids": ["S........"]
           }
         }

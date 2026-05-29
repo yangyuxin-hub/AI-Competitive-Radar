@@ -142,7 +142,7 @@ class LLMClient:
             or os.environ.get("ARK_BASE_URL")
             or "https://token-plan-cn.xiaomimimo.com/v1"
         )
-        timeout = float(os.environ.get("LLM_TIMEOUT", os.environ.get("ARK_TIMEOUT", "120")))
+        timeout = float(os.environ.get("LLM_TIMEOUT", os.environ.get("ARK_TIMEOUT", "200")))
         import httpx  # 关掉系统代理(实测代理给 LLM 调用平添 ~10s)
         self._client = OpenAI(
             api_key=api_key,
@@ -173,7 +173,9 @@ class LLMClient:
             )
 
         client = self._ensure()
-        model = model or os.environ.get("LLM_MODEL") or os.environ.get("ARK_EP") or "mimo-v2.5-pro"
+        # 默认 mimo-v2.5-pro;切回 Doubao 需显式设 LLM_MODEL=ep-... + LLM_BASE_URL=ark
+        # (不再隐式回退 ARK_EP,否则 .env 里残留的 Doubao EP 会被错发给 MiMo 端点)
+        model = model or os.environ.get("LLM_MODEL") or "mimo-v2.5-pro"
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
