@@ -815,8 +815,129 @@ _FACTS_SECTIONS = {
 }
 
 
+_FT_CLAIM_TYPES = ("feature_existence", "performance_quality", "user_pain")
+
+
+def _feature_tree_split_enabled() -> bool:
+    return os.environ.get("ANALYZER_FEATURE_TREE_SPLIT", "1").strip() not in ("0", "false", "False")
+
+
+def _compute_gap(name: str, products_block: dict, meta: dict) -> dict:
+    """确定性算 gap.winner/gap_type/confidence,不再让 LLM 生成(R5/R1 天然自洽)。
+    winner = quality_score 最高的产品;证据取 winner 的 support + quality evidence_ids。"""
+    target = meta.get("target_product")
+    scored = []  # (product, score, pdata)
+    for product, pdata in products_block.items():
+        score = (pdata.get("quality_score") or {}).get("score") or 0
+        scored.append((product, score, pdata))
+    if not scored:
+        return {"winner": "unknown", "gap_type": "unknown", "reason": "证据不足，暂无法判断胜负",
+                "evidence_ids": [], "confidence": 0.0}
+    # 分数降序;同分时让 target 优先(避免无谓判负自身)
+    scored.sort(key=lambda x: (x[1], x[0] == target), reverse=True)
+    winner, top, win_data = scored[0]
+    second = scored[1][1] if len(scored) > 1 else 0
+    spread = top - second
+    eids = ((win_data.get("support_evidence_ids") or [])
+            + ((win_data.get("quality_score") or {}).get("evidence_ids") or []))[:4]
+    any_missing = any((d.get("support_status") == "not_supported") for _, _, d in scored)
+    gap_type = "feature_completeness" if any_missing else ("performance" if spread > 0 else "usability")
+    if spread > 0:
+        reason = f"{winner} 在「{name}」上质量评分领先（{top}/5 vs 次优 {second}/5）"
+    else:
+        reason = f"各产品在「{name}」上质量相近（均 {top}/5），差距主要在支持范围"
+    conf = round(min(0.85, 0.35 + 0.1 * spread + 0.05 * len(eids)), 2)
+    return {"winner": winner, "gap_type": gap_type, "reason": reason,
+            "evidence_ids": eids, "confidence": conf}
+
+
+def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict) -> dict:
+    """feature_tree 2 段式(替代单次 ~127s 大调用):
+    段1 骨架(只要 4-6 个对比功能 id+name,小输出) → 段2 按产品并行填充 → 段3 确定性 gap。"""
+    products = _target_products(meta)
+    target = meta.get("target_product")
+    focus = " / ".join(meta.get("analysis_focus") or []) or "核心体验"
+    timeout = float(os.environ.get("ANALYZER_FACTS_TIMEOUT", "90"))
+    ft_ev = [e for e in evidence if e.get("claim_type") in _FT_CLAIM_TYPES]
+
+    # ── 段1:功能骨架 ──
+    spine_instruct = (
+        f"本次只做一件事:基于证据,列出 {focus} 维度下 4-6 个**适合跨产品横向对比**的功能点。\n"
+        '只输出 JSON: {"features":[{"feature_id":"F001","name":"功能名"}]}。\n'
+        "feature_id 用 F001/F002…;name 尽量简洁(≤10字);不要输出 products / gap / quality 等其它字段。"
+    )
+    spine = get_llm().call_json(
+        f"{system_base}\n\n## 本次任务范围(重要)\n{spine_instruct}",
+        {"analysis_meta": meta, "raw_evidence": _compact_evidence(ft_ev)},
+        label="facts:feature_spine", timeout=timeout,
+    )
+    feats = (spine.get("features") if isinstance(spine, dict) else None) or []
+    feats = [f for f in feats if f.get("feature_id") and f.get("name")][:6]
+    if not feats:
+        feats = [{"feature_id": "F001", "name": focus}]
+    _emit_progress(step="facts", phase="section_progress", section="feature_tree",
+                   note=f"功能骨架就绪（{len(feats)} 项），按产品并行填充")
+
+    # ── 段2:按产品并行填充 ──
+    def _fill(product: str) -> tuple[str, dict]:
+        prod_ev = _compact_evidence(
+            [e for e in ft_ev if e.get("product") == product]
+        )
+        fill_instruct = (
+            f"对产品「{product}」,针对下面 feature_list 中每个功能逐一评估其支持度与质量。\n"
+            '只输出 JSON: {"products":{"F001":{"support_status":"supported|partially_supported|'
+            'not_supported|unknown","support_evidence_ids":["..."],"quality_score":{"score":0-5,'
+            '"scale":5,"basis":"一句话依据","evidence_ids":["..."]}}}}。\n'
+            "support_evidence_ids 只能用 feature_existence 证据;quality_score.evidence_ids 只能用 "
+            "performance_quality / user_pain 证据。证据不足填 support_status:unknown、score:0。"
+            "严禁编造 evidence_id。"
+        )
+        out = get_llm().call_json(
+            f"{system_base}\n\n## 本次任务范围(重要)\n{fill_instruct}",
+            {"analysis_meta": meta, "feature_list": feats, "raw_evidence": prod_ev},
+            label=f"facts:feature_fill:{product}", timeout=timeout,
+        )
+        block = out.get("products") if isinstance(out, dict) else None
+        return product, (block or {})
+
+    per_product: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=max(1, len(products))) as ex:
+        futs = {ex.submit(_fill, p): p for p in products}
+        for fut in as_completed(futs):
+            p = futs[fut]
+            try:
+                prod, block = fut.result()
+                per_product[prod] = block
+                _emit_progress(step="facts", phase="section_progress", section="feature_tree",
+                               note=f"{prod} 功能填充完成")
+            except Exception as e:  # noqa: BLE001
+                print(f"[analyzer] feature_fill '{p}' failed: {type(e).__name__}: {e}")
+                per_product[p] = {}
+
+    # ── 段3:组装 + 确定性 gap;缺失产品补 unknown 保证覆盖(过 quick_validate 覆盖检查) ──
+    def _unknown_pdata() -> dict:
+        return {"support_status": "unknown", "support_evidence_ids": [],
+                "quality_score": {"score": 0, "scale": 5, "basis": "证据不足", "evidence_ids": []}}
+
+    features_out = []
+    for f in feats:
+        fid = f["feature_id"]
+        block = {}
+        for product in products:
+            pdata = (per_product.get(product) or {}).get(fid)
+            block[product] = pdata if isinstance(pdata, dict) and pdata else _unknown_pdata()
+        features_out.append({
+            "feature_id": fid, "name": f["name"], "products": block,
+            "gap": _compute_gap(f["name"], block, meta),
+        })
+    return {"category": focus, "features": features_out}
+
+
 def _facts_section_call(section: str, system_base: str, evidence: list[dict], meta: dict) -> tuple[str, dict]:
     """单个 section 的子问答:只喂相关 claim_type 的证据、只要求输出该 section。"""
+    # feature_tree 走 2 段式拆分(可用 ANALYZER_FEATURE_TREE_SPLIT=0 回退单调用)
+    if section == "feature_tree" and _feature_tree_split_enabled():
+        return section, _feature_tree_call(system_base, evidence, meta)
     cfg = _FACTS_SECTIONS[section]
     sub_ev = _compact_evidence([e for e in evidence if e.get("claim_type") in cfg["claim_types"]])
     system = f"{system_base}\n\n## 本次任务范围(重要)\n{cfg['instruct']}\n仍需遵守上面所有 HARD CONSTRAINTS。"
