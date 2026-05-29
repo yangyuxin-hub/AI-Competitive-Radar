@@ -623,6 +623,49 @@ def sanitize_schema_evidence_refs(schema: dict, evidence: list[dict]) -> tuple[d
     return schema, dropped
 
 
+def sanitize_derivations(derivations: dict, facts: dict, evidence: list[dict]) -> tuple[dict, int]:
+    """确定性修复 derivations(替代昂贵的 LLM 重跑,facts 已用同款策略):
+    - 删除 swot/rec 中不存在的 evidence_id
+    - 删除 rec 中不在 facts 的 source_feature_ids / source_pain_ids
+    - 按 weights 重算 priority_score.final_score,保证 R5 公式自洽
+    无法凭空补的(如 rec 一个有效引用都没有)留给 Reviewer 判定。"""
+    valid_ids = {e["evidence_id"] for e in evidence if e.get("evidence_id")}
+    valid_fids = {
+        f["feature_id"] for f in facts.get("feature_tree", {}).get("features", []) if f.get("feature_id")
+    }
+    valid_pids = {
+        p["pain_id"] for p in facts.get("user_persona", {}).get("pain_points", []) if p.get("pain_id")
+    }
+    dropped = 0
+
+    def _keep(ids: list[str] | None, allowed: set[str]) -> list[str]:
+        nonlocal dropped
+        src = ids or []
+        kept = [x for x in src if x in allowed]
+        dropped += len(src) - len(kept)
+        return kept
+
+    swot = derivations.get("swot") or {}
+    for dim in ("strengths", "weaknesses", "opportunities", "threats"):
+        for item in swot.get(dim) or []:
+            item["evidence_ids"] = _keep(item.get("evidence_ids"), valid_ids)
+
+    for rec in derivations.get("recommendations") or []:
+        rec["evidence_ids"] = _keep(rec.get("evidence_ids"), valid_ids)
+        rec["source_feature_ids"] = _keep(rec.get("source_feature_ids"), valid_fids)
+        rec["source_pain_ids"] = _keep(rec.get("source_pain_ids"), valid_pids)
+        ps = rec.get("priority_score") or {}
+        weights = ps.get("weights") or {}
+        if weights:
+            try:
+                ps["final_score"] = round(
+                    sum(float(ps.get(k, 0)) * float(w) for k, w in weights.items()), 2
+                )
+            except (TypeError, ValueError):
+                pass
+    return derivations, dropped
+
+
 def sanitize_facts_evidence_refs(facts: dict, evidence: list[dict]) -> tuple[dict, int]:
     """Drop evidence refs whose claim_type cannot satisfy the target schema field.
 
@@ -680,6 +723,14 @@ def quick_validate_derivations(
     valid_pids = {
         p["pain_id"] for p in facts.get("user_persona", {}).get("pain_points", [])
     }
+
+    if not derivations.get("recommendations"):
+        issues.append("recommendations: 至少输出 3 条可执行建议；证据极少时也至少 2 条")
+
+    swot = derivations.get("swot") or {}
+    swot_count = sum(len(swot.get(k) or []) for k in ("strengths", "weaknesses", "opportunities", "threats"))
+    if swot_count == 0:
+        issues.append("swot: SWOT 四象限不能全部为空，至少输出 target 的优势/劣势/机会/威胁线索")
 
     # evidence_id 校验(覆盖 swot + rec)
     for path, eids, _allowed in collect_all_evidence_refs({**facts, **derivations}):
@@ -774,7 +825,34 @@ def _facts_section_call(section: str, system_base: str, evidence: list[dict], me
     # 单独给一个更短超时(ANALYZER_FACTS_TIMEOUT,默认 90s),超时即抛 → 上层用兜底填充。
     timeout = float(os.environ.get("ANALYZER_FACTS_TIMEOUT", "90"))
     out = get_llm().call_json(system, payload, label=f"facts:{section}", timeout=timeout)  # 不设 max_tokens,杜绝截断
-    return section, (out.get(section) or out)
+    return section, _extract_section(out, section)
+
+
+def _extract_section(out: object, section: str) -> object:
+    """LLM 可能回 {section: <data>} 也可能直接回 <data>(尤其 recommendations 数组)。"""
+    if isinstance(out, dict):
+        return out.get(section, out)
+    return out
+
+
+# derivations 的 swot / recommendations 在给定 facts 后彼此独立(都只引用 facts + evidence,
+# 互不依赖)→ 拆成两个并行子调用,每个输出量减半,总耗时从 ~87s 降到 ~max(swot, rec)。
+_DERIV_SECTIONS = {
+    "swot": "本次任务只输出 `swot` 这一个顶层字段(target 的四象限,每条可定位到 facts 依据)。"
+            "不要输出 recommendations。",
+    "recommendations": "本次任务只输出 `recommendations` 这一个顶层字段(可执行、带 priority_score、"
+                       "引用 facts 的 source_feature_ids / source_pain_ids)。不要输出 swot。",
+}
+
+
+def _deriv_section_call(section: str, system_base: str, payload: dict) -> tuple[str, object]:
+    system = (
+        f"{system_base}\n\n## 本次任务范围(重要)\n{_DERIV_SECTIONS[section]}\n"
+        "仍需遵守上面所有约束。"
+    )
+    timeout = float(os.environ.get("ANALYZER_DERIV_TIMEOUT", "90"))
+    out = get_llm().call_json(system, payload, label=f"derivations:{section}", timeout=timeout)
+    return section, _extract_section(out, section)
 
 
 def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0) -> dict:
@@ -846,39 +924,41 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
         _emit_progress(step="derivations", phase="done", attempt=1, summary=_der_summary(der), preview=_derivations_preview(der))
         return der
 
-    llm = get_llm()
     system = load_prompt("analyzer_derivations")
     # derivations 主要基于 facts;证据用精简版即可(不再重复塞全量,防 prompt 爆炸)
     payload = {"analysis_meta": meta, "raw_evidence": _compact_evidence(evidence), "facts": facts}
     _emit_progress(step="derivations", phase="start", attempt=1, preview=_facts_preview(facts))
-    try:
-        der = llm.call_json(system, payload, label="derivations")  # 不设上限,杜绝截断
-    except Exception as e:  # noqa: BLE001
-        reason = f"{type(e).__name__}: {e}"
-        print(f"[analyzer] derivations call failed; using timeout fallback: {reason}")
-        der = _fallback_derivations(facts, evidence, meta, reason)
-        _emit_progress(
-            step="derivations",
-            phase="fallback",
-            attempt=1,
-            summary="模型请求超时，已用事实层生成保守建议",
-            preview={**_derivations_preview(der), "fallback": True, "note": reason},
-        )
-        return der
-    _emit_progress(step="derivations", phase="done", attempt=1, summary=_der_summary(der), preview=_derivations_preview(der))
 
+    # swot ‖ recommendations 并行子调用;任一失败用兜底对应字段填充
+    der: dict = {}
+    fb = None
+    with ThreadPoolExecutor(max_workers=len(_DERIV_SECTIONS)) as ex:
+        futs = {ex.submit(_deriv_section_call, s, system, payload): s for s in _DERIV_SECTIONS}
+        for fut in as_completed(futs):
+            section = futs[fut]
+            try:
+                sec, data = fut.result()
+                der[sec] = data
+                _emit_progress(step="derivations", phase="section_done", section=sec)
+            except Exception as e:  # noqa: BLE001
+                reason = f"{type(e).__name__}: {e}"
+                print(f"[analyzer] derivations section '{section}' failed; 用兜底填充: {reason}")
+                if fb is None:
+                    fb = _fallback_derivations(facts, evidence, meta, reason)
+                der[section] = fb.get(section)
+                _emit_progress(step="derivations", phase="section_fallback", section=section, note=reason)
+
+    _emit_progress(step="derivations", phase="done", attempt=1,
+                   summary=_der_summary(der), preview=_derivations_preview(der))
+
+    # 拆分后不再走 LLM 重跑(那会退回 ~130s 大调用);引用/公式问题统一确定性 sanitize(秒级)。
     issues = quick_validate_derivations(der, facts, evidence)
     if issues:
-        print(f"[analyzer] derivations quick_validate found {len(issues)} issues; repairing")
+        print(f"[analyzer] derivations quick_validate found {len(issues)} issues; 确定性 sanitize")
         _emit_progress(step="derivations", phase="repair", issues=len(issues))
-        try:
-            der = llm.call_json(
-                system + _build_repair_hint(issues), payload,
-                label="derivations_repair",
-            )
-            _emit_progress(step="derivations", phase="done", attempt=2, summary=_der_summary(der), preview=_derivations_preview(der))
-        except Exception as e:
-            print(f"[analyzer] derivations repair failed; reviewer will handle remaining issues: {e}")
+        der, dropped = sanitize_derivations(der, facts, evidence)
+        if dropped:
+            print(f"[analyzer] derivations deterministic sanitize dropped {dropped} invalid refs")
     return der
 
 

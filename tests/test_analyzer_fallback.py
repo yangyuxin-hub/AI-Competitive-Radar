@@ -14,6 +14,7 @@ from src.analyzer import (
     _step2_derivations,
     quick_validate_derivations,
     quick_validate_facts,
+    sanitize_derivations,
 )
 
 
@@ -94,6 +95,37 @@ class Step2TimeoutPathTest(unittest.TestCase):
         # 没崩溃,且拿到 fallback 形态的结果
         self.assertIn("recommendations", der)
         self.assertEqual(quick_validate_derivations(der, facts, EVIDENCE), [])
+
+
+class SanitizeDerivationsTest(unittest.TestCase):
+    """确定性 repair 必须把脏 derivations 修成能过 quick_validate(替代 LLM 重跑)。"""
+
+    def test_drops_bad_refs_and_fixes_formula(self):
+        facts = _fallback_facts(EVIDENCE, META, reason="x")
+        valid_fid = facts["feature_tree"]["features"][0]["feature_id"]
+        weights = {"a": 0.5, "b": 0.5}
+        der = {
+            "swot": {
+                "target": "Cursor",
+                "weaknesses": [{"point": "x", "evidence_ids": ["SPAIN001", "SBOGUS9"]}],
+                "strengths": [], "opportunities": [], "threats": [],
+            },
+            "recommendations": [
+                {
+                    "rec_id": "R001", "action": "do",
+                    "source_feature_ids": [valid_fid, "FBOGUS"],
+                    "source_pain_ids": ["PBOGUS"],
+                    "evidence_ids": ["SPAIN001", "SBOGUS9"],
+                    "priority_score": {"a": 4, "b": 2, "weights": weights, "final_score": 9.99},
+                }
+            ],
+        }
+        out, dropped = sanitize_derivations(der, facts, evidence=EVIDENCE)
+        self.assertGreaterEqual(dropped, 3)  # SBOGUS9 ×2 + FBOGUS + PBOGUS
+        # 公式重算 = 4*0.5 + 2*0.5 = 3.0
+        self.assertEqual(out["recommendations"][0]["priority_score"]["final_score"], 3.0)
+        # 修复后应无校验问题
+        self.assertEqual(quick_validate_derivations(out, facts, EVIDENCE), [])
 
 
 class CompactEvidenceTest(unittest.TestCase):

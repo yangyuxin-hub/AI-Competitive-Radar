@@ -79,6 +79,16 @@ _WAIT_MESSAGE = {
     "degraded_writer": "正在生成分层降级报告",
 }
 
+# 各节点典型耗时(秒)— 用于给前端算 ETA(预计剩余),让长等待可预期。
+# 数值取自 logs/llm_calls.jsonl 实测 + Tier1/2 并行化后的估计;偏保守。
+_NODE_TYPICAL_SEC = {
+    "collector": 55,
+    "analyzer": 130,
+    "writer": 2,
+    "reviewer": 6,
+    "degraded_writer": 4,
+}
+
 app = FastAPI(title="AI Competitive Radar API")
 app.add_middleware(
     CORSMiddleware,
@@ -323,10 +333,11 @@ def _next_node_after(node_name: Optional[str], state: dict) -> str:
     return "collector"
 
 
-def _status_event(node_name: str, message: str, elapsed: int, state: Optional[dict] = None) -> dict:
+def _status_event(node_name: str, message: str, elapsed: int, state: Optional[dict] = None,
+                  eta_sec: Optional[int] = None) -> dict:
     icon, label = _NODE_META.get(node_name, ("•", node_name))
     state = state or {}
-    return {
+    evt = {
         "type": "status",
         "node": node_name,
         "icon": icon,
@@ -336,6 +347,9 @@ def _status_event(node_name: str, message: str, elapsed: int, state: Optional[di
         "evidence_count": len(state.get("raw_evidence") or []),
         "retry_count": state.get("retry_count") or {},
     }
+    if eta_sec is not None:
+        evt["eta_sec"] = max(0, eta_sec)
+    return evt
 
 
 def _merge_status_state(event: dict, state: dict) -> dict:
@@ -411,6 +425,12 @@ def _analyzer_status(evt: dict, elapsed: int) -> dict:
         msg = f"✅ 事实层完成 — {summary}" if summary else "事实层完成，进入推导层"
     elif step == "derivations" and phase == "start":
         msg = "Analyzer Step 2：基于事实推导 SWOT 和优先级建议"
+    elif step == "derivations" and phase == "section_done":
+        _names = {"swot": "SWOT 四象限", "recommendations": "优先级建议"}
+        msg = f"推导层：{_names.get(evt.get('section'), evt.get('section'))} 完成"
+    elif step == "derivations" and phase == "section_fallback":
+        _names = {"swot": "SWOT 四象限", "recommendations": "优先级建议"}
+        msg = f"⚠️ 推导层：{_names.get(evt.get('section'), evt.get('section'))} 子任务超时，已用兜底"
     elif step == "derivations" and phase == "repair":
         msg = f"推导层自检发现 {evt.get('issues', '?')} 个问题，正在修复"
     elif step == "derivations" and phase == "fallback":
@@ -506,7 +526,12 @@ def _run_stream(args: dict):
                 if elapsed() - last_hb >= 4:
                     last_hb = elapsed()
                     wait = _WAIT_MESSAGE.get(current_node, "仍在处理中")
-                    yield _sse(_status_event(current_node, f"{wait}…（已用 {elapsed()}s）", elapsed(), last_state))
+                    in_node = elapsed() - prev_end  # 当前节点已耗时
+                    eta = _NODE_TYPICAL_SEC.get(current_node, 60) - in_node
+                    eta_txt = f"，预计还需 ~{max(5, eta)}s" if eta > 3 else "，即将完成"
+                    yield _sse(_status_event(
+                        current_node, f"{wait}…（已用 {elapsed()}s{eta_txt}）",
+                        elapsed(), last_state, eta_sec=eta))
                 continue
 
             kind = item.get("kind")
