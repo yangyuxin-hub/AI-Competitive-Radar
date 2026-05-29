@@ -426,6 +426,10 @@ def _analyzer_status(evt: dict, elapsed: int) -> dict:
     note = evt.get("note")
     if step == "overview":
         msg = summary or "Analyzer 已读取证据，准备抽取事实层"
+    elif step == "facts" and phase == "enrich_start":
+        msg = summary or "按功能骨架针对性补采证据，填密对比矩阵"
+    elif step == "facts" and phase == "enrich_done":
+        msg = f"✅ {summary}" if summary else "针对性补采完成"
     elif step == "facts" and phase == "start":
         msg = "Analyzer Step 1：从证据中抽取功能、定价、用户痛点"
     elif step == "facts" and phase == "repair":

@@ -152,6 +152,28 @@ def _run_one_query(product: str, q: dict, results_per_query: int) -> tuple[list[
         return [], {**base, "status": "error", "error": str(e)}
 
 
+def feature_targeted_evidence(
+    product: str,
+    feature_names: list[str],
+    focus: str = "",
+    max_results: int = 3,
+) -> list[dict]:
+    """按「功能名」给单个产品做针对性补采:每个 feature 两条角度(体验/痛点)。
+    用于让 (product × feature) 对比矩阵更密;无 TAVILY_API_KEY 时返回 []。
+    复用 search_plan_to_evidence(自带并发 + 磁盘缓存)。"""
+    if not tavily_available() or not feature_names:
+        return []
+    plan: list[dict] = []
+    for fname in feature_names:
+        base = f"{product} {fname} {focus}".strip()
+        plan.append({"query": base, "claim_type": "performance_quality",
+                     "bias": "third_party", "source_type": "web_search", "site": ""})
+        plan.append({"query": f"{product} {fname} 体验 问题 评价".strip(), "claim_type": "user_pain",
+                     "bias": "user_generated", "source_type": "web_search", "site": ""})
+    evidences, _events = search_plan_to_evidence(product, plan, results_per_query=max_results)
+    return evidences
+
+
 def search_plan_to_evidence(
     product: str,
     plan: list[dict],

@@ -886,16 +886,11 @@ def _compute_gap(name: str, products_block: dict, meta: dict) -> dict:
             "evidence_ids": _eids(win_data), "confidence": conf}
 
 
-def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict) -> dict:
-    """feature_tree 2 段式(替代单次 ~127s 大调用):
-    段1 骨架(只要 4-6 个对比功能 id+name,小输出) → 段2 按产品并行填充 → 段3 确定性 gap。"""
-    products = _target_products(meta)
-    target = meta.get("target_product")
+def _feature_spine(system_base: str, evidence: list[dict], meta: dict) -> list[dict]:
+    """段1:从证据里抽 4-6 个适合跨产品对比的功能点(只要 id+name,小输出)。"""
     focus = " / ".join(meta.get("analysis_focus") or []) or "核心体验"
     timeout = float(os.environ.get("ANALYZER_FACTS_TIMEOUT", "90"))
     ft_ev = [e for e in evidence if e.get("claim_type") in _FT_CLAIM_TYPES]
-
-    # ── 段1:功能骨架 ──
     spine_instruct = (
         f"本次只做一件事:基于证据,列出 {focus} 维度下 4-6 个**适合跨产品横向对比**的功能点。\n"
         '只输出 JSON: {"features":[{"feature_id":"F001","name":"功能名"}]}。\n'
@@ -908,8 +903,72 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict) -> di
     )
     feats = (spine.get("features") if isinstance(spine, dict) else None) or []
     feats = [f for f in feats if f.get("feature_id") and f.get("name")][:6]
-    if not feats:
-        feats = [{"feature_id": "F001", "name": focus}]
+    return feats or [{"feature_id": "F001", "name": focus}]
+
+
+def _feature_enrich_enabled() -> bool:
+    return os.environ.get("ANALYZER_FEATURE_ENRICH", "1").strip() not in ("0", "false", "False")
+
+
+def _enrich_evidence_by_features(
+    evidence: list[dict], meta: dict, system_base: str,
+) -> tuple[list[dict], Optional[list[dict]]]:
+    """按 feature 骨架做针对性补采:先抽 spine,再对每个产品按功能名补搜证据,
+    合并去重回 evidence。返回 (合并后的 evidence, spine);spine 供 facts 复用免重抽。
+    需要 Tavily;失败则原样返回。"""
+    from . import search  # 采集层
+
+    if not search.tavily_available():
+        return evidence, None
+    try:
+        spine = _feature_spine(system_base, evidence, meta)
+    except Exception as e:  # noqa: BLE001
+        print(f"[analyzer] enrich: spine 生成失败,跳过补采: {e}")
+        return evidence, None
+    feat_names = [f["name"] for f in spine if f.get("name")]
+    products = _target_products(meta)
+    focus = (meta.get("analysis_focus") or [""])[0] if meta.get("analysis_focus") else ""
+    if not feat_names or not products:
+        return evidence, spine
+
+    _emit_progress(step="facts", phase="enrich_start",
+                   summary=f"按 {len(feat_names)} 个功能为 {len(products)} 个产品针对性补采证据")
+    existing_ids = {e.get("evidence_id") for e in evidence}
+    added: list[dict] = []
+    with ThreadPoolExecutor(max_workers=max(1, len(products))) as ex:
+        futs = {
+            ex.submit(search.feature_targeted_evidence, p, feat_names, focus): p
+            for p in products
+        }
+        for fut in as_completed(futs):
+            product = futs[fut]
+            try:
+                for ev in fut.result():
+                    eid = ev.get("evidence_id")
+                    if eid and eid not in existing_ids:
+                        existing_ids.add(eid)
+                        added.append(ev)
+            except Exception as e:  # noqa: BLE001
+                print(f"[analyzer] enrich '{product}' 补采失败(忽略): {e}")
+    print(f"[analyzer] feature-targeted enrich added {len(added)} new evidence")
+    _emit_progress(step="facts", phase="enrich_done",
+                   summary=f"针对性补采新增 {len(added)} 条证据")
+    return evidence + added, spine
+
+
+def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
+                       spine: Optional[list[dict]] = None) -> dict:
+    """feature_tree 2 段式(替代单次 ~127s 大调用):
+    段1 骨架(只要 4-6 个对比功能 id+name,小输出) → 段2 按产品并行填充 → 段3 确定性 gap。
+    spine 可由上游(补采阶段)预生成并传入,避免重复调用。"""
+    products = _target_products(meta)
+    target = meta.get("target_product")
+    focus = " / ".join(meta.get("analysis_focus") or []) or "核心体验"
+    timeout = float(os.environ.get("ANALYZER_FACTS_TIMEOUT", "90"))
+    ft_ev = [e for e in evidence if e.get("claim_type") in _FT_CLAIM_TYPES]
+
+    # ── 段1:功能骨架(已有则复用) ──
+    feats = spine or _feature_spine(system_base, evidence, meta)
     _emit_progress(step="facts", phase="section_progress", section="feature_tree",
                    note=f"功能骨架就绪（{len(feats)} 项），按产品并行填充")
 
@@ -968,11 +1027,12 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict) -> di
     return {"category": focus, "features": features_out}
 
 
-def _facts_section_call(section: str, system_base: str, evidence: list[dict], meta: dict) -> tuple[str, dict]:
+def _facts_section_call(section: str, system_base: str, evidence: list[dict], meta: dict,
+                        spine: Optional[list[dict]] = None) -> tuple[str, dict]:
     """单个 section 的子问答:只喂相关 claim_type 的证据、只要求输出该 section。"""
     # feature_tree 走 2 段式拆分(可用 ANALYZER_FEATURE_TREE_SPLIT=0 回退单调用)
     if section == "feature_tree" and _feature_tree_split_enabled():
-        return section, _feature_tree_call(system_base, evidence, meta)
+        return section, _feature_tree_call(system_base, evidence, meta, spine=spine)
     cfg = _FACTS_SECTIONS[section]
     sub_ev = _compact_evidence([e for e in evidence if e.get("claim_type") in cfg["claim_types"]])
     system = f"{system_base}\n\n## 本次任务范围(重要)\n{cfg['instruct']}\n仍需遵守上面所有 HARD CONSTRAINTS。"
@@ -1049,7 +1109,8 @@ def _deriv_section_call(section: str, system_base: str, payload: dict) -> tuple[
     return section, _extract_section(out, section)
 
 
-def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0) -> dict:
+def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0,
+                 spine: Optional[list[dict]] = None) -> dict:
     """Step 1 — 事实层"""
     if is_mock_mode():
         # Mock: 从 sample_report 抽出 facts 部分
@@ -1073,7 +1134,8 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0) -> d
     facts: dict = {}
     fb = None  # 懒构造的兜底(整套 facts)
     with ThreadPoolExecutor(max_workers=len(_FACTS_SECTIONS)) as ex:
-        futs = {ex.submit(_facts_section_call, s, system, evidence, meta): s
+        futs = {ex.submit(_facts_section_call, s, system, evidence, meta,
+                          spine if s == "feature_tree" else None): s
                 for s in _FACTS_SECTIONS}
         for fut in as_completed(futs):
             section = futs[fut]
@@ -1179,7 +1241,18 @@ def analyzer_node(state: AgentState) -> AgentState:
         summary=f"已读取 {len(evidence)} 条证据，开始抽取事实层",
         preview=_evidence_preview(evidence, meta),
     )
-    facts = _step1_facts(evidence, meta, analyzer_retry=analyzer_retry)
+
+    # 按 feature 骨架针对性补采 → 让 (产品×功能) 对比矩阵更密(补采证据写回 state.raw_evidence,
+    # 否则其引用会被 quick_validate / Reviewer R1 判为"不存在")。可用 ANALYZER_FEATURE_ENRICH=0 关。
+    spine: Optional[list[dict]] = None
+    if _feature_enrich_enabled() and not is_mock_mode() and _feature_tree_split_enabled():
+        try:
+            system_base = load_prompt("analyzer_facts")
+            evidence, spine = _enrich_evidence_by_features(evidence, meta, system_base)
+        except Exception as e:  # noqa: BLE001
+            print(f"[analyzer] feature enrich 失败(忽略,用原证据继续): {e}")
+
+    facts = _step1_facts(evidence, meta, analyzer_retry=analyzer_retry, spine=spine)
     derivations = _step2_derivations(facts, evidence, meta, analyzer_retry=analyzer_retry)
 
     schema_draft = {
@@ -1191,4 +1264,5 @@ def analyzer_node(state: AgentState) -> AgentState:
         schema_draft, dropped = sanitize_schema_evidence_refs(schema_draft, evidence)
         if dropped:
             print(f"[analyzer] mock schema sanitize dropped {dropped} invalid evidence refs")
-    return {**state, "schema_draft": schema_draft}
+    # 补采可能扩充了 evidence → 写回 state,保证 writer/reviewer 看到的引用都真实存在
+    return {**state, "raw_evidence": evidence, "schema_draft": schema_draft}
