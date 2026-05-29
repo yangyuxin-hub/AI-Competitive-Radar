@@ -58,23 +58,37 @@ Collector → Analyzer(2步) → Writer → Reviewer ─┬─ passed → END
 - **`patch_by_requirements`** 展开所有 `required_claim_types`（不是只取第一个）
 - **Reviewer 选打回目标**：Counter + 优先级 `collector > analyzer > writer`
 - **R6 通过闭包注入 LLM**，不要把 llm 放进 AgentState
-- **timeout**：httpx 读 15s / ARK LLM 90s（不要用默认 600s）
+- **timeout**：httpx 读 15s / LLM 调用默认 200s（`LLM_TIMEOUT` 可调；不要用默认 600s）。`max_retries=1`（`LLM_MAX_RETRIES` 可调）
 
 ## 6. 目录约定
 
+> 注：源码为**扁平单文件模块**（`src/*.py`），非子包目录。
+
 ```
-config/products.yaml          # 产品别名 + official_pages + pricing_pages
+config/
+  products.yaml               # 产品别名 + official_pages + pricing_pages
+  domains.yaml                # 多行业域配置（DOMAIN env 切换 target/competitors/sample_path）
+  sources.yaml                # 采集源配置
+  quality_rubric.yaml         # 质量评分维度
 src/
-  state.py                    # AgentState TypedDict
-  collector/                  # AdapterRegistry + 各 SourceAdapter
-  analyzer/                   # 含强约束 Prompt
-  writer/
-  reviewer/                   # R1-R7 检查函数
-  graph.py                    # LangGraph 编排
+  state.py                    # AgentState TypedDict + build_initial_state
+  collector.py                # 三层降级采集 + URL discovery；skill.py 提供 registry
+  analyzer.py                 # 两步式(facts/derivations) + quick_validate + 强约束 Prompt(prompts/)
+  writer.py                   # Markdown 渲染(chip 格式 [SXXXXXXX])
+  reviewer.py                 # R0-R7 检查函数 + degraded_writer
+  graph.py                    # LangGraph 编排 + main 入口
+  llm.py                      # LLM 客户端封装(默认 MiMo)
+  intake.py / source_planner.py / search.py / judge.py  # 意图解析 / 源规划 / 搜索 / 评测
+  skill.py / hn_skill.py / v2ex_skill.py                # 采集 skill 注册与社区源适配
+prompts/                      # Analyzer 强约束 Prompt（analyzer_facts.md 等）
 data/
   cache/<product>.json        # CacheAdapter 持久化
-  mock/sample_sources.json    # Mock 兜底数据
-logs/agent_trace.jsonl        # 可观测性日志
+  sample_sources.json         # Mock 兜底数据（sample_sources_pm.json 为 PM 域）
+  sample_report.json          # Mock 报告（拆 facts/derivations）
+  debug/                      # evidence_debug 落盘（gitignore）
+api/main.py                   # FastAPI + SSE 后端
+web/                          # Next.js 前端（输入 / Agent 状态 / 报告溯源）
+logs/agent_trace.jsonl        # 可观测性日志；llm_calls.jsonl 全量调用日志
 docs/design-v2.2.md           # 设计文档(v2.2) + 附录 A-D(对比/合规/judge/roadmap)
 docs/usage-scenarios.md       # 需求场景叙事 + MVP user journey
 docs/competitive-analysis-playbook.md  # 分析方法论
@@ -93,24 +107,31 @@ docs/task-requirements.md     # 赛题需求
 
 ## 8. 资源
 
-- **LLM**：Doubao-Seed-2.0-lite，EP 与 APIKEY 见赛事内部文档；运行时通过环境变量 `ARK_API_KEY` / `ARK_EP` 注入，**不要 commit**
+- **LLM**：默认小米 MiMo（`mimo-v2.5-pro`，TTFT ~2-5s，远快于 Doubao EP 的 25-38s）。运行时环境变量注入，**不要 commit**：
+  - `LLM_API_KEY`（或回退 `ARK_API_KEY`）、`LLM_BASE_URL`（默认 `https://token-plan-cn.xiaomimimo.com/v1`）、`LLM_MODEL`（默认 `mimo-v2.5-pro`）
+  - 切回 Doubao：显式设 `LLM_MODEL=ep-...` + `LLM_BASE_URL=<ark>`（不再隐式回退 `ARK_EP`）
+  - `ANALYZER_MOCK=1`：无 API key 跑骨架，走 `sample_report.json`
+  - 代理实测给 LLM 调用平添 ~10s，客户端已 `trust_env=False` 关掉系统代理
 - **可观测**：LangSmith（`LANGCHAIN_PROJECT=competitive-analysis-agent`）+ `logs/agent_trace.jsonl`
 - **合规**：遵守 robots.txt；source_bias 标注；用户访谈数据脱敏
 
 ## 9. 待办（v2.2 §十三）
 
-**已纳入 v2.2 设计、待实现：**
-- [ ] `state.py`：AgentState + per-target retry 字段
-- [ ] Analyzer 两步节点（facts / derivations）+ quick_validate
-- [ ] Writer 渲染器（chip 格式 `[SXXXXXXX]` + 6 个 render_* 函数）
-- [ ] Reviewer 节点（R1-R5 + R7 + R6 闭包注入）+ degraded_writer
-- [ ] Collector + 三层 Adapter + ThreadPoolExecutor
-- [ ] sample_sources.json（三产品 × 四 claim_type，Day1-2 锁数据）
-- [ ] products.yaml
-- [ ] 前端三页面（输入 / Agent 状态 / 报告溯源 chip）
+**v2.2 核心骨架已全部实现：**
+- [x] `state.py`：AgentState + per-target retry 字段
+- [x] Analyzer 两步节点（facts / derivations）+ quick_validate（facts 三 section 并行 + 确定性 sanitize 兜底）
+- [x] Writer 渲染器（chip 格式 `[SXXXXXXX]`）
+- [x] Reviewer 节点（R0-R7 + R6 闭包注入）+ degraded_writer
+- [x] Collector + 三层降级 + URL discovery + ThreadPoolExecutor
+- [x] sample_sources.json / products.yaml / domains.yaml
+- [x] 前端三页面（`web/`，Next.js）+ FastAPI/SSE 后端（`api/main.py`）
 
-**v2.3 候选（Week 3 评估）：**
+**进行中 / 已超出 v2.2 设计：**
+- [x] runtime profiles 提速 + 阶段耗时/ETA + 档案化 JSON 持久化
+- [x] LLM 默认切 MiMo + 全量调用日志 `logs/llm_calls.jsonl`
+- [ ] 证据过多时仍偶发 LLM 超时（已靠 _compact_evidence + 并行 section 缓解，待持续观察）
+
+**v2.3 候选：**
 - [ ] 规则瘦身（R2/R3/R5 合并入 R6；scoring/TTL/priority 阈值 config 化）
 - [ ] `ISSUE_TYPE_TO_TARGET` 13 项收敛到 3 类
-- [ ] TRAE 协作痕迹标注（评分维度 4）
 - [ ] 业务价值量化指标（评分维度 3，答辩必备）
