@@ -68,16 +68,26 @@ def business_value_metrics(
     manual_hours = float(m.get("hours_per_analysis") or 8)
     speedup = round(manual_hours * 3600 / elapsed, 1) if elapsed else None
 
+    # delta 按真实数值比较,不硬编码乐观值(诚实)
+    try:
+        man_src = float(m.get("source_types", 3))
+    except (TypeError, ValueError):
+        man_src = 3
+    src_delta = ("覆盖更广" if source_types > man_src
+                 else "持平" if source_types == man_src
+                 else "偏少·建议开 deep 档补源")
+    ev_delta = "信息量更大" if n_evidence > float(m.get("evidence_items", 25) or 25) else "持平或偏少"
+
     rows = [
         {"metric": "分析耗时",
          "manual": f"~{manual_hours:.0f} 工时", "system": f"{elapsed}s (~{elapsed/60:.1f} 分钟)",
          "delta": (f"约快 {speedup:.0f}×" if speedup else "—")},
         {"metric": "信息源类型数",
          "manual": str(m.get("source_types", "2-3")), "system": str(source_types),
-         "delta": "覆盖更广"},
+         "delta": src_delta},
         {"metric": "采集证据条数",
          "manual": f"~{m.get('evidence_items', 25)}", "system": str(n_evidence),
-         "delta": "信息量更大"},
+         "delta": ev_delta},
         {"metric": "结论溯源率",
          "manual": str(m.get("traceability_desc", "弱·不统一")), "system": f"{trace*100:.0f}%",
          "delta": "每条结论可溯源"},
