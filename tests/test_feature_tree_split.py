@@ -94,12 +94,38 @@ class ComputeGapTest(unittest.TestCase):
     def test_tie_prefers_target(self):
         block = {
             "Cursor": {"support_status": "supported", "support_evidence_ids": ["SFEAT001"],
-                       "quality_score": {"score": 3, "evidence_ids": []}},
+                       "quality_score": {"score": 3, "evidence_ids": ["SPERF001"]}},
             "Windsurf": {"support_status": "supported", "support_evidence_ids": [],
-                         "quality_score": {"score": 3, "evidence_ids": []}},
+                         "quality_score": {"score": 3, "evidence_ids": ["SPAIN001"]}},
         }
         gap = _compute_gap("Tab 补全", block, META)
         self.assertEqual(gap["winner"], "Cursor")
+
+    def test_all_unscored_is_unknown_not_tie(self):
+        # 全是证据不足(unknown/0 无证据)→ winner unknown,不能宣称"打平"
+        block = {
+            "Cursor": {"support_status": "unknown",
+                       "quality_score": {"score": 0, "evidence_ids": []}},
+            "Windsurf": {"support_status": "unknown",
+                         "quality_score": {"score": 0, "evidence_ids": []}},
+        }
+        gap = _compute_gap("跨文件补全", block, META)
+        self.assertEqual(gap["winner"], "unknown")
+        self.assertEqual(gap["confidence"], 0.0)
+
+    def test_single_rated_no_false_lead(self):
+        # 只有 Cursor 有真实证据,对手是 0/unknown → 不宣称"4 vs 0 领先"
+        block = {
+            "Cursor": {"support_status": "supported", "support_evidence_ids": ["SFEAT001"],
+                       "quality_score": {"score": 4, "evidence_ids": ["SPERF001"]}},
+            "Windsurf": {"support_status": "unknown",
+                         "quality_score": {"score": 0, "evidence_ids": []}},
+        }
+        gap = _compute_gap("补全响应速度", block, META)
+        self.assertEqual(gap["winner"], "Cursor")
+        self.assertEqual(gap["gap_type"], "insufficient_evidence")
+        self.assertLessEqual(gap["confidence"], 0.3)
+        self.assertNotIn("vs 次优", gap["reason"])
 
 
 if __name__ == "__main__":

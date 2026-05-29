@@ -52,12 +52,19 @@ def _products(meta: dict) -> list[str]:
 
 
 def _score_cell(pdata: dict) -> Optional[float]:
+    """返回该产品在某功能上的"真实"质量分;证据不足(unknown / 0 分且无质量证据)→ None。
+    None 不计入对比/均分,避免把"没数据"误当成"真实 0 分/打平"。"""
     qs = pdata.get("quality_score") or {}
-    score = qs.get("score")
+    if (pdata.get("support_status") or "").lower() == "unknown":
+        return None
     try:
-        return float(score)
+        f = float(qs.get("score"))
     except (TypeError, ValueError):
         return None
+    has_ev = bool(qs.get("evidence_ids") or (qs.get("aggregation") or {}).get("representative_evidence_ids"))
+    if f <= 0 and not has_ev:
+        return None
+    return f
 
 
 def _average_scores(feature_tree: dict, products: list[str]) -> dict[str, float]:
@@ -98,7 +105,9 @@ def _render_executive_summary(schema: dict, meta: dict) -> str:
     recs = schema.get("recommendations") or []
     pains = (schema.get("user_persona") or {}).get("pain_points") or []
 
-    if leader and target_score is not None:
+    if leader and leader == target:
+        position = f"{target} 当前综合评分领先({avgs[leader]:.1f}/5)。"
+    elif leader and target_score is not None:
         position = (
             f"{leader} 当前综合评分最高({avgs[leader]:.1f}/5)，"
             f"{target} 为 {target_score:.1f}/5。"
@@ -205,13 +214,19 @@ def _render_score_overview(feature_tree: dict, products: list[str]) -> str:
             else:
                 product_scores.setdefault(product, []).append(score)
                 cells.append(f"{score:.1f}/5")
+        scored_in_row = [c for c in cells if c != "—"]
         gap = feat.get("gap") or {}
         winner = gap.get("winner")
         reason = gap.get("reason", "")
-        implication = (
-            "可作为优势叙事继续放大" if winner and winner == products[0]
-            else f"需要解释或补齐 {winner} 的领先点" if winner else "需要补充证据确认"
-        )
+        if not scored_in_row:
+            reason = "各产品均缺少质量证据，未评分"
+            implication = "证据不足，需补采"
+        elif winner and winner == products[0]:
+            implication = "可作为优势叙事继续放大"
+        elif winner and winner != "unknown":
+            implication = f"需要解释或补齐 {winner} 的领先点"
+        else:
+            implication = "需要补充证据确认"
         lines.append(
             f"| {name} | " + " | ".join(cells) +
             f" | {reason} {cite((gap.get('evidence_ids') or [])[:2])} | {implication} |"

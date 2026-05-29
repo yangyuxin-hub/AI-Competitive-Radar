@@ -827,33 +827,63 @@ def _feature_tree_split_enabled() -> bool:
     return os.environ.get("ANALYZER_FEATURE_TREE_SPLIT", "1").strip() not in ("0", "false", "False")
 
 
+def _real_score(pdata: dict) -> Optional[float]:
+    """真实质量分;证据不足(unknown / 0 分且无质量证据)→ None,不参与胜负与均分。"""
+    qs = pdata.get("quality_score") or {}
+    if (pdata.get("support_status") or "").lower() == "unknown":
+        return None
+    try:
+        f = float(qs.get("score"))
+    except (TypeError, ValueError):
+        return None
+    has_ev = bool(qs.get("evidence_ids") or (qs.get("aggregation") or {}).get("representative_evidence_ids"))
+    if f <= 0 and not has_ev:
+        return None
+    return f
+
+
 def _compute_gap(name: str, products_block: dict, meta: dict) -> dict:
-    """确定性算 gap.winner/gap_type/confidence,不再让 LLM 生成(R5/R1 天然自洽)。
-    winner = quality_score 最高的产品;证据取 winner 的 support + quality evidence_ids。"""
+    """确定性算 gap.winner/gap_type/confidence(R5/R1 天然自洽)。
+    关键:只在**有真实质量证据**的产品间判胜负 —— 不把"证据不足(0/unknown)"
+    当成真实低分,避免"4 vs 0"式的伪领先和"均 0/5 打平"式的错误结论。"""
     target = meta.get("target_product")
-    scored = []  # (product, score, pdata)
+    rated = []  # (product, score, pdata) —— 仅含有真实分的产品
     for product, pdata in products_block.items():
-        score = (pdata.get("quality_score") or {}).get("score") or 0
-        scored.append((product, score, pdata))
-    if not scored:
-        return {"winner": "unknown", "gap_type": "unknown", "reason": "证据不足，暂无法判断胜负",
+        s = _real_score(pdata)
+        if s is not None:
+            rated.append((product, s, pdata))
+
+    def _eids(pdata: dict) -> list[str]:
+        return ((pdata.get("support_evidence_ids") or [])
+                + ((pdata.get("quality_score") or {}).get("evidence_ids") or []))[:4]
+
+    if not rated:
+        return {"winner": "unknown", "gap_type": "unknown",
+                "reason": f"各产品在「{name}」上均缺少质量证据，暂不判断胜负",
                 "evidence_ids": [], "confidence": 0.0}
-    # 分数降序;同分时让 target 优先(避免无谓判负自身)
-    scored.sort(key=lambda x: (x[1], x[0] == target), reverse=True)
-    winner, top, win_data = scored[0]
-    second = scored[1][1] if len(scored) > 1 else 0
+
+    if len(rated) == 1:
+        # 只有一个产品有证据 → 不与"没数据"的对手强行比;如实标注
+        winner, score, win_data = rated[0]
+        return {"winner": winner, "gap_type": "insufficient_evidence",
+                "reason": f"仅 {winner} 在「{name}」上有足够质量证据（{score:.0f}/5），"
+                          "其余产品证据不足，暂不作强对比",
+                "evidence_ids": _eids(win_data), "confidence": 0.3}
+
+    # ≥2 个产品有真实分:在它们之间判胜负
+    rated.sort(key=lambda x: (x[1], x[0] == target), reverse=True)
+    winner, top, win_data = rated[0]
+    second = rated[1][1]
     spread = top - second
-    eids = ((win_data.get("support_evidence_ids") or [])
-            + ((win_data.get("quality_score") or {}).get("evidence_ids") or []))[:4]
-    any_missing = any((d.get("support_status") == "not_supported") for _, _, d in scored)
+    any_missing = any((d.get("support_status") == "not_supported") for _, _, d in rated)
     gap_type = "feature_completeness" if any_missing else ("performance" if spread > 0 else "usability")
     if spread > 0:
-        reason = f"{winner} 在「{name}」上质量评分领先（{top}/5 vs 次优 {second}/5）"
+        reason = f"{winner} 在「{name}」上质量评分领先（{top:.0f}/5 vs 次优 {second:.0f}/5）"
     else:
-        reason = f"各产品在「{name}」上质量相近（均 {top}/5），差距主要在支持范围"
-    conf = round(min(0.85, 0.35 + 0.1 * spread + 0.05 * len(eids)), 2)
+        reason = f"已评分产品在「{name}」上质量相近（均 {top:.0f}/5），差距主要在支持范围"
+    conf = round(min(0.85, 0.35 + 0.1 * spread + 0.05 * len(_eids(win_data))), 2)
     return {"winner": winner, "gap_type": gap_type, "reason": reason,
-            "evidence_ids": eids, "confidence": conf}
+            "evidence_ids": _eids(win_data), "confidence": conf}
 
 
 def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict) -> dict:
