@@ -3,7 +3,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Report, Completeness } from "@/lib/types";
+import type { Report, Completeness, BusinessValue } from "@/lib/types";
 import type {
   Feature,
   Recommendation,
@@ -186,6 +186,9 @@ export default function ReportView({ report }: { report: Report }) {
 
         {/* 综合评级 — 一眼看懂这份报告几分 */}
         <OverallGrade report={report} />
+
+        {/* 业务价值 — vs 人工竞品分析 */}
+        {report.business_value && <BusinessValueCard data={report.business_value} />}
 
         {/* Overview */}
         <section className="space-y-3">
@@ -380,6 +383,42 @@ function OverallGrade({ report }: { report: Report }) {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+function BusinessValueCard({ data }: { data: BusinessValue }) {
+  return (
+    <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/[0.05] p-5">
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="text-sm font-medium text-neutral-200">业务价值 · vs 传统人工</div>
+        {data.headline && <div className="text-xs font-medium text-emerald-300">{data.headline}</div>}
+      </div>
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-neutral-500">
+              <th className="py-1 pr-3 text-left font-normal">指标</th>
+              <th className="py-1 pr-3 text-left font-normal">人工(估算)</th>
+              <th className="py-1 pr-3 text-left font-normal">本系统(实测)</th>
+              <th className="py-1 text-left font-normal">提升</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.rows.map((r) => (
+              <tr key={r.metric} className="border-t border-white/5">
+                <td className="py-1.5 pr-3 text-neutral-300">{r.metric}</td>
+                <td className="py-1.5 pr-3 text-neutral-500">{r.manual}</td>
+                <td className="py-1.5 pr-3 font-mono text-neutral-100">{r.system}</td>
+                <td className="py-1.5 text-emerald-400">{r.delta}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {data.assumptions && (
+        <div className="mt-2 text-[11px] leading-relaxed text-neutral-600">{data.assumptions}</div>
+      )}
     </div>
   );
 }

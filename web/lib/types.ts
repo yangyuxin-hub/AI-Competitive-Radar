@@ -67,6 +67,12 @@ export interface Completeness {
   missing_action_fields?: string[];
 }
 
+export interface BusinessValue {
+  rows: { metric: string; manual: string; system: string; delta: string }[];
+  headline?: string;
+  assumptions?: string;
+}
+
 export interface Report {
   report_id: string;
   meta: ReportMeta;
@@ -75,6 +81,7 @@ export interface Report {
   report_draft: string | null;
   quality_report: QualityReport | null;
   completeness?: Completeness | null;
+  business_value?: BusinessValue | null;
   raw_evidence: Evidence[];
   status: string;
   stage_timings?: {

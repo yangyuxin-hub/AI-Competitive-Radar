@@ -671,11 +671,18 @@ def _persist_report(state: dict, stage_timings: Optional[list[dict]] = None) -> 
     report_id = f"{base_id}-{now.strftime('%H%M%S')}"
     # 确定性「任务完成度」指标(零 LLM,不增加延迟)
     completeness = None
+    business_value = None
     try:
         from src.judge import completeness_metrics  # noqa: WPS433
         completeness = completeness_metrics(state.get("schema_draft") or {}, meta)
     except Exception as e:  # noqa: BLE001
         print(f"[api] completeness_metrics 失败(忽略): {e}")
+    try:
+        from src.business_value import business_value_metrics  # noqa: WPS433
+        business_value = business_value_metrics(
+            state.get("schema_draft") or {}, meta, stage_timings or [], state.get("raw_evidence") or [])
+    except Exception as e:  # noqa: BLE001
+        print(f"[api] business_value_metrics 失败(忽略): {e}")
     report = {
         "report_id": report_id,
         "meta": meta,
@@ -684,6 +691,7 @@ def _persist_report(state: dict, stage_timings: Optional[list[dict]] = None) -> 
         "report_draft": state.get("report_draft"),
         "quality_report": state.get("quality_report"),
         "completeness": completeness,
+        "business_value": business_value,
         "raw_evidence": state.get("raw_evidence") or [],
         "status": state.get("status"),
         "stage_timings": stage_timings or [],
