@@ -52,8 +52,10 @@ def register_all_skills(registry: SkillRegistry) -> None:
     """注册所有可用技能。顺序决定执行顺序。"""
     from .hn_skill import HNSkill
     from .v2ex_skill import V2EXSkill
+    from .survey_skill import SurveySkill
     registry.register("hn", HNSkill())
     registry.register("v2ex", V2EXSkill())
+    registry.register("survey", SurveySkill())  # 问卷设计/模拟访谈(合成,已标注)
 
 
 def create_skill_registry(enabled: bool = True) -> SkillRegistry:

@@ -165,6 +165,7 @@ def _render_evidence_coverage(evidence: list[dict]) -> str:
         "vendor_claim": "确认功能、定价、官方定位",
         "user_generated": "校验痛点、体验波动、真实抱怨",
         "third_party": "横向评测、市场视角、交叉验证",
+        "synthetic": "模拟问卷/访谈(LLM 合成,非真实用户,仅作补充)",
     }
     for key, count in bias_counts.most_common():
         lines.append(f"| {key} | {count} | {purpose.get(key, '补充参考')} |")
