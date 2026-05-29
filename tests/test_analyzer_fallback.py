@@ -128,6 +128,28 @@ class SanitizeDerivationsTest(unittest.TestCase):
         self.assertEqual(quick_validate_derivations(out, facts, EVIDENCE), [])
 
 
+class EnsurePriorityScoresTest(unittest.TestCase):
+    def test_backfills_missing_priority_and_keeps_existing(self):
+        from src.analyzer import _ensure_priority_scores
+
+        der = {"recommendations": [
+            {"rec_id": "R001", "evidence_ids": ["SX"]},  # 缺 priority_score
+            {"rec_id": "R002", "priority_score": {  # 已有合法的,不应被改
+                "pain_frequency": 5, "business_impact": 5, "implementation_feasibility": 5,
+                "evidence_confidence": 5, "weights": {"x": 1}, "final_score": 5.0, "priority": "P0"}},
+            {"rec_id": "R003"},
+        ]}
+        n = _ensure_priority_scores(der)
+        self.assertEqual(n, 2)  # R001, R003 补
+        recs = der["recommendations"]
+        self.assertEqual(recs[0]["priority_score"]["priority"], "P0")  # idx0
+        self.assertEqual(recs[1]["priority_score"]["final_score"], 5.0)  # 未动
+        # 补的 final_score 与公式自洽
+        ps = recs[0]["priority_score"]
+        expected = round(sum(ps[k] * ps["weights"][k] for k in ps["weights"]), 2)
+        self.assertEqual(ps["final_score"], expected)
+
+
 class CompactEvidenceTest(unittest.TestCase):
     def test_caps_per_claim_type(self):
         import os

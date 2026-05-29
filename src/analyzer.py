@@ -966,12 +966,47 @@ def _extract_section(out: object, section: str) -> object:
 _DERIV_SECTIONS = {
     "swot": "本次任务只输出 `swot` 这一个顶层字段(target 的四象限,每条可定位到 facts 依据)。"
             "不要输出 recommendations。",
-    "recommendations": "本次任务只输出 `recommendations` 这一个顶层字段(可执行、带 priority_score、"
-                       "引用 facts 的 source_feature_ids / source_pain_ids)。不要输出 swot。\n"
-                       "每条建议尽量补齐可落地字段(让 PM 能直接立项):"
-                       "`expected_impact`(预期收益)、`success_metric`(验收指标)、"
-                       "`risk`(主要风险)、`time_horizon`(周期,如 1-2 周/1 季度)。无把握的字段可省略,不要编造。",
+    "recommendations": "本次任务只输出 `recommendations` 这一个顶层字段,按优先级从高到低排序。不要输出 swot。\n"
+                       "每条建议必须引用 facts 的 source_feature_ids / source_pain_ids,且**必须包含 "
+                       "`priority_score`**:{pain_frequency,business_impact,implementation_feasibility,"
+                       "evidence_confidence 各 1-5 整数, weights 用 {0.35,0.30,0.20,0.15}, "
+                       "final_score=各项×权重之和(保留两位小数), priority 为 P0/P1/P2}。\n"
+                       "另尽量补齐可落地字段(让 PM 能直接立项):`expected_impact`(预期收益)、"
+                       "`success_metric`(验收指标)、`risk`(主要风险)、`time_horizon`(周期)。无把握的字段可省略,不要编造。",
 }
+
+
+_PRIORITY_WEIGHTS = {
+    "pain_frequency": 0.35,
+    "business_impact": 0.30,
+    "implementation_feasibility": 0.20,
+    "evidence_confidence": 0.15,
+}
+
+
+def _ensure_priority_scores(der: dict) -> int:
+    """兜底:LLM 偶尔漏 priority_score(尤其拆分后)。缺失时按 LLM 给出的排序补一个
+    R5 自洽的 priority_score(越靠前分越高),保证「优先级建议」这一核心交付不缺。
+    已有合法 priority_score 的不动。返回补了几条。"""
+    recs = der.get("recommendations") or []
+    filled = 0
+    for idx, rec in enumerate(recs):
+        ps = rec.get("priority_score")
+        if isinstance(ps, dict) and ps.get("final_score") is not None and ps.get("priority"):
+            continue
+        base = max(1, 5 - idx)  # 第1条=5,依次递减,最低 1
+        parts = {
+            "pain_frequency": base,
+            "business_impact": base,
+            "implementation_feasibility": max(2, base - 1),
+            "evidence_confidence": 3 if rec.get("evidence_ids") else 1,
+        }
+        final = round(sum(parts[k] * _PRIORITY_WEIGHTS[k] for k in _PRIORITY_WEIGHTS), 2)
+        priority = "P0" if idx == 0 else ("P1" if idx <= 2 else "P2")
+        rec["priority_score"] = {**parts, "weights": dict(_PRIORITY_WEIGHTS),
+                                 "final_score": final, "priority": priority}
+        filled += 1
+    return filled
 
 
 def _deriv_section_call(section: str, system_base: str, payload: dict) -> tuple[str, object]:
@@ -1076,6 +1111,11 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
                     fb = _fallback_derivations(facts, evidence, meta, reason)
                 der[section] = fb.get(section)
                 _emit_progress(step="derivations", phase="section_fallback", section=section, note=reason)
+
+    # 兜底补缺失的 priority_score(LLM 拆分后偶发漏填,保「优先级建议」不缺)
+    n_filled = _ensure_priority_scores(der)
+    if n_filled:
+        print(f"[analyzer] backfilled priority_score for {n_filled} recommendation(s)")
 
     _emit_progress(step="derivations", phase="done", attempt=1,
                    summary=_der_summary(der), preview=_derivations_preview(der))
