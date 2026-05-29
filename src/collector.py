@@ -204,7 +204,8 @@ RUNTIME_PROFILES = {
         "skills": True,
         "cache": True,
         "url_discovery_llm": True,
-        "timeout_sec": 80,
+        # 技能(HN/V2EX/问卷) + DDG 串行限速较慢,80s 易整体超时→fetched=0;放宽到 180s 让其完成
+        "timeout_sec": 180,
         "max_evidence_per_product": 40,
     },
 }
