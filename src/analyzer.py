@@ -1298,6 +1298,51 @@ def _gap_targeted_recollect(meta: dict, gaps: dict, focus: str) -> list[dict]:
     return added
 
 
+def _survey_enabled() -> bool:
+    return os.environ.get("ANALYZER_SURVEY", "1").strip() not in ("0", "false", "False")
+
+
+def _run_survey(evidence: list[dict], meta: dict) -> tuple[list[dict], Optional[dict]]:
+    """问卷/用户访谈采集 Agent(合成,已标注):对每个产品设计问卷+模拟访谈→证据。
+    在 analyzer 跑(不受采集超时限制、默认全档生效)。返回 (合并 evidence, research_method)。"""
+    from .survey_skill import SurveySkill
+    sk = SurveySkill()
+    products = _target_products(meta)
+    focus = (meta.get("analysis_focus") or [""])[0] if meta.get("analysis_focus") else ""
+    existing = {e.get("evidence_id") for e in evidence}
+    added: list[dict] = []
+    questions: list[dict] = []
+    personas: set[str] = set()
+    with ThreadPoolExecutor(max_workers=max(1, len(products))) as ex:
+        futs = {ex.submit(sk.execute, [], product=p, focus=focus): p for p in products}
+        for fut in as_completed(futs):
+            try:
+                evs, m = fut.result()
+            except Exception as e:  # noqa: BLE001
+                print(f"[analyzer] survey '{futs[fut]}' failed: {type(e).__name__}: {e}")
+                continue
+            if not questions and m.get("questionnaire"):
+                questions = m["questionnaire"]
+            for e in evs:
+                eid = e.get("evidence_id")
+                if eid and eid not in existing:
+                    existing.add(eid)
+                    added.append(e)
+                    persona = (e.get("metadata") or {}).get("persona")
+                    if persona:
+                        personas.add(persona)
+    if not added:
+        return evidence, None
+    research_method = {
+        "method": "LLM 模拟问卷调研 + 用户访谈(合成数据,非真实用户,已脱敏)",
+        "synthetic": True,
+        "questions": [{"id": q.get("id"), "text": q.get("text")} for q in questions if q.get("text")][:6],
+        "n_findings": len(added),
+        "personas": sorted(personas)[:8],
+    }
+    return evidence + added, research_method
+
+
 def analyzer_node(state: AgentState) -> AgentState:
     evidence = state["raw_evidence"] or []
     print(f"\n[analyzer] received {len(evidence)} raw_evidence")
@@ -1318,6 +1363,21 @@ def analyzer_node(state: AgentState) -> AgentState:
     )
 
     focus = (meta.get("analysis_focus") or [""])[0] if meta.get("analysis_focus") else ""
+
+    # 问卷/访谈采集 Agent(合成,已标注):默认全档生效,产出均衡的用户侧证据 + 留存问卷供报告展示
+    research_method: Optional[dict] = None
+    if (_survey_enabled() and not is_mock_mode()
+            and (os.environ.get("LLM_API_KEY") or os.environ.get("ARK_API_KEY"))):
+        try:
+            _emit_progress(step="facts", phase="survey_start", summary="设计问卷并模拟用户访谈采集")
+            evidence, research_method = _run_survey(evidence, meta)
+            if research_method:
+                print(f"[analyzer] survey added {research_method['n_findings']} synthetic interview evidence")
+                _emit_progress(step="facts", phase="survey_done",
+                               summary=f"问卷调研完成：{len(research_method['questions'])} 题 / "
+                                       f"{research_method['n_findings']} 条模拟访谈")
+        except Exception as e:  # noqa: BLE001
+            print(f"[analyzer] survey 失败(忽略): {e}")
 
     # 先生成功能骨架一次(供两遍 facts 复用,免重复抽取)
     spine: Optional[list[dict]] = None
@@ -1359,6 +1419,8 @@ def analyzer_node(state: AgentState) -> AgentState:
         **facts,
         **derivations,
     }
+    if research_method:
+        schema_draft["research_method"] = research_method  # 供报告「调研方法」卡展示
     if is_mock_mode():
         schema_draft, dropped = sanitize_schema_evidence_refs(schema_draft, evidence)
         if dropped:

@@ -8,21 +8,22 @@ from src.survey_skill import SurveySkill
 
 class _StubLLM:
     def call_json(self, system, payload, label="", **kw):
-        if label.startswith("survey_design"):
-            return {"questions": [
-                {"id": "Q1", "text": "补全速度如何?", "claim_type": "performance_quality"},
-                {"id": "Q2", "text": "最影响体验的痛点?", "claim_type": "user_pain"},
-            ]}
-        if label.startswith("survey_interview"):
-            return {"findings": [
-                {"persona": "独立开发者", "question_id": "Q1",
-                 "claim_type": "performance_quality", "finding": "补全延迟约 1 秒,偏慢",
-                 "expectation": "100ms 内"},
-                {"persona": "企业团队", "question_id": "Q2",
-                 "claim_type": "user_pain", "finding": "大项目里偶尔补全错乱", "expectation": ""},
-                {"persona": "学生", "question_id": "Q2", "claim_type": "bogus_type",
-                 "finding": "免费额度不够用", "expectation": "更多免费额度"},  # 非法 claim_type → 归一
-            ]}
+        if label.startswith("survey"):  # 合并为单次调用
+            return {
+                "questions": [
+                    {"id": "Q1", "text": "补全速度如何?", "claim_type": "performance_quality"},
+                    {"id": "Q2", "text": "最影响体验的痛点?", "claim_type": "user_pain"},
+                ],
+                "findings": [
+                    {"persona": "独立开发者", "question_id": "Q1",
+                     "claim_type": "performance_quality", "finding": "补全延迟约 1 秒,偏慢",
+                     "expectation": "100ms 内"},
+                    {"persona": "企业团队", "question_id": "Q2",
+                     "claim_type": "user_pain", "finding": "大项目里偶尔补全错乱", "expectation": ""},
+                    {"persona": "学生", "question_id": "Q2", "claim_type": "bogus_type",
+                     "finding": "免费额度不够用", "expectation": "更多免费额度"},  # 非法 claim_type → 归一
+                ],
+            }
         return {}
 
 
@@ -73,6 +74,17 @@ class SurveySkillTest(unittest.TestCase):
         import src.llm as llm
         llm.is_mock_mode = lambda: True
         self.assertFalse(SurveySkill().can_execute([], product="Cursor"))
+
+    def test_analyzer_run_survey_builds_research_method(self):
+        from src import analyzer
+        meta = {"target_product": "Cursor", "competitors": ["Windsurf"], "analysis_focus": ["代码补全体验"]}
+        merged, rm = analyzer._run_survey([], meta)
+        self.assertTrue(len(merged) > 0)  # 合成访谈证据合并进来
+        self.assertIsNotNone(rm)
+        self.assertEqual(len(rm["questions"]), 2)
+        self.assertTrue(rm["synthetic"])
+        self.assertIn("独立开发者", rm["personas"])
+        self.assertEqual(rm["n_findings"], len(merged))
 
 
 if __name__ == "__main__":

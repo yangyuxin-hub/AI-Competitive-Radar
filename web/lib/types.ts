@@ -73,6 +73,14 @@ export interface BusinessValue {
   assumptions?: string;
 }
 
+export interface ResearchMethod {
+  method: string;
+  synthetic?: boolean;
+  questions: { id?: string; text: string }[];
+  n_findings: number;
+  personas: string[];
+}
+
 export interface Report {
   report_id: string;
   meta: ReportMeta;
@@ -82,6 +90,7 @@ export interface Report {
   quality_report: QualityReport | null;
   completeness?: Completeness | null;
   business_value?: BusinessValue | null;
+  research_method?: ResearchMethod | null;
   raw_evidence: Evidence[];
   status: string;
   stage_timings?: {

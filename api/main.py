@@ -430,6 +430,10 @@ def _analyzer_status(evt: dict, elapsed: int) -> dict:
         msg = summary or "按功能骨架针对性补采证据，填密对比矩阵"
     elif step == "facts" and phase == "enrich_done":
         msg = f"✅ {summary}" if summary else "针对性补采完成"
+    elif step == "facts" and phase == "survey_start":
+        msg = summary or "问卷/访谈采集 Agent：设计问卷并模拟用户访谈"
+    elif step == "facts" and phase == "survey_done":
+        msg = f"📋 {summary}" if summary else "问卷调研完成"
     elif step == "facts" and phase == "gap_refill_start":
         msg = summary or "检测到证据空缺，正在定向补采"
     elif step == "facts" and phase == "gap_refill_done":
@@ -701,6 +705,7 @@ def _persist_report(state: dict, stage_timings: Optional[list[dict]] = None) -> 
         "quality_report": state.get("quality_report"),
         "completeness": completeness,
         "business_value": business_value,
+        "research_method": (state.get("schema_draft") or {}).get("research_method"),
         "raw_evidence": state.get("raw_evidence") or [],
         "status": state.get("status"),
         "stage_timings": stage_timings or [],

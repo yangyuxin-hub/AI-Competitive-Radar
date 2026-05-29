@@ -52,10 +52,10 @@ def register_all_skills(registry: SkillRegistry) -> None:
     """注册所有可用技能。顺序决定执行顺序。"""
     from .hn_skill import HNSkill
     from .v2ex_skill import V2EXSkill
-    from .survey_skill import SurveySkill
     registry.register("hn", HNSkill())
     registry.register("v2ex", V2EXSkill())
-    registry.register("survey", SurveySkill())  # 问卷设计/模拟访谈(合成,已标注)
+    # 注:问卷/访谈采集已移到 analyzer 默认全档运行(见 analyzer._run_survey),不再作为采集层 skill,
+    # 避免受采集 wall-clock 超时影响,并保证 balanced/fast 档也有问卷访谈证据。
 
 
 def create_skill_registry(enabled: bool = True) -> SkillRegistry:

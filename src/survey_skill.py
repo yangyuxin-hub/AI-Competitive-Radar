@@ -46,43 +46,29 @@ class SurveySkill(CollectorSkill):
         timeout = float(os.environ.get("SURVEY_TIMEOUT", "60"))
         print(f"\n[Survey Skill] START — product={product}, focus={focus}")
 
-        # ── Step 1: 问卷设计 ──────────────────────────────────────────────
-        design_sys = (
-            "你是用户研究员。围绕给定产品与分析焦点,设计一份简短的用户调研问卷。\n"
+        # 问卷设计 + 模拟访谈合并成一次调用(提速,~35s)
+        sys = (
+            "你是用户研究员。请针对给定产品与分析焦点,完成两件事并一次性输出:\n"
+            "1) 设计一份 4-6 题的用户调研问卷(聚焦该焦点维度的真实体验/痛点/性能,问题具体可作答);\n"
+            "2) 扮演 3-5 个**多样化**用户画像(如独立开发者/企业团队/学生/重度付费用户),针对问卷给出"
+            "**具体、有细节、有分歧**的访谈反馈(有人满意有人抱怨,带具体场景/数字)。\n"
             '只输出 JSON: {"questions":[{"id":"Q1","text":"问题","claim_type":"user_pain|'
-            'performance_quality|feature_existence","intent":"想了解什么"}]}。\n'
-            "4-6 道题,聚焦焦点维度的真实使用体验/痛点/性能感受;问题要具体、可作答,不要泛问。"
+            'performance_quality|feature_existence"}],'
+            '"findings":[{"persona":"画像简述","question_id":"Q1","claim_type":"user_pain|'
+            'performance_quality|feature_existence","finding":"具体反馈(一句话)","expectation":"用户期望(可空)"}]}。\n'
+            "findings 8-14 条,必须具体可信,不要营销话术;严禁编造身份证/手机号等真实个人信息。"
         )
         try:
-            q_out = llm.call_json(design_sys, {"product": product, "analysis_focus": focus},
-                                  label=f"survey_design_{product}", timeout=timeout)
-            questions = [q for q in (q_out.get("questions") or []) if q.get("text")][:6]
+            out = llm.call_json(sys, {"product": product, "analysis_focus": focus},
+                                label=f"survey_{product}", timeout=timeout)
+            questions = [q for q in (out.get("questions") or []) if q.get("text")][:6]
+            findings = [f for f in (out.get("findings") or []) if f.get("finding")]
         except Exception as e:  # noqa: BLE001
-            print(f"[Survey Skill] 问卷设计失败,跳过: {type(e).__name__}: {e}")
+            print(f"[Survey Skill] 调研失败,跳过: {type(e).__name__}: {e}")
             return [], {"adapter": "survey", "status": "failed", "reason": str(e)}
-        if not questions:
-            return [], {"adapter": "survey", "status": "empty"}
-        print(f"[Survey Skill] 问卷 {len(questions)} 题就绪")
-
-        # ── Step 2: 模拟用户访谈 ──────────────────────────────────────────
-        interview_sys = (
-            "你是用户研究员,正在整理对该产品真实用户的访谈记录。请扮演 3-5 个**多样化**用户画像"
-            "(如独立开发者/企业团队/学生/重度付费用户),让他们针对问卷逐题给出**具体、有细节、"
-            "有分歧**的真实反馈(有人满意有人抱怨,带具体场景/数字)。\n"
-            '只输出 JSON: {"findings":[{"persona":"画像简述","question_id":"Q1",'
-            '"claim_type":"user_pain|performance_quality|feature_existence",'
-            '"finding":"该用户的具体反馈(一句话)","expectation":"用户期望(可空)"}]}。\n'
-            "8-14 条;finding 必须具体可信,不要营销话术;严禁编造身份证/手机号等真实个人信息。"
-        )
-        try:
-            i_out = llm.call_json(interview_sys,
-                                  {"product": product, "analysis_focus": focus, "questionnaire": questions},
-                                  label=f"survey_interview_{product}", timeout=timeout)
-            findings = [f for f in (i_out.get("findings") or []) if f.get("finding")]
-        except Exception as e:  # noqa: BLE001
-            print(f"[Survey Skill] 模拟访谈失败,跳过: {type(e).__name__}: {e}")
-            return [], {"adapter": "survey", "status": "failed", "reason": str(e),
-                        "questionnaire": questions}
+        if not findings:
+            return [], {"adapter": "survey", "status": "empty", "questionnaire": questions}
+        print(f"[Survey Skill] 问卷 {len(questions)} 题 + 访谈 {len(findings)} 条")
 
         # ── Step 3: 证据化(透明标注合成) ────────────────────────────────
         observed = date.today().isoformat()

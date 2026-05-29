@@ -3,7 +3,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Report, Completeness, BusinessValue } from "@/lib/types";
+import type { Report, Completeness, BusinessValue, ResearchMethod } from "@/lib/types";
 import type {
   Feature,
   Recommendation,
@@ -285,6 +285,7 @@ export default function ReportView({ report }: { report: Report }) {
         {s.user_persona && (
           <section className="space-y-3">
             <SectionTitle id="pains">用户痛点</SectionTitle>
+            {report.research_method && <ResearchMethodCard data={report.research_method} />}
             <div className="space-y-2">
               {s.user_persona.pain_points.map((p) => (
                 <PainRow key={p.pain_id} pain={p} />
@@ -383,6 +384,41 @@ function OverallGrade({ report }: { report: Report }) {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ResearchMethodCard({ data }: { data: ResearchMethod }) {
+  return (
+    <div className="rounded-xl border border-violet-500/20 bg-violet-500/[0.05] p-4">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-medium text-neutral-200">调研方法 · 问卷 + 模拟访谈</span>
+        <span className="rounded bg-violet-500/15 px-2 py-0.5 text-[11px] text-violet-300">
+          合成数据
+        </span>
+      </div>
+      <div className="mt-1 text-[11px] text-neutral-500">{data.method}</div>
+      <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-neutral-400">
+        <span>问卷 <span className="font-mono text-neutral-200">{data.questions.length}</span> 题</span>
+        <span>模拟访谈 <span className="font-mono text-neutral-200">{data.n_findings}</span> 条</span>
+        <span>受访画像 <span className="font-mono text-neutral-200">{data.personas.length}</span> 类</span>
+      </div>
+      {data.questions.length > 0 && (
+        <ol className="mt-3 list-decimal space-y-1 pl-5 text-xs text-neutral-300">
+          {data.questions.map((q, i) => (
+            <li key={q.id ?? i}>{q.text}</li>
+          ))}
+        </ol>
+      )}
+      {data.personas.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {data.personas.map((p, i) => (
+            <span key={i} className="rounded bg-white/5 px-2 py-0.5 text-[11px] text-neutral-400">
+              {p}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
