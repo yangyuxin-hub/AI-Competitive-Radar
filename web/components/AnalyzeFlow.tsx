@@ -44,6 +44,24 @@ const SCENARIOS = [
     title: "用户流失原因",
     prompt: "用户为什么从 Notion 流向 Asana 或 Linear，看看大家主要在吐槽什么",
   },
+  {
+    domainHint: "ai_assistant",
+    domain: "AI 对话助手",
+    title: "大模型助手对比",
+    prompt: "分析 ChatGPT、Claude 和 Gemini 在通用对话与推理体验上的差距",
+  },
+  {
+    domainHint: "design",
+    domain: "设计协作工具",
+    title: "设计工具协作体验",
+    prompt: "分析 Figma、Sketch 和 Canva 在界面设计协作体验上的差距",
+  },
+  {
+    domainHint: "baas",
+    domain: "后端即服务",
+    title: "BaaS 开发体验与定价",
+    prompt: "比较 Supabase、Firebase 和 Appwrite 的后端开发体验与定价，帮独立开发者选型",
+  },
 ];
 
 const PIPELINE = [

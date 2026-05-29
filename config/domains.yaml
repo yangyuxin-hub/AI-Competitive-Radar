@@ -17,3 +17,25 @@ domains:
     competitors: ["Asana", "Linear"]
     analysis_focus: ["团队任务管理体验"]
     analysis_purpose: "学习竞品优势,优化 Notion 的项目协作能力"
+
+  # 以下行业无 sample_path → 仅走实时采集(DDG/官网),展示"可换行业可换竞品"
+  ai_assistant:
+    name: "AI 对话助手"
+    target_product: "ChatGPT"
+    competitors: ["Claude", "Gemini"]
+    analysis_focus: ["通用对话与推理体验"]
+    analysis_purpose: "对比头部大模型助手的体验差距,辅助选型"
+
+  design:
+    name: "设计协作工具"
+    target_product: "Figma"
+    competitors: ["Sketch", "Canva"]
+    analysis_focus: ["界面设计协作体验"]
+    analysis_purpose: "对比设计工具的协作与易用性,辅助团队选型"
+
+  baas:
+    name: "后端即服务(BaaS)"
+    target_product: "Supabase"
+    competitors: ["Firebase", "Appwrite"]
+    analysis_focus: ["后端开发体验与定价"]
+    analysis_purpose: "对比 BaaS 平台的开发体验与成本,辅助技术选型"
