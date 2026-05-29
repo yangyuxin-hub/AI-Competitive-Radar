@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 from datetime import date
 from pathlib import Path
@@ -107,6 +108,12 @@ def _brave_search(query: str, site: str, max_results: int) -> list[dict]:
     return out
 
 
+# DDG 免费、无 key,但对**突发并发**很敏感(collector 多产品 × 多查询并行会瞬间打几十个请求 → 限流)。
+# 用全局锁把 DDG 调用**串行化 + 最小间隔**,再加退避重试,让它细水长流而非突发。
+_DDG_LOCK = threading.Lock()
+_DDG_LAST = [0.0]
+
+
 def _ddg_search(query: str, site: str, max_results: int) -> list[dict]:
     try:
         from ddgs import DDGS
@@ -115,16 +122,34 @@ def _ddg_search(query: str, site: str, max_results: int) -> list[dict]:
             from duckduckgo_search import DDGS  # 旧包名
         except ImportError:
             return []
-    out = []
-    with DDGS() as ddgs:
-        for r in ddgs.text(_site_query(query, site), max_results=max_results):
-            out.append({
-                "title": r.get("title") or "",
-                "url": r.get("href") or r.get("url") or "",
-                "content": r.get("body") or "",
-                "score": None,
-            })
-    return out
+
+    min_interval = float(os.environ.get("DDG_MIN_INTERVAL", "1.5"))
+    retries = int(os.environ.get("DDG_RETRIES", "3"))
+    for attempt in range(retries):
+        with _DDG_LOCK:  # 串行 + 限速:同一时刻只允许一个 DDG 请求,且与上次至少间隔 min_interval
+            gap = min_interval - (time.time() - _DDG_LAST[0])
+            if gap > 0:
+                time.sleep(gap)
+            try:
+                out = []
+                with DDGS() as ddgs:
+                    for r in ddgs.text(_site_query(query, site), max_results=max_results):
+                        out.append({
+                            "title": r.get("title") or "",
+                            "url": r.get("href") or r.get("url") or "",
+                            "content": r.get("body") or "",
+                            "score": None,
+                        })
+                _DDG_LAST[0] = time.time()
+                return out
+            except Exception as e:  # noqa: BLE001
+                _DDG_LAST[0] = time.time()
+                msg = str(e).lower()
+                if attempt < retries - 1 and ("ratelimit" in msg or "rate" in msg or "202" in msg or "429" in msg):
+                    time.sleep((2 ** attempt) * 2)  # 指数退避:2s,4s
+                    continue
+                raise
+    return []
 
 
 _PROVIDERS = {"brave": _brave_search, "tavily": _tavily_search, "ddg": _ddg_search}
