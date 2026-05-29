@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 _TAVILY_URL = "https://api.tavily.com/search"
+_BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
 _CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "cache" / "tavily"
 
 # 不同立场的来源可信度先验(可后续下沉 config)
@@ -26,9 +27,12 @@ _RELIABILITY_BY_BIAS = {
     "user_generated": 0.6,
 }
 
+_HTTP_TIMEOUT = None  # 懒建,见 _timeout()
 
-def tavily_available() -> bool:
-    return bool(os.environ.get("TAVILY_API_KEY", "").strip())
+
+def _timeout():
+    import httpx
+    return httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0)
 
 
 def _domain_of(site: str) -> Optional[str]:
@@ -37,6 +41,117 @@ def _domain_of(site: str) -> Optional[str]:
     if not site:
         return None
     return site.split("/")[0]
+
+
+def _site_query(query: str, site: str) -> str:
+    """Brave/DDG 无 include_domains 参数 → 用 'site:domain' 操作符限定。"""
+    domain = _domain_of(site)
+    return f"{query} site:{domain}" if domain else query
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 多供应商:Brave(主力,免费额度大) → Tavily(若配 key) → DuckDuckGo(免费兜底,无 key)
+# 统一返回 [{title, url, content, score}]。新增供应商只加一个 _xxx_search + 注册即可。
+# SEARCH_PROVIDER=brave,ddg 可显式指定顺序;留空=auto(按可用性自动编排)。
+# ────────────────────────────────────────────────────────────────────────────
+
+def _brave_key() -> str:
+    return (os.environ.get("BRAVE_API_KEY") or os.environ.get("BRAVE_SEARCH_API_KEY") or "").strip()
+
+
+def _tavily_key() -> str:
+    return os.environ.get("TAVILY_API_KEY", "").strip()
+
+
+def _ddg_installed() -> bool:
+    import importlib.util
+    return (importlib.util.find_spec("ddgs") is not None
+            or importlib.util.find_spec("duckduckgo_search") is not None)
+
+
+def _tavily_search(query: str, site: str, max_results: int) -> list[dict]:
+    import httpx
+    key = _tavily_key()
+    if not key:
+        return []
+    payload = {"api_key": key, "query": query, "max_results": max_results, "search_depth": "basic"}
+    domain = _domain_of(site)
+    if domain:
+        payload["include_domains"] = [domain]
+    with httpx.Client(timeout=_timeout()) as client:
+        resp = client.post(_TAVILY_URL, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+    return data.get("results") or []
+
+
+def _brave_search(query: str, site: str, max_results: int) -> list[dict]:
+    import httpx
+    key = _brave_key()
+    if not key:
+        return []
+    headers = {"X-Subscription-Token": key, "Accept": "application/json"}
+    params = {"q": _site_query(query, site), "count": max_results}
+    with httpx.Client(timeout=_timeout()) as client:
+        resp = client.get(_BRAVE_URL, headers=headers, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+    out = []
+    for r in ((data.get("web") or {}).get("results") or []):
+        out.append({
+            "title": r.get("title") or "",
+            "url": r.get("url") or "",
+            "content": r.get("description") or r.get("snippet") or "",
+            "score": None,
+        })
+    return out
+
+
+def _ddg_search(query: str, site: str, max_results: int) -> list[dict]:
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        try:
+            from duckduckgo_search import DDGS  # 旧包名
+        except ImportError:
+            return []
+    out = []
+    with DDGS() as ddgs:
+        for r in ddgs.text(_site_query(query, site), max_results=max_results):
+            out.append({
+                "title": r.get("title") or "",
+                "url": r.get("href") or r.get("url") or "",
+                "content": r.get("body") or "",
+                "score": None,
+            })
+    return out
+
+
+_PROVIDERS = {"brave": _brave_search, "tavily": _tavily_search, "ddg": _ddg_search}
+
+
+def _provider_chain() -> list[str]:
+    explicit = os.environ.get("SEARCH_PROVIDER", "").strip().lower()
+    if explicit and explicit != "auto":
+        return [x.strip() for x in explicit.split(",") if x.strip() in _PROVIDERS]
+    chain: list[str] = []
+    if _brave_key():
+        chain.append("brave")
+    if _tavily_key():
+        chain.append("tavily")
+    if _ddg_installed():
+        chain.append("ddg")  # 免费无 key 兜底,永远兜底在最后
+    return chain
+
+
+def search_available() -> bool:
+    """只要链上有任一可用供应商(含免费 DDG)即为 True。"""
+    return bool(_provider_chain())
+
+
+def tavily_available() -> bool:
+    """向后兼容别名:现在表示"是否有任一可用搜索供应商"。"""
+    return search_available()
 
 
 def _cache_enabled() -> bool:
@@ -77,34 +192,28 @@ def _cache_set(query: str, site: str, max_results: int, results: list[dict]) -> 
         pass
 
 
-def tavily_search(query: str, site: str = "", max_results: int = 5) -> list[dict]:
-    """调 Tavily,返回 [{title, url, content, score}]。失败抛异常由上层兜底。
-    带磁盘缓存(TTL 默认 72h):同一查询跨 run 复用,省去重复 HTTP+延迟。
-    TAVILY_CACHE=0 关缓存,TAVILY_CACHE_TTL_HOURS 调 TTL。"""
-    import httpx
-
-    api_key = os.environ.get("TAVILY_API_KEY", "").strip()
-    if not api_key:
-        return []
+def web_search(query: str, site: str = "", max_results: int = 5) -> list[dict]:
+    """统一搜索入口:带磁盘缓存,按 _provider_chain 依次尝试,任一非空即返回。
+    返回 [{title, url, content, score}]。全部失败/空 → 返回 [](不缓存空,便于下次重试)。
+    缓存与供应商无关:Brave 抓到的结果下次直接命中,换供应商也复用。
+    TAVILY_CACHE=0 关缓存,TAVILY_CACHE_TTL_HOURS 调 TTL(变量名沿用历史)。"""
     cached = _cache_get(query, site, max_results)
     if cached is not None:
         return cached
-    payload = {
-        "api_key": api_key,
-        "query": query,
-        "max_results": max_results,
-        "search_depth": "basic",
-    }
-    domain = _domain_of(site)
-    if domain:
-        payload["include_domains"] = [domain]
-    with httpx.Client(timeout=httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0)) as client:
-        resp = client.post(_TAVILY_URL, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-    results = data.get("results") or []
-    _cache_set(query, site, max_results, results)
-    return results
+    for name in _provider_chain():
+        try:
+            results = _PROVIDERS[name](query, site, max_results)
+        except Exception as e:  # noqa: BLE001
+            print(f"[search] provider '{name}' 失败,降级下一个: {type(e).__name__}: {e}")
+            continue
+        if results:
+            _cache_set(query, site, max_results, results)
+            return results
+    return []
+
+
+# 向后兼容别名:历史调用点(_run_one_query / 测试)仍用 tavily_search 这个名字。
+tavily_search = web_search
 
 
 def _result_to_evidence(product: str, result: dict, q: dict) -> Optional[dict]:

@@ -112,6 +112,10 @@ docs/task-requirements.md     # 赛题需求
   - 切回 Doubao：显式设 `LLM_MODEL=ep-...` + `LLM_BASE_URL=<ark>`（不再隐式回退 `ARK_EP`）
   - `ANALYZER_MOCK=1`：无 API key 跑骨架，走 `sample_report.json`
   - 代理实测给 LLM 调用平添 ~10s，客户端已 `trust_env=False` 关掉系统代理
+- **Web 搜索**：多供应商自动降级（`src/search.py`），统一返回 `{title,url,content,score}`：
+  - 主力 **Brave**（`BRAVE_API_KEY`，免费额度大）→ **Tavily**（`TAVILY_API_KEY`，额度小易触 432）→ **DuckDuckGo**（`ddgs` 包，无 key 免费兜底）
+  - `SEARCH_PROVIDER=brave,ddg` 显式指定顺序；留空=auto；结果磁盘缓存于 `data/cache/tavily`（TTL 72h）
+  - `search_available()`/`tavily_available()` 同义（向后兼容）；只要 ddgs 装了就恒为 True
 - **可观测**：LangSmith（`LANGCHAIN_PROJECT=competitive-analysis-agent`）+ `logs/agent_trace.jsonl`
 - **合规**：遵守 robots.txt；source_bias 标注；用户访谈数据脱敏
 

@@ -59,5 +59,65 @@ class TavilyCacheTest(unittest.TestCase):
             del os.environ["TAVILY_API_KEY"]
 
 
+class ProviderChainTest(unittest.TestCase):
+    def setUp(self):
+        for k in ("BRAVE_API_KEY", "BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "SEARCH_PROVIDER"):
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k in ("BRAVE_API_KEY", "TAVILY_API_KEY", "SEARCH_PROVIDER"):
+            os.environ.pop(k, None)
+
+    def test_brave_first_then_tavily_then_ddg(self):
+        os.environ["BRAVE_API_KEY"] = "b"
+        os.environ["TAVILY_API_KEY"] = "t"
+        chain = search._provider_chain()
+        self.assertEqual(chain[0], "brave")
+        self.assertIn("tavily", chain)
+        self.assertEqual(chain[-1], "ddg")  # 免费兜底永远最后
+
+    def test_explicit_order(self):
+        os.environ["SEARCH_PROVIDER"] = "ddg,brave"
+        self.assertEqual(search._provider_chain(), ["ddg", "brave"])
+
+    def test_available_true_when_only_ddg(self):
+        # 无任何 key,只要 ddgs 装了(本仓库已装)就可用
+        self.assertTrue(search.search_available())
+
+
+class WebSearchFallbackTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self._orig_dir = search._CACHE_DIR
+        search._CACHE_DIR = Path(self._tmp)
+        self._orig_providers = dict(search._PROVIDERS)
+        os.environ["SEARCH_PROVIDER"] = "brave,ddg"
+
+    def tearDown(self):
+        search._CACHE_DIR = self._orig_dir
+        search._PROVIDERS.clear()
+        search._PROVIDERS.update(self._orig_providers)
+        os.environ.pop("SEARCH_PROVIDER", None)
+
+    def test_falls_through_to_next_on_error(self):
+        def _boom(q, s, n):
+            raise RuntimeError("432 quota")
+
+        def _ok(q, s, n):
+            return [{"title": "t", "url": "u", "content": "c", "score": None}]
+
+        search._PROVIDERS["brave"] = _boom
+        search._PROVIDERS["ddg"] = _ok
+        out = search.web_search("q", "", 3)
+        self.assertEqual(out, [{"title": "t", "url": "u", "content": "c", "score": None}])
+
+    def test_all_fail_returns_empty_not_cached(self):
+        search._PROVIDERS["brave"] = lambda q, s, n: (_ for _ in ()).throw(RuntimeError("x"))
+        search._PROVIDERS["ddg"] = lambda q, s, n: []
+        self.assertEqual(search.web_search("q2", "", 3), [])
+        # 空结果不缓存 → 文件不存在,下次可重试
+        self.assertFalse(search._cache_path("q2", "", 3).exists())
+
+
 if __name__ == "__main__":
     unittest.main()
