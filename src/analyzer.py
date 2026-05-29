@@ -1239,6 +1239,65 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
     return der
 
 
+def _gap_refill_enabled() -> bool:
+    return os.environ.get("ANALYZER_GAP_REFILL", "1").strip() not in ("0", "false", "False")
+
+
+def _coverage_gaps(facts: dict, meta: dict, evidence: list[dict]) -> dict:
+    """扫描 facts 暴露的缺口:未评分的 (产品×功能) 格子 + 缺失的必需 claim_type。"""
+    products = _target_products(meta)
+    unknown_cells: list[tuple[str, str]] = []
+    for feat in (facts.get("feature_tree") or {}).get("features", []):
+        name = feat.get("name")
+        if not name:
+            continue
+        for p in products:
+            d = (feat.get("products") or {}).get(p) or {}
+            if (d.get("support_status") or "").lower() == "unknown":
+                unknown_cells.append((p, name))
+    present_ct = {e.get("claim_type") for e in evidence}
+    missing_ct = [ct for ct in _REQUIRED_CT if ct not in present_ct]
+    return {"unknown_cells": unknown_cells, "missing_claim_types": missing_ct}
+
+
+def _gap_targeted_recollect(meta: dict, gaps: dict, focus: str) -> list[dict]:
+    """对缺口做定向搜索:每个空缺 (产品×功能) 一条查询 + 每个产品对缺失 claim_type 一条查询。
+    比盲目全量补采更省 DDG 额度、命中更准。复用 search.search_plan_to_evidence(带缓存/限速)。"""
+    from collections import defaultdict
+
+    from . import search
+    if not search.tavily_available():
+        return []
+    max_cells = int(os.environ.get("ANALYZER_GAP_MAX_QUERIES", "10"))
+    plans: dict[str, list[dict]] = defaultdict(list)
+    for product, fname in gaps["unknown_cells"][:max_cells]:
+        plans[product].append({
+            "query": f"{product} {fname} {focus}".strip(), "claim_type": "performance_quality",
+            "bias": "third_party", "source_type": "web_search", "site": "",
+        })
+    ct_query = {
+        "pricing": "pricing plans price per month cost",
+        "feature_existence": "features capabilities overview",
+        "performance_quality": f"{focus} review performance",
+        "user_pain": f"{focus} problems complaints",
+    }
+    for product in _target_products(meta):
+        for ct in gaps["missing_claim_types"]:
+            plans[product].append({
+                "query": f"{product} {ct_query.get(ct, ct)}".strip(), "claim_type": ct,
+                "bias": "vendor_claim" if ct in ("pricing", "feature_existence") else "third_party",
+                "source_type": "web_search", "site": "",
+            })
+    added: list[dict] = []
+    for product, plan in plans.items():
+        try:
+            evs, _ = search.search_plan_to_evidence(product, plan, results_per_query=3)
+            added.extend(evs)
+        except Exception as e:  # noqa: BLE001
+            print(f"[analyzer] gap recollect '{product}' failed: {type(e).__name__}: {e}")
+    return added
+
+
 def analyzer_node(state: AgentState) -> AgentState:
     evidence = state["raw_evidence"] or []
     print(f"\n[analyzer] received {len(evidence)} raw_evidence")
@@ -1258,17 +1317,41 @@ def analyzer_node(state: AgentState) -> AgentState:
         preview=_evidence_preview(evidence, meta),
     )
 
-    # 按 feature 骨架针对性补采 → 让 (产品×功能) 对比矩阵更密(补采证据写回 state.raw_evidence,
-    # 否则其引用会被 quick_validate / Reviewer R1 判为"不存在")。可用 ANALYZER_FEATURE_ENRICH=0 关。
+    focus = (meta.get("analysis_focus") or [""])[0] if meta.get("analysis_focus") else ""
+
+    # 先生成功能骨架一次(供两遍 facts 复用,免重复抽取)
     spine: Optional[list[dict]] = None
-    if _feature_enrich_enabled() and not is_mock_mode() and _feature_tree_split_enabled():
+    if not is_mock_mode() and _feature_tree_split_enabled():
         try:
-            system_base = load_prompt("analyzer_facts")
-            evidence, spine = _enrich_evidence_by_features(evidence, meta, system_base)
+            spine = _feature_spine(load_prompt("analyzer_facts"), evidence, meta)
         except Exception as e:  # noqa: BLE001
-            print(f"[analyzer] feature enrich 失败(忽略,用原证据继续): {e}")
+            print(f"[analyzer] spine 生成失败(忽略): {e}")
 
     facts = _step1_facts(evidence, meta, analyzer_retry=analyzer_retry, spine=spine)
+
+    # #13 缺口定向补采(治本):facts 暴露哪些 (产品×功能) 空缺、缺哪类 claim_type(如定价),
+    # 就**只对这些缺口**定向搜索 → 合并写回 evidence → 重出一遍 facts。比盲目全量补采省额度、命中准。
+    # 同时充当覆盖兜底:缺失的必需 claim_type 会被主动补回。ANALYZER_GAP_REFILL=0 可关。
+    if _gap_refill_enabled() and not is_mock_mode():
+        gaps = _coverage_gaps(facts, meta, evidence)
+        if gaps["unknown_cells"] or gaps["missing_claim_types"]:
+            _emit_progress(step="facts", phase="gap_refill_start",
+                           summary=f"检测到 {len(gaps['unknown_cells'])} 个空缺格 + 缺 "
+                                   f"{gaps['missing_claim_types'] or '无'} 类证据，定向补采")
+            try:
+                new_ev = _gap_targeted_recollect(meta, gaps, focus)
+            except Exception as e:  # noqa: BLE001
+                print(f"[analyzer] gap refill 失败(忽略): {e}")
+                new_ev = []
+            existing_ids = {e.get("evidence_id") for e in evidence}
+            new_ev = [e for e in new_ev if e.get("evidence_id") not in existing_ids]
+            if new_ev:
+                evidence = evidence + new_ev
+                print(f"[analyzer] gap refill added {len(new_ev)} evidence; 重出 facts")
+                _emit_progress(step="facts", phase="gap_refill_done",
+                               summary=f"定向补采 {len(new_ev)} 条，重新抽取事实层")
+                facts = _step1_facts(evidence, meta, analyzer_retry=analyzer_retry, spine=spine)
+
     derivations = _step2_derivations(facts, evidence, meta, analyzer_retry=analyzer_retry)
 
     schema_draft = {

@@ -76,5 +76,29 @@ class EnrichMergeTest(unittest.TestCase):
         self.assertIsNone(spine)
 
 
+class CoverageGapsTest(unittest.TestCase):
+    def test_detects_unknown_cells_and_missing_claim_types(self):
+        from src.analyzer import _coverage_gaps
+        facts = {"feature_tree": {"features": [
+            {"name": "F1", "products": {"Cursor": {"support_status": "supported"},
+                                         "Windsurf": {"support_status": "unknown"}}},
+        ]}}
+        ev = [{"claim_type": "user_pain"}, {"claim_type": "performance_quality"}]  # 缺 pricing/feature_existence
+        g = _coverage_gaps(facts, META, ev)
+        self.assertIn(("Windsurf", "F1"), g["unknown_cells"])
+        self.assertEqual(set(g["missing_claim_types"]), {"pricing", "feature_existence"})
+
+    def test_no_gaps_when_full(self):
+        from src.analyzer import _coverage_gaps
+        facts = {"feature_tree": {"features": [
+            {"name": "F1", "products": {"Cursor": {"support_status": "supported"},
+                                         "Windsurf": {"support_status": "supported"}}},
+        ]}}
+        ev = [{"claim_type": ct} for ct in ("feature_existence", "performance_quality", "pricing", "user_pain")]
+        g = _coverage_gaps(facts, META, ev)
+        self.assertEqual(g["unknown_cells"], [])
+        self.assertEqual(g["missing_claim_types"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

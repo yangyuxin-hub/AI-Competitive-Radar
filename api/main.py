@@ -430,6 +430,10 @@ def _analyzer_status(evt: dict, elapsed: int) -> dict:
         msg = summary or "按功能骨架针对性补采证据，填密对比矩阵"
     elif step == "facts" and phase == "enrich_done":
         msg = f"✅ {summary}" if summary else "针对性补采完成"
+    elif step == "facts" and phase == "gap_refill_start":
+        msg = summary or "检测到证据空缺，正在定向补采"
+    elif step == "facts" and phase == "gap_refill_done":
+        msg = f"🔁 {summary}" if summary else "缺口补采完成，重出事实层"
     elif step == "facts" and phase == "start":
         msg = "Analyzer Step 1：从证据中抽取功能、定价、用户痛点"
     elif step == "facts" and phase == "repair":
@@ -633,7 +637,12 @@ def api_run(req: RunReq):
 
 def _load_index() -> list[dict]:
     if _INDEX.exists():
-        return json.loads(_INDEX.read_text(encoding="utf-8"))
+        # utf-8-sig 容忍 BOM(某些编辑器/写入会带 BOM,否则 json.loads 报错)
+        try:
+            return json.loads(_INDEX.read_text(encoding="utf-8-sig"))
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[api] index.json 解析失败,按空处理: {e}")
+            return []
     return []
 
 
