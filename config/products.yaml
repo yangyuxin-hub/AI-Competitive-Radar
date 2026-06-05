@@ -26,9 +26,9 @@ products:
   Notion:
     aliases: ["Notion AI", "Notion workspace"]
     official_pages:
-      - https://www.notion.so/product
+      - https://www.notion.com/product
     pricing_pages:
-      - https://www.notion.so/pricing
+      - https://www.notion.com/pricing
 
   Asana:
     aliases: ["Asana", "Asana Premium"]

@@ -65,5 +65,23 @@ class CompactEvidenceFairnessTest(unittest.TestCase):
         self.assertEqual(len(linear), 3, f"Linear 定价被压缩饿死了: {out}")
 
 
+class NormalizePricingTiersTest(unittest.TestCase):
+    def test_dedupe_same_price_and_sort(self):
+        from src.analyzer import _normalize_pricing_tiers
+        facts = {"pricing_model": {"products": [{"name": "Notion", "tiers": [
+            {"tier_name": "Business", "price": {"normalized_usd_month": 18}, "evidence_ids": ["S1"]},
+            {"tier_name": "Free", "price": {"normalized_usd_month": 0}, "evidence_ids": ["S2"]},
+            {"tier_name": "Plus", "price": {"normalized_usd_month": 12}, "evidence_ids": ["S3"]},
+            {"tier_name": "Free trial", "price": {"normalized_usd_month": 0}, "evidence_ids": []},  # 重复免费档
+        ]}]}}
+        removed = _normalize_pricing_tiers(facts)
+        tiers = facts["pricing_model"]["products"][0]["tiers"]
+        prices = [(t.get("price") or {}).get("normalized_usd_month") for t in tiers]
+        self.assertEqual(removed, 1)
+        self.assertEqual(prices, [0, 12, 18])  # 去重 + 升序
+        # 去重保留 evidence 更全的免费档
+        self.assertEqual(tiers[0]["evidence_ids"], ["S2"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -815,7 +815,16 @@ _FACTS_SECTIONS = {
     "pricing_model": {
         "claim_types": ("pricing", "user_pain", "market_signal"),
         "instruct": "本次任务只输出 `pricing_model` 这一个顶层字段(覆盖所有有定价证据的产品 + pricing_gap)。"
-                    "不要输出 feature_tree / user_persona。",
+                    "不要输出 feature_tree / user_persona。\n"
+                    "定价提取要求:\n"
+                    "- **逐档列全**:从免费档到最高付费档,证据里出现的每个**命名套餐**都要单列一条 tier"
+                    "(如 Free / Plus / Business / Enterprise),不要只取一档、不要合并。\n"
+                    "- **同一套餐的年付/月付算同一档**:price 用**月度归一**值(normalized_usd_month);"
+                    "年付价请换算成每月(年付总额/12 或证据直接给的「per month billed annually」数),"
+                    "可在 billing_cycle / note 注明另一计费周期价。\n"
+                    "- 每档:{tier_name, price:{amount,currency,normalized_usd_month}, evidence_ids}。"
+                    "价格只能来自 pricing 证据,拿不准的档宁可不列,**不要编价**。\n"
+                    "- 免费档只列一条(amount=0);不要重复输出同价档位。",
     },
     "user_persona": {
         "claim_types": ("user_pain", "market_signal", "performance_quality"),
@@ -1070,6 +1079,42 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
     return {"category": focus, "features": features_out}
 
 
+def _normalize_pricing_tiers(facts: dict) -> int:
+    """确定性整理 pricing_model.tiers:同价档去重(尤其 LLM 偶发重复输出免费档)+ 按月度价升序。
+    去重键优先用 normalized_usd_month,缺失回退 tier_name;保留先出现且信息更全(evidence 多)的那条。
+    返回去重掉的档数。纯确定性,不调 LLM。"""
+    pm = facts.get("pricing_model") or {}
+    removed = 0
+
+    def _month(t: dict) -> Optional[float]:
+        pr = t.get("price") or {}
+        v = pr.get("normalized_usd_month", pr.get("amount"))
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    for prod in pm.get("products") or []:
+        tiers = prod.get("tiers") or []
+        best: dict = {}  # key -> tier(保留 evidence 更多的)
+        order: list = []
+        for t in tiers:
+            m = _month(t)
+            key = round(m, 2) if m is not None else (t.get("tier_name") or "").strip().lower()
+            if key not in best:
+                best[key] = t
+                order.append(key)
+            else:
+                removed += 1
+                cur = best[key]
+                if len((t.get("evidence_ids") or [])) > len((cur.get("evidence_ids") or [])):
+                    best[key] = t  # 替换为信息更全的
+        deduped = [best[k] for k in order]
+        deduped.sort(key=lambda t: (_month(t) is None, _month(t) if _month(t) is not None else 0))
+        prod["tiers"] = deduped
+    return removed
+
+
 def _facts_section_call(section: str, system_base: str, evidence: list[dict], meta: dict,
                         spine: Optional[list[dict]] = None,
                         only_products: Optional[list[str]] = None,
@@ -1211,6 +1256,12 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0,
     if not is_partial:
         _emit_progress(step="facts", phase="done", attempt=1,
                        summary=_facts_summary(facts), preview=_facts_preview(facts))
+
+    # 确定性整理定价档位(去重同价档 + 升序),纯本地不调 LLM。
+    if "pricing_model" in facts:
+        n = _normalize_pricing_tiers(facts)
+        if n:
+            print(f"[analyzer] pricing 去重 {n} 个重复档位")
 
     # 拆分后不再走 LLM 重跑(那会退回大调用);引用问题统一用确定性 sanitize(秒级)。
     issues = quick_validate_facts(facts, evidence, meta)
