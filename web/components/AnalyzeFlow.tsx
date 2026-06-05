@@ -64,13 +64,6 @@ const SCENARIOS = [
   },
 ];
 
-const PIPELINE = [
-  { node: "collector", icon: "📥", label: "收集证据" },
-  { node: "analyzer", icon: "🧠", label: "分析结论" },
-  { node: "writer", icon: "✍️", label: "生成报告" },
-  { node: "reviewer", icon: "🧪", label: "规则质检" },
-];
-
 const RUN_PROFILES: { key: RuntimeProfile; label: string; sub: string }[] = [
   { key: "fast", label: "快速", sub: "缓存优先" },
   { key: "balanced", label: "均衡", sub: "实时检索" },
@@ -90,35 +83,71 @@ export default function AnalyzeFlow() {
   const [intakeReasoning, setIntakeReasoning] = useState<string>("");
   const [runProfile, setRunProfile] = useState<RuntimeProfile>("balanced");
   const [busy, setBusy] = useState(false);
+  const [refining, setRefining] = useState(false); // 渐进式:LLM 在后台精修候选
   const [error, setError] = useState<string | null>(null);
   const cancelRunRef = useRef<(() => void) | null>(null);
+  const touchedRef = useRef<Set<string>>(new Set()); // 用户手动改过的问题,LLM 刷新时不覆盖
+  const intakeReqRef = useRef(0); // 防止过期的 LLM 响应覆盖新一次提交
+
+  function defaultAnswers(qs: Question[]): Answers {
+    const init: Answers = {};
+    for (const q of qs) {
+      init[q.key] = q.multi ? [...q.suggested] : (q.suggested[0] ?? q.options[0] ?? "");
+    }
+    return init;
+  }
 
   async function onSubmitInput() {
     if (!userInput.trim()) return;
     setBusy(true);
     setError(null);
+    const myReq = ++intakeReqRef.current;
+    touchedRef.current = new Set();
     try {
-      const { questions, draft } = await fetchQuestions(userInput, domainHint);
-      setQuestions(questions);
-      setIntakeReasoning(
-        typeof draft?.reasoning === "string" ? draft.reasoning : ""
-      );
-      const init: Answers = {};
-      for (const q of questions) {
-        init[q.key] = q.multi ? [...q.suggested] : (q.suggested[0] ?? q.options[0] ?? "");
-      }
-      setAnswers(init);
+      // 1) 秒显:先用启发式草稿把澄清页渲染出来,不让用户干等 LLM
+      const fast = await fetchQuestions(userInput, domainHint, true);
+      if (intakeReqRef.current !== myReq) return;
+      setQuestions(fast.questions);
+      setIntakeReasoning(typeof fast.draft?.reasoning === "string" ? fast.draft.reasoning : "");
+      setAnswers(defaultAnswers(fast.questions));
       setCustomOpts({});
       setCustomInput({});
       setStage("clarify");
-    } catch (e) {
-      setError(String(e));
-    } finally {
       setBusy(false);
+
+      // 2) 后台:LLM 精修候选(针对性焦点 + 全面竞品),回来后合并刷新,保留用户已改动的项
+      setRefining(true);
+      try {
+        const llm = await fetchQuestions(userInput, domainHint, false);
+        if (intakeReqRef.current !== myReq) return;
+        setQuestions(llm.questions);
+        if (typeof llm.draft?.reasoning === "string" && llm.draft.reasoning) {
+          setIntakeReasoning(llm.draft.reasoning);
+        }
+        setAnswers((prev) => {
+          const next = { ...prev };
+          for (const q of llm.questions) {
+            if (touchedRef.current.has(q.key)) continue; // 用户改过的不动
+            next[q.key] = q.multi ? [...q.suggested] : (q.suggested[0] ?? q.options[0] ?? "");
+          }
+          return next;
+        });
+      } catch {
+        /* LLM 失败 → 保留启发式结果即可 */
+      } finally {
+        if (intakeReqRef.current === myReq) setRefining(false);
+      }
+    } catch (e) {
+      if (intakeReqRef.current === myReq) {
+        setError(String(e));
+        setBusy(false);
+        setRefining(false);
+      }
     }
   }
 
   function toggle(q: Question, opt: string) {
+    touchedRef.current.add(q.key);
     setAnswers((prev) => {
       if (q.multi) {
         const cur = (prev[q.key] as string[]) ?? [];
@@ -134,6 +163,7 @@ export default function AnalyzeFlow() {
   function addCustom(q: Question) {
     const val = (customInput[q.key] ?? "").trim();
     if (!val) return;
+    touchedRef.current.add(q.key);
     setCustomOpts((prev) => {
       const cur = prev[q.key] ?? [];
       return cur.includes(val) ? prev : { ...prev, [q.key]: [...cur, val] };
@@ -193,6 +223,9 @@ export default function AnalyzeFlow() {
     setReport(null);
     setError(null);
     setRunProfile("balanced");
+    setRefining(false);
+    touchedRef.current = new Set();
+    intakeReqRef.current++;
     cancelRunRef.current?.();
     cancelRunRef.current = null;
   }
@@ -250,6 +283,12 @@ export default function AnalyzeFlow() {
 
       {stage === "clarify" && (
         <div className="space-y-6">
+          {refining && (
+            <div className="flex items-center gap-2 rounded-lg border border-sky-500/20 bg-sky-500/[0.06] px-3 py-2 text-xs text-sky-300">
+              <span className="inline-block h-1.5 w-1.5 animate-ping rounded-full bg-sky-400" />
+              正在用 AI 生成更贴合的角度与竞品…候选会自动刷新，你已选的不会变
+            </div>
+          )}
           {intakeReasoning && (
             <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.05] p-4">
               <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-sky-300">
@@ -261,60 +300,109 @@ export default function AnalyzeFlow() {
           <p className="text-sm text-neutral-400">
             下面是预填的分析配置，可点选调整：
           </p>
-          {questions.map((q) => (
-            <div key={q.key}>
-              <div className="mb-2 text-sm font-medium text-neutral-200">
-                {q.question}
-                {q.multi && <span className="ml-2 text-xs text-neutral-500">可多选</span>}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                {[...q.options, ...(customOpts[q.key] ?? [])].map((opt) => {
-                  const cur = answers[q.key];
-                  const on = q.multi
-                    ? ((cur as string[]) ?? []).includes(opt)
-                    : cur === opt;
-                  return (
-                    <button
-                      key={opt}
-                      onClick={() => toggle(q, opt)}
-                      className={`rounded-lg border px-3 py-1.5 text-sm transition ${
-                        on
-                          ? "border-sky-500 bg-sky-500/15 text-sky-300"
-                          : "border-white/10 bg-white/5 text-neutral-400 hover:border-white/30"
-                      }`}
-                    >
-                      {opt}
-                    </button>
-                  );
-                })}
-                {q.allow_custom && (
-                  <span className="inline-flex items-center gap-1">
-                    <input
-                      value={customInput[q.key] ?? ""}
-                      onChange={(e) =>
-                        setCustomInput((p) => ({ ...p, [q.key]: e.target.value }))
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          addCustom(q);
-                        }
-                      }}
-                      placeholder="其他…"
-                      className="w-28 rounded-lg border border-dashed border-white/15 bg-transparent px-2.5 py-1.5 text-sm text-neutral-200 outline-none placeholder:text-neutral-600 focus:border-sky-500/50"
-                    />
-                    <button
-                      onClick={() => addCustom(q)}
-                      disabled={!(customInput[q.key] ?? "").trim()}
-                      className="rounded-lg border border-white/10 px-2.5 py-1.5 text-sm text-neutral-400 transition hover:text-sky-300 disabled:opacity-40"
-                    >
-                      ＋添加
-                    </button>
-                  </span>
+          {questions.map((q) => {
+            const opts = [...q.options, ...(customOpts[q.key] ?? [])];
+            const hasHints = !!q.hints && Object.keys(q.hints).length > 0;
+            const isOn = (opt: string) => {
+              const cur = answers[q.key];
+              return q.multi ? ((cur as string[]) ?? []).includes(opt) : cur === opt;
+            };
+            const customBox = q.allow_custom && (
+              <span className="inline-flex items-center gap-1">
+                <input
+                  value={customInput[q.key] ?? ""}
+                  onChange={(e) => setCustomInput((p) => ({ ...p, [q.key]: e.target.value }))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addCustom(q);
+                    }
+                  }}
+                  placeholder="其他…"
+                  className="w-28 rounded-lg border border-dashed border-white/15 bg-transparent px-2.5 py-1.5 text-sm text-neutral-200 outline-none placeholder:text-neutral-600 focus:border-sky-500/50"
+                />
+                <button
+                  onClick={() => addCustom(q)}
+                  disabled={!(customInput[q.key] ?? "").trim()}
+                  className="rounded-lg border border-white/10 px-2.5 py-1.5 text-sm text-neutral-400 transition hover:text-sky-300 disabled:opacity-40"
+                >
+                  ＋添加
+                </button>
+              </span>
+            );
+
+            return (
+              <div key={q.key}>
+                <div className="mb-2 text-sm font-medium text-neutral-200">
+                  {q.question}
+                  {q.multi && <span className="ml-2 text-xs text-neutral-500">可多选</span>}
+                </div>
+
+                {hasHints ? (
+                  // 带逐项引导的问题(焦点维度 / 竞品)→ 卡片式,每项下面一句说明
+                  <>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {opts.map((opt) => {
+                        const on = isOn(opt);
+                        const hint = q.hints?.[opt];
+                        return (
+                          <button
+                            key={opt}
+                            onClick={() => toggle(q, opt)}
+                            className={`rounded-xl border px-3 py-2.5 text-left transition ${
+                              on
+                                ? "border-sky-500 bg-sky-500/10"
+                                : "border-white/10 bg-white/[0.02] hover:border-white/30"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded ${
+                                  q.multi ? "rounded" : "rounded-full"
+                                } border text-[10px] ${
+                                  on ? "border-sky-400 bg-sky-500 text-white" : "border-white/25 text-transparent"
+                                }`}
+                              >
+                                ✓
+                              </span>
+                              <span className={`text-sm font-medium ${on ? "text-sky-200" : "text-neutral-200"}`}>
+                                {opt}
+                              </span>
+                            </div>
+                            {hint && (
+                              <div className="mt-1 pl-6 text-xs leading-relaxed text-neutral-500">{hint}</div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {customBox && <div className="mt-2">{customBox}</div>}
+                  </>
+                ) : (
+                  // 普通问题(目标 / 目的 / 持久化)→ 紧凑 chip
+                  <div className="flex flex-wrap items-center gap-2">
+                    {opts.map((opt) => {
+                      const on = isOn(opt);
+                      return (
+                        <button
+                          key={opt}
+                          onClick={() => toggle(q, opt)}
+                          className={`rounded-lg border px-3 py-1.5 text-sm transition ${
+                            on
+                              ? "border-sky-500 bg-sky-500/15 text-sky-300"
+                              : "border-white/10 bg-white/5 text-neutral-400 hover:border-white/30"
+                          }`}
+                        >
+                          {opt}
+                        </button>
+                      );
+                    })}
+                    {customBox}
+                  </div>
                 )}
               </div>
-            </div>
-          ))}
+            );
+          })}
           <div>
             <div className="mb-2 text-sm font-medium text-neutral-200">采集模式</div>
             <div className="inline-flex rounded-xl border border-white/10 bg-white/[0.03] p-1">
@@ -510,59 +598,94 @@ function DagFlow({
   );
 }
 
+type TLStatus = Extract<ProgressEvent, { type: "status" }>;
+type TLProgress = Extract<ProgressEvent, { type: "progress" }>;
+type TLEvent = TLStatus | TLProgress;
+
+interface AgentGroup {
+  id: string;
+  node: string;
+  icon: string;
+  label: string;
+  steps: TLStatus[];
+  done?: TLProgress;
+  startSec: number;
+  endSec: number;
+  hasStart: boolean;
+}
+
+// 流式「已写 N 字」与等待心跳会高频刷新 → 视为同一条「活的」步骤，就地替换而非堆叠。
+const _isLive = (m: string) => m.startsWith("✍️ 正在生成") || m.includes("（已用 ");
+const _warnOf = (s: TLStatus) =>
+  (s as unknown as { analysis_warning?: string }).analysis_warning;
+
+// 把扁平事件流切成「按节点的一次运行」分组；retry 会让同名节点产生多个分组。
+function buildAgentGroups(stream: TLEvent[]): AgentGroup[] {
+  const groups: AgentGroup[] = [];
+  let cur: AgentGroup | null = null;
+  let idx = 0;
+  for (const e of stream) {
+    // 跳过「仍在处理…(已用 Ns)」心跳:只是保活填充,顶部进度条+ETA 已表达,不堆进时间线
+    if (e.type === "status" && e.message.includes("（已用 ")) continue;
+    if (!cur || cur.node !== e.node || cur.done) {
+      cur = {
+        id: `${e.node}-${idx++}`,
+        node: e.node,
+        icon: e.icon,
+        label: e.label,
+        steps: [],
+        startSec: 0,
+        endSec: 0,
+        hasStart: false,
+      };
+      groups.push(cur);
+    }
+    if (e.type === "status") {
+      const prev = cur.steps.at(-1);
+      if (prev && prev.message === e.message) {
+        // 完全重复的消息(start/done 同文案等)→ 跳过,只刷新计时
+      } else if (prev && _isLive(prev.message) && _isLive(e.message)) {
+        cur.steps[cur.steps.length - 1] = e;
+      } else {
+        cur.steps.push(e);
+      }
+      const el = e.elapsed_sec ?? 0;
+      if (!cur.hasStart) {
+        cur.startSec = el;
+        cur.hasStart = true;
+      }
+      cur.endSec = Math.max(cur.endSec, el);
+    } else {
+      cur.done = e;
+    }
+  }
+  return groups;
+}
+
 function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel: () => void }) {
-  const [collectExpanded, setCollectExpanded] = useState(false);
-  const progress = events.filter((e) => e.type === "progress") as Extract<
-    ProgressEvent,
-    { type: "progress" }
-  >[];
-  const timeline = events.filter((e) => e.type === "progress" || e.type === "status") as Extract<
-    ProgressEvent,
-    { type: "progress" | "status" }
-  >[];
   const elapsed = useElapsed(true);
-  // 一个节点可能出现多次（retry）→ 用出现次数判断 done
+
+  const stream = events.filter(
+    (e): e is TLEvent => e.type === "status" || e.type === "progress"
+  );
+  const progress = stream.filter((e): e is TLProgress => e.type === "progress");
+
+  // 节点出现次数(含 retry)→ DAG 着色
   const counts = new Map<string, number>();
   for (const e of progress) counts.set(e.node, (counts.get(e.node) ?? 0) + 1);
-  const last = timeline.at(-1);
+
+  const last = stream.at(-1);
   const currentNode = last?.node;
-  const evidenceCount = Math.max(0, ...timeline.map((e) => e.evidence_count ?? 0));
-  const retry = last?.retry_count ?? {};
+  const evidenceCount = Math.max(0, ...stream.map((e) => e.evidence_count ?? 0));
+  const retry = (last?.retry_count ?? {}) as Record<string, number>;
   const totalRetry = Object.values(retry).reduce((a, b) => a + b, 0);
-  const quality = progress.findLast((e) => e.quality)?.quality;
-  const collectionHealth = progress.findLast((e) => e.collection_health)?.collection_health ?? [];
+  const degraded = progress.some((e) => e.status === "degraded");
+  const passed = progress.some((e) => e.status === "passed");
   const rejected = progress.some((e) => e.reject_target);
-  // 每个节点保留最新一条带 detail 的结果，按流水线顺序展示
-  const byNode = new Map<string, Extract<ProgressEvent, { type: "progress" }>>();
-  for (const e of progress) if (e.detail) byNode.set(e.node, e);
+  const collectionHealth =
+    progress.findLast((e) => e.collection_health)?.collection_health ?? [];
+
   const order = ["collector", "analyzer", "writer", "reviewer", "degraded_writer"];
-  const stageResults = [...byNode.values()].sort(
-    (a, b) => order.indexOf(a.node) - order.indexOf(b.node)
-  );
-  const currentMessage =
-    last?.type === "status"
-      ? last.message
-      : last
-        ? `${last.label}完成，准备进入下一步`
-        : "正在连接分析服务";
-  // 采集全过程(状态思考 + 进度),按时间顺序，供折叠/滚动查看
-  const allCollector = events.filter(
-    (e) => (e.type === "status" || e.type === "progress") && e.node === "collector"
-  ) as Extract<ProgressEvent, { type: "status" | "progress" }>[];
-  const collectorPhase = allCollector.findLast((e) => e.collector_phase)?.collector_phase;
-  const shownCollector = collectExpanded ? allCollector : allCollector.slice(-5);
-  const analysisStatus = timeline.filter(
-    (e): e is Extract<ProgressEvent, { type: "status" }> =>
-      e.type === "status" && e.node === "analyzer"
-  );
-  const analysisPreviews = analysisStatus
-    .map((e) => e.analysis_preview)
-    .filter(Boolean) as AnalysisPreview[];
-  const overviewPreview = analysisPreviews.findLast((p) => p.kind === "overview");
-  const factsPreview = analysisPreviews.findLast((p) => p.kind === "facts");
-  const derivationsPreview = analysisPreviews.findLast((p) => p.kind === "derivations");
-  const latestAnalysisPreview = analysisPreviews.at(-1) ?? null;
-  const showAnalysisPreview = currentNode === "analyzer" || analysisPreviews.length > 0;
 
   // ── 进度条 + ETA(自校准:用已耗时与当前进度反推总时长,适配不同 runtime profile)──
   const STAGE_SPAN: Record<string, [number, number]> = {
@@ -572,9 +695,8 @@ function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel
   const STAGE_TYP: Record<string, number> = {
     collector: 55, analyzer: 180, writer: 3, reviewer: 6, degraded_writer: 6,
   };
-  // 每个节点见过的最大 elapsed_sec ≈ 该节点完成时刻
   const nodeMaxElapsed: Record<string, number> = {};
-  for (const e of timeline) {
+  for (const e of stream) {
     const el = (e as { elapsed_sec?: number }).elapsed_sec;
     if (typeof el === "number") nodeMaxElapsed[e.node] = Math.max(nodeMaxElapsed[e.node] ?? 0, el);
   }
@@ -589,18 +711,15 @@ function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel
   pct = Math.min(99, Math.max(2, pct));
   const remainSec = pct > 4 ? Math.max(1, Math.round((elapsed * (100 - pct)) / pct)) : null;
 
-  // ── 各环节耗时 + 成果(按完成顺序)──
-  const stageTimeline = stageResults.map((e) => {
-    const prior = order.filter(
-      (n) => order.indexOf(n) < order.indexOf(e.node) && (counts.get(n) ?? 0) > 0
-    );
-    const start = prior.length ? Math.max(...prior.map((n) => nodeMaxElapsed[n] ?? 0)) : 0;
-    const end = nodeMaxElapsed[e.node] ?? start;
-    return { node: e.node, icon: e.icon, label: e.label, dur: Math.max(0, end - start), result: e.result };
-  });
+  const groups = buildAgentGroups(stream);
+  // 默认展开「正在进行」的那一组(最后一个未完成的);其余完成的自动折叠。
+  const activeId = groups.length
+    ? (groups.find((g) => !g.done)?.id ?? groups[groups.length - 1].id)
+    : undefined;
 
   return (
-    <div className="space-y-6 py-6">
+    <div className="space-y-5 py-6">
+      {/* 顶部总览 */}
       <div className="flex flex-wrap items-center justify-center gap-4 text-sm text-neutral-400">
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-2 w-2 animate-ping rounded-full bg-sky-400" />
@@ -624,7 +743,7 @@ function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel
       </div>
 
       {/* 进度条 + ETA */}
-      <div className="mx-auto max-w-xl">
+      <div className="mx-auto max-w-2xl">
         <div className="mb-1 flex items-center justify-between text-xs text-neutral-500">
           <span>进度 {pct}%</span>
           {remainSec != null && (
@@ -639,25 +758,8 @@ function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel
         </div>
       </div>
 
-      <div className="mx-auto max-w-xl rounded-xl border border-sky-500/20 bg-sky-500/10 p-4">
-        <div className="mb-1 flex items-center gap-2 text-sm font-medium text-sky-200">
-          <span>{last?.icon ?? "•"}</span>
-          <span>{last?.label ?? "准备中"}</span>
-        </div>
-        <p className="text-sm leading-relaxed text-neutral-300">{currentMessage}</p>
-      </div>
-
-      {showAnalysisPreview && (
-        <AnalysisLivePanel
-          overview={overviewPreview}
-          facts={factsPreview}
-          derivations={derivationsPreview}
-          latest={latestAnalysisPreview}
-        />
-      )}
-
-      {/* LangGraph DAG 任务流转(含质检打回回边,实时着色)*/}
-      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+      {/* LangGraph DAG 任务流转(含质检打回回边,实时着色) */}
+      <div className="mx-auto max-w-2xl rounded-xl border border-white/10 bg-white/[0.02] p-3">
         <div className="mb-1 flex items-center gap-3 px-1 text-[11px] text-neutral-500">
           <span>LangGraph 任务流转</span>
           <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-sky-400" />进行中</span>
@@ -667,145 +769,14 @@ function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel
         <DagFlow
           counts={counts}
           currentNode={currentNode}
-          retry={retry as Record<string, number>}
-          degraded={progress.some((e) => e.status === "degraded")}
-          passed={progress.some((e) => e.status === "passed")}
+          retry={retry}
+          degraded={degraded}
+          passed={passed}
         />
       </div>
 
-      <div className="flex items-stretch justify-center gap-1">
-        {PIPELINE.map((p, i) => {
-          const seen = (counts.get(p.node) ?? 0) > 0;
-          const active = p.node === currentNode;
-          const done = seen && !active;
-          const repeated = (counts.get(p.node) ?? 0) > 1;
-          return (
-            <div key={p.node} className="flex items-center">
-              <div
-                className={`relative flex w-32 flex-col items-center rounded-xl border p-4 transition-all duration-300 ${
-                  active
-                    ? "border-sky-500 bg-sky-500/10 shadow-lg shadow-sky-500/10"
-                    : done
-                      ? "border-emerald-500/40 bg-emerald-500/5"
-                      : "border-white/10 bg-white/5"
-                }`}
-              >
-                {repeated && (
-                  <span className="absolute -right-1.5 -top-1.5 rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-black">
-                    ×{counts.get(p.node)}
-                  </span>
-                )}
-                <div className={`text-2xl ${active ? "animate-bounce" : ""}`}>{p.icon}</div>
-                <div className="mt-1 text-xs text-neutral-300">{p.label}</div>
-                <div
-                  className={`mt-1 text-[10px] ${
-                    active ? "text-sky-400" : done ? "text-emerald-400" : "text-neutral-600"
-                  }`}
-                >
-                  {active ? "进行中…" : done ? "✓ 完成" : "等待"}
-                </div>
-              </div>
-              {i < PIPELINE.length - 1 && (
-                <div className={`h-0.5 w-5 transition-colors ${done ? "bg-emerald-500/50" : "bg-white/10"}`} />
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="mx-auto max-w-lg rounded-xl border border-white/10 bg-white/[0.02] p-4">
-        <div className="mb-3 flex items-center justify-between text-sm text-neutral-300">
-          <div className="flex items-center gap-2">
-            <span className="text-base">{allCollector.at(-1)?.icon ?? "📥"}</span>
-            <span className="font-medium">收集过程</span>
-            {collectorPhase && (
-              <span className="rounded bg-sky-500/15 px-2 py-0.5 text-[11px] text-sky-300">
-                {collectorPhase}
-              </span>
-            )}
-            <span className="text-[11px] text-neutral-600">共 {allCollector.length} 步</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="font-mono text-neutral-500">
-              {allCollector.at(-1)?.evidence_count ?? 0} 证据
-            </span>
-            {allCollector.length > 5 && (
-              <button
-                onClick={() => setCollectExpanded((v) => !v)}
-                className="rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-neutral-400 transition hover:text-sky-300"
-              >
-                {collectExpanded ? "收拢" : `展开全部 (${allCollector.length})`}
-              </button>
-            )}
-          </div>
-        </div>
-        <div
-          className={`space-y-1.5 ${collectExpanded ? "max-h-72 overflow-y-auto pr-1" : ""}`}
-        >
-          {shownCollector.length === 0 && (
-            <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-neutral-400">
-              正在等待采集结果
-            </div>
-          )}
-          {shownCollector.map((e, idx) => {
-            const samples = (e as { samples?: { product: string; source: string; text: string }[] }).samples;
-            return (
-              <div
-                key={`c-${idx}`}
-                className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-neutral-400"
-              >
-                <div className="flex items-start gap-2">
-                  <span className="shrink-0 text-neutral-200">{e.icon}</span>
-                  <span className="text-neutral-300">
-                    {(e as { message?: string }).message ?? e.label}
-                  </span>
-                  <span className="ml-auto shrink-0 font-mono text-neutral-600">{e.evidence_count} 条</span>
-                </div>
-                {samples && samples.length > 0 && (
-                  <ul className="mt-1.5 space-y-1 border-l border-white/10 pl-3">
-                    {samples.map((s, i) => (
-                      <li key={i} className="text-[11px] leading-relaxed text-neutral-500">
-                        <span className="text-neutral-600">[{s.source}]</span> {s.text}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {quality && (
-        <div className="mx-auto max-w-lg rounded-xl border border-white/10 bg-white/5 p-4 text-sm">
-          <div className="mb-2 flex items-center justify-between text-neutral-400">
-            <span>Reviewer 规则质检</span>
-            {quality.quality_score != null && (
-              <span className="font-mono text-emerald-400">{quality.quality_score}/100</span>
-            )}
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {(quality.passed_rules ?? []).map((r) => (
-              <span key={r} className="rounded bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-400">
-                ✓ {r}
-              </span>
-            ))}
-            {(quality.warning_rules ?? []).map((r) => (
-              <span key={`w-${r}`} className="rounded bg-amber-500/15 px-2 py-0.5 text-xs text-amber-400">
-                ⚠ {r}
-              </span>
-            ))}
-            {(quality.failed_rules ?? []).map((r) => (
-              <span key={`f-${r}`} className="rounded bg-red-500/15 px-2 py-0.5 text-xs text-red-400">
-                ✕ {r}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
       {collectionHealth.length > 0 && (
-        <div className="mx-auto max-w-xl rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
+        <div className="mx-auto max-w-2xl rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
           <div className="mb-2 font-medium text-amber-300">证据覆盖不足</div>
           <div className="space-y-1 text-xs text-amber-100/80">
             {collectionHealth.map((item) => (
@@ -817,61 +788,179 @@ function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel
         </div>
       )}
 
-      {/* 各环节耗时 + 成果(时间线) */}
-      {stageTimeline.length > 0 && (
-        <div className="mx-auto max-w-xl rounded-xl border border-white/10 bg-white/[0.02] p-3">
-          <div className="mb-2 text-xs font-medium text-neutral-400">各环节耗时与成果</div>
-          <div className="space-y-1.5">
-            {stageTimeline.map((s) => (
-              <div key={s.node} className="flex items-start gap-2 text-xs">
-                <span className="shrink-0">{s.icon}</span>
-                <span className="shrink-0 text-neutral-300">{s.label}</span>
-                <span className="shrink-0 font-mono text-emerald-400">{s.dur}s</span>
-                {s.result && <span className="text-neutral-500">· {s.result}</span>}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 各环节中间结果 */}
-      {stageResults.length > 0 && (
-        <div className="mx-auto max-w-xl space-y-2">
-          {stageResults.map((e) => (
-            <NodeDetailCard key={e.node} icon={e.icon} label={e.label} detail={e.detail!} />
+      {/* Claude 式可折叠活动时间线:每个动作实时流入,完成即折叠成一行摘要 */}
+      <div className="mx-auto max-w-2xl">
+        <div className="mb-2 px-1 text-xs font-medium text-neutral-400">Agent 活动时间线</div>
+        <div className="space-y-2">
+          {groups.length === 0 && (
+            <div className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3 text-xs text-neutral-500">
+              正在连接分析服务…
+            </div>
+          )}
+          {groups.map((g) => (
+            <AgentGroupCard key={g.id} group={g} active={g.id === activeId} />
           ))}
         </div>
-      )}
-
-      {/* 实时事件流 */}
-      <div className="mx-auto max-w-xl space-y-1">
-        {timeline.slice(-8).map((e, i) => (
-          <div
-            key={i}
-            className="flex items-center gap-2 rounded-lg bg-white/[0.02] px-3 py-1.5 text-xs text-neutral-400"
-          >
-            <span>{e.icon}</span>
-            <span className="text-neutral-300">{e.label}</span>
-            {e.type === "status" && (
-              <span className="truncate text-neutral-500">{e.message}</span>
-            )}
-            {e.type === "progress" && e.reject_target && (
-              <span className="text-amber-400">→ 打回 {e.reject_target}</span>
-            )}
-            {e.type === "progress" && !e.reject_target && (
-              <span className="text-emerald-400">{e.result ?? "完成"}</span>
-            )}
-            {e.type !== "progress" && (
-              <span className="ml-auto font-mono text-neutral-600">{e.evidence_count} 证据</span>
-            )}
-          </div>
-        ))}
       </div>
 
       {rejected && (
         <p className="text-center text-xs text-neutral-500">
           Reviewer 发现问题并打回重跑 — 这正是质量自愈闭环在工作
         </p>
+      )}
+    </div>
+  );
+}
+
+function AgentGroupCard({ group, active }: { group: AgentGroup; active: boolean }) {
+  // override=null 时跟随 active(进行中自动展开/完成自动折叠);用户点击后锁定其选择。
+  const [override, setOverride] = useState<boolean | null>(null);
+  const expanded = override ?? active;
+  const running = !group.done;
+  const dur = Math.max(0, group.endSec - group.startSec);
+
+  const rejectTarget = group.done?.reject_target ?? null;
+  const summary =
+    group.done?.result ||
+    group.steps.at(-1)?.message ||
+    (running ? "处理中…" : "完成");
+
+  // analyzer 的实时分析结论(从该组各步骤携带的 preview 汇总)
+  const previews = group.steps
+    .map((s) => s.analysis_preview)
+    .filter(Boolean) as AnalysisPreview[];
+  const overviewPreview = previews.findLast((p) => p.kind === "overview");
+  const factsPreview = previews.findLast((p) => p.kind === "facts");
+  const derivationsPreview = previews.findLast((p) => p.kind === "derivations");
+  const latestPreview = previews.at(-1) ?? null;
+
+  const stateColor = running
+    ? "border-sky-500/40 bg-sky-500/[0.06]"
+    : rejectTarget
+      ? "border-amber-500/40 bg-amber-500/[0.05]"
+      : "border-emerald-500/30 bg-emerald-500/[0.04]";
+
+  return (
+    <div className={`rounded-xl border ${stateColor} transition-colors`}>
+      <button
+        onClick={() => setOverride(!expanded)}
+        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left"
+      >
+        <span className="text-lg">{group.icon}</span>
+        <span className="text-sm font-medium text-neutral-200">{group.label}</span>
+        {running ? (
+          <span className="flex items-center gap-1 text-[11px] text-sky-400">
+            <span className="inline-block h-1.5 w-1.5 animate-ping rounded-full bg-sky-400" />
+            进行中
+          </span>
+        ) : rejectTarget ? (
+          <span className="text-[11px] text-amber-400">↩ 打回 {rejectTarget}</span>
+        ) : (
+          <span className="text-[11px] text-emerald-400">✓ 完成</span>
+        )}
+        {dur > 0 && <span className="font-mono text-[11px] text-neutral-600">{dur}s</span>}
+        <span className="ml-auto flex items-center gap-2">
+          {!expanded && (
+            <span className="hidden max-w-[260px] truncate text-[11px] text-neutral-500 sm:inline">
+              {summary}
+            </span>
+          )}
+          <span className="text-[11px] text-neutral-500">{group.steps.length} 步</span>
+          <svg
+            className={`h-3.5 w-3.5 text-neutral-500 transition-transform ${expanded ? "rotate-90" : ""}`}
+            viewBox="0 0 12 12" fill="none"
+          >
+            <path d="M4 2.5L8 6L4 9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-white/5 px-3 py-3">
+          {/* 子步骤时间线 */}
+          <ol className="space-y-2">
+            {group.steps.map((s, i) => {
+              const isLast = i === group.steps.length - 1;
+              const live = running && isLast;
+              const warn = _warnOf(s);
+              const samples = s.samples;
+              return (
+                <li key={i} className="flex gap-2.5">
+                  <div className="flex flex-col items-center pt-1">
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full ${
+                        live ? "animate-ping bg-sky-400" : warn ? "bg-amber-400" : "bg-neutral-600"
+                      }`}
+                    />
+                    {!isLast && <span className="mt-1 w-px flex-1 bg-white/10" />}
+                  </div>
+                  <div className="min-w-0 flex-1 pb-0.5">
+                    <div className="flex items-baseline gap-2">
+                      <span className={`text-xs leading-relaxed ${live ? "text-sky-200" : "text-neutral-300"}`}>
+                        {s.message}
+                      </span>
+                      {typeof s.elapsed_sec === "number" && (
+                        <span className="shrink-0 font-mono text-[10px] text-neutral-600">+{s.elapsed_sec}s</span>
+                      )}
+                    </div>
+                    {warn && <div className="mt-1 text-[11px] text-amber-300/80">{warn}</div>}
+                    {samples && samples.length > 0 && (
+                      <ul className="mt-1.5 space-y-1 border-l border-white/10 pl-3">
+                        {samples.map((sm, j) => (
+                          <li key={j} className="text-[11px] leading-relaxed text-neutral-500">
+                            <span className="text-neutral-600">[{sm.source}]</span> {sm.text}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+
+          {/* analyzer:实时分析结论 */}
+          {group.node === "analyzer" && previews.length > 0 && (
+            <div className="mt-3">
+              <AnalysisLivePanel
+                overview={overviewPreview}
+                facts={factsPreview}
+                derivations={derivationsPreview}
+                latest={latestPreview}
+              />
+            </div>
+          )}
+
+          {/* 节点结构化产出明细(采集来源/搜索 URL/功能/建议等) */}
+          {group.done?.detail && (
+            <div className="mt-3">
+              <NodeDetailCard icon={group.icon} label="本步产出" detail={group.done.detail} />
+            </div>
+          )}
+
+          {/* reviewer:规则质检结果 */}
+          {group.done?.quality && (
+            <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.02] p-3 text-sm">
+              <div className="mb-2 flex items-center justify-between text-neutral-400">
+                <span>规则质检</span>
+                {group.done.quality.quality_score != null && (
+                  <span className="font-mono text-emerald-400">{group.done.quality.quality_score}/100</span>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {(group.done.quality.passed_rules ?? []).map((r) => (
+                  <span key={r} className="rounded bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-400">✓ {r}</span>
+                ))}
+                {(group.done.quality.warning_rules ?? []).map((r) => (
+                  <span key={`w-${r}`} className="rounded bg-amber-500/15 px-2 py-0.5 text-xs text-amber-400">⚠ {r}</span>
+                ))}
+                {(group.done.quality.failed_rules ?? []).map((r) => (
+                  <span key={`f-${r}`} className="rounded bg-red-500/15 px-2 py-0.5 text-xs text-red-400">✕ {r}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
