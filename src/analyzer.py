@@ -1126,8 +1126,10 @@ def _deriv_section_call(section: str, system_base: str, payload: dict) -> tuple[
 
 
 def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0,
-                 spine: Optional[list[dict]] = None) -> dict:
-    """Step 1 — 事实层"""
+                 spine: Optional[list[dict]] = None,
+                 only_sections: Optional[list[str]] = None) -> dict:
+    """Step 1 — 事实层。only_sections 非空时只重跑这些 section(用于缺口补采后的局部重出,
+    避免把没缺口的 pricing/persona 也整套重算),返回的 dict 只含这些 section,由调用方合并。"""
     if is_mock_mode():
         # Mock: 从 sample_report 抽出 facts 部分
         sr = load_sample_report()
@@ -1143,16 +1145,19 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0,
         _emit_progress(step="facts", phase="done", attempt=1, summary=_facts_summary(facts), preview=_facts_preview(facts))
         return facts
 
+    sections = only_sections or _FACTS_SECTIONS
+    is_partial = only_sections is not None
     system = load_prompt("analyzer_facts")
-    _emit_progress(step="facts", phase="start", attempt=1,
-                   summary=f"并行梳理 {len(_FACTS_SECTIONS)} 个事实板块")
-    # 三个 section 并行子问答,各自只输出一个顶层字段 → 不会顶满被截断
+    if not is_partial:
+        _emit_progress(step="facts", phase="start", attempt=1,
+                       summary=f"并行梳理 {len(sections)} 个事实板块")
+    # 各 section 并行子问答,各自只输出一个顶层字段 → 不会顶满被截断
     facts: dict = {}
     fb = None  # 懒构造的兜底(整套 facts)
-    with ThreadPoolExecutor(max_workers=len(_FACTS_SECTIONS)) as ex:
+    with ThreadPoolExecutor(max_workers=len(sections)) as ex:
         futs = {ex.submit(_facts_section_call, s, system, evidence, meta,
                           spine if s == "feature_tree" else None): s
-                for s in _FACTS_SECTIONS}
+                for s in sections}
         for fut in as_completed(futs):
             section = futs[fut]
             try:
@@ -1167,8 +1172,9 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0,
                 facts[section] = fb.get(section, {})
                 _emit_progress(step="facts", phase="section_fallback", section=section, note=reason)
 
-    _emit_progress(step="facts", phase="done", attempt=1,
-                   summary=_facts_summary(facts), preview=_facts_preview(facts))
+    if not is_partial:
+        _emit_progress(step="facts", phase="done", attempt=1,
+                       summary=_facts_summary(facts), preview=_facts_preview(facts))
 
     # 拆分后不再走 LLM 重跑(那会退回大调用);引用问题统一用确定性 sanitize(秒级)。
     issues = quick_validate_facts(facts, evidence, meta)
@@ -1257,7 +1263,34 @@ def _coverage_gaps(facts: dict, meta: dict, evidence: list[dict]) -> dict:
                 unknown_cells.append((p, name))
     present_ct = {e.get("claim_type") for e in evidence}
     missing_ct = [ct for ct in _REQUIRED_CT if ct not in present_ct]
+
+    # 定价抽到了但整张表没有任何可用价格数值(全 $0/None)→ 抽取失败,当作缺口触发定向重搜定价。
+    # 只在「全表无正价」时触发(强信号),避免把某个真免费档误判成缺口。
+    all_tiers = [t for p in (facts.get("pricing_model") or {}).get("products") or []
+                 for t in (p.get("tiers") or [])]
+    if all_tiers and "pricing" not in missing_ct:
+        def _amt(t):
+            return (t.get("price") or {}).get("normalized_usd_month")
+        if not any(isinstance(_amt(t), (int, float)) and _amt(t) > 0 for t in all_tiers):
+            missing_ct.append("pricing")
+            print("[analyzer] pricing 全表无可用价格,标记为缺口 → 定向重搜定价")
+
     return {"unknown_cells": unknown_cells, "missing_claim_types": missing_ct}
+
+
+def _gap_affected_sections(gaps: dict) -> list[str]:
+    """把缺口映射到需要重跑的 facts section(局部重跑用,避免整套重算)。"""
+    secs: set = set()
+    if gaps.get("unknown_cells"):
+        secs.add("feature_tree")
+    for ct in gaps.get("missing_claim_types") or []:
+        if ct == "pricing":
+            secs.add("pricing_model")
+        elif ct == "user_pain":
+            secs.add("user_persona")
+        else:  # feature_existence / performance_quality 都在 feature_tree 里
+            secs.add("feature_tree")
+    return [s for s in _FACTS_SECTIONS if s in secs]
 
 
 def _gap_targeted_recollect(meta: dict, gaps: dict, focus: str) -> list[dict]:
@@ -1410,10 +1443,16 @@ def analyzer_node(state: AgentState) -> AgentState:
             new_ev = [e for e in new_ev if e.get("evidence_id") not in existing_ids]
             if new_ev:
                 evidence = evidence + new_ev
-                print(f"[analyzer] gap refill added {len(new_ev)} evidence; 重出 facts")
+                # 只重跑有缺口的 section(常见情况只重出 feature_tree,跳过没缺口的 pricing/persona)
+                affected = _gap_affected_sections(gaps) or list(_FACTS_SECTIONS)
+                _sec_cn = {"feature_tree": "功能对比", "pricing_model": "定价", "user_persona": "用户画像"}
+                _names = "、".join(_sec_cn.get(s, s) for s in affected)
+                print(f"[analyzer] gap refill added {len(new_ev)} evidence; 只重出: {affected}")
                 _emit_progress(step="facts", phase="gap_refill_done",
-                               summary=f"定向补采 {len(new_ev)} 条，重新梳理事实")
-                facts = _step1_facts(evidence, meta, analyzer_retry=analyzer_retry, spine=spine)
+                               summary=f"定向补采 {len(new_ev)} 条，重新梳理{_names}")
+                partial = _step1_facts(evidence, meta, analyzer_retry=analyzer_retry,
+                                       spine=spine, only_sections=affected)
+                facts.update(partial)
 
     derivations = _step2_derivations(facts, evidence, meta, analyzer_retry=analyzer_retry)
 

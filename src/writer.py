@@ -52,7 +52,9 @@ def _products(meta: dict) -> list[str]:
 
 
 def _score_cell(pdata: dict) -> Optional[float]:
-    """返回该产品在某功能上的"真实"质量分;证据不足(unknown / 0 分且无质量证据)→ None。
+    """返回该产品在某功能上的"真实"质量分;证据不足→ None(渲染为「未评分」)。
+    约定:score 0 一律视为「未评分」——0-5 质量分上的 0 从不是「真打了 0 分」,
+    而是 Analyzer 对「证据不足」的占位(见 prompts/analyzer_facts 约定)。
     None 不计入对比/均分,避免把"没数据"误当成"真实 0 分/打平"。"""
     qs = pdata.get("quality_score") or {}
     if (pdata.get("support_status") or "").lower() == "unknown":
@@ -61,8 +63,7 @@ def _score_cell(pdata: dict) -> Optional[float]:
         f = float(qs.get("score"))
     except (TypeError, ValueError):
         return None
-    has_ev = bool(qs.get("evidence_ids") or (qs.get("aggregation") or {}).get("representative_evidence_ids"))
-    if f <= 0 and not has_ev:
+    if f <= 0:
         return None
     return f
 
@@ -320,9 +321,9 @@ def _render_feature_gaps(feature_tree: dict) -> str:
                 status = pdata.get("support_status", "unknown")
                 icon = _SUPPORT_ICONS.get(status, "❓")
                 qs = pdata.get("quality_score") or {}
-                score = qs.get("score")
                 scale = qs.get("scale", 5)
-                quality = f"{score}/{scale}" if score is not None else "—"
+                cell = _score_cell(pdata)
+                quality = f"{cell:.0f}/{scale}" if cell is not None else "未评分"
                 ev_list = (pdata.get("support_evidence_ids") or []) + (qs.get("evidence_ids") or [])
                 ev = cite(sorted(set(ev_list))[:3])
                 lines.append(f"| {pname} | {icon} {status} | {quality} | {ev} |")
@@ -343,7 +344,8 @@ def _lowest_price(product: dict) -> Optional[float]:
     for tier in product.get("tiers") or []:
         price = tier.get("price") or {}
         amount = price.get("normalized_usd_month")
-        if isinstance(amount, (int, float)):
+        # 0 视为「未获取价格」占位(Analyzer 抽不到数值时填 0),不计入最低价
+        if isinstance(amount, (int, float)) and amount > 0:
             prices.append(float(amount))
     return min(prices) if prices else None
 
@@ -360,7 +362,8 @@ def _render_pricing(pricing_model: dict, feature_tree: dict, products: list[str]
             tname = tier.get("tier_name", "?")
             price = tier.get("price") or {}
             amount = price.get("normalized_usd_month")
-            amount_text = f"${amount}" if amount is not None else "—"
+            # 0/None 都按「未获取价格」渲染为「—」(Analyzer 抽不到数值时填 0,显示 $0 会误导)
+            amount_text = f"${amount}" if isinstance(amount, (int, float)) and amount > 0 else "—"
             limits = tier.get("display_limits", "")
             ev = cite(tier.get("evidence_ids") or [])
             lines.append(f"| {name} | {tname} | {amount_text} | {limits} | {ev} |")
@@ -390,10 +393,14 @@ def _render_pricing(pricing_model: dict, feature_tree: dict, products: list[str]
             score = avgs.get(product)
             price_text = f"${price:.0f}" if price is not None else "待确认"
             score_text = f"{score:.1f}/5" if score is not None else "—"
-            if price is None or score is None:
+            if product == target:
+                # 目标产品本身就是基准(即便自身价格信息不足,也不应被竞品比下去标成别的)
+                value = "基准产品"
+                threat = "—"
+            elif price is None or score is None:
                 value = "信息不足"
                 threat = "待确认"
-            elif target_score is not None and target_price is not None and product != target:
+            elif target_score is not None and target_price is not None:
                 if price < target_price and score >= target_score - 0.5:
                     value = "性价比压力强"
                     threat = "高"
@@ -407,8 +414,9 @@ def _render_pricing(pricing_model: dict, feature_tree: dict, products: list[str]
                     value = "差异化压力有限"
                     threat = "低"
             else:
-                value = "基准产品"
-                threat = "—"
+                # 目标产品价格/能力信息不足,无法做横向对比
+                value = "待对齐(目标信息不足)"
+                threat = "待确认"
             lines.append(f"| {product} | {price_text} | {score_text} | {value} | {threat} |")
     return "\n".join(lines)
 
