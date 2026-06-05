@@ -4,6 +4,7 @@
 domains:
   ai_coding:
     name: "AI 编程工具"
+    en_name: "AI coding assistant"   # 检索消歧用:产品名是英文时拼到 query 里锚定品类
     sample_path: "data/sample_sources.json"
     target_product: "Cursor"
     competitors: ["Windsurf", "GitHubCopilot"]
@@ -12,6 +13,7 @@ domains:
 
   pm:
     name: "项目协作工具"
+    en_name: "project management"
     sample_path: "data/sample_sources_pm.json"
     target_product: "Notion"
     competitors: ["Asana", "Linear"]
@@ -21,6 +23,7 @@ domains:
   # 以下行业无 sample_path → 仅走实时采集(DDG/官网),展示"可换行业可换竞品"
   ai_assistant:
     name: "AI 对话助手"
+    en_name: "AI assistant chatbot"
     target_product: "ChatGPT"
     competitors: ["Claude", "Gemini"]
     analysis_focus: ["通用对话与推理体验"]
@@ -28,6 +31,7 @@ domains:
 
   design:
     name: "设计协作工具"
+    en_name: "design tool"
     target_product: "Figma"
     competitors: ["Sketch", "Canva"]
     analysis_focus: ["界面设计协作体验"]
@@ -35,6 +39,7 @@ domains:
 
   baas:
     name: "后端即服务(BaaS)"
+    en_name: "backend as a service"
     target_product: "Supabase"
     competitors: ["Firebase", "Appwrite"]
     analysis_focus: ["后端开发体验与定价"]

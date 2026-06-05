@@ -51,6 +51,41 @@ _FOCUS_HINTS_GENERIC = {
 }
 
 
+# 痛点/流失归因类问题(「为什么流走」「在吐槽什么」)专用焦点 —— 以痛点而非功能跑分打头。
+# 这类问题若被框成逐功能 0-5 评分,会逼 analyzer 对无评分证据的格子硬凑「推测」。
+_PAIN_FOCUS = ["高频吐槽与核心痛点", "用户流失与迁移动因", "短板与缺失能力"]
+_FOCUS_HINTS_GENERIC.update({
+    "高频吐槽与核心痛点": "用户最集中抱怨的点——最能解释满意度与口碑差异",
+    "用户流失与迁移动因": "用户从哪流向哪、为何迁移——直接回答「为什么流失」",
+    "短板与缺失能力": "相对竞品明显缺失或拖后腿的能力,常是流失推手",
+})
+
+# 意图类型 → 主打分析目的(把最贴合的目的提到最前)
+_PURPOSE_BY_INTENT = {
+    "pain_attribution": "理解用户流失原因与核心痛点",
+    "selection": "辅助团队/技术选型",
+    "market_entry": "评估是否进入该市场",
+    "pricing": "定价策略参考",
+}
+_PAIN_KEYWORDS = ("为什么", "为何", "流失", "流向", "流走", "吐槽", "抱怨", "不满", "差评",
+                  "诟病", "弃用", "放弃", "转投", "迁移", "退订", "槽点", "痛点", "缺点", "短板")
+
+
+def _detect_intent(user_input: str) -> str:
+    """粗粒度意图类型,用于把焦点维度拉到对的方向(痛点归因别做成功能跑分)。"""
+    t = user_input or ""
+    low = t.lower()
+    if any(k in t for k in _PAIN_KEYWORDS):
+        return "pain_attribution"
+    if any(k in t for k in ("选型", "选择", "选谁", "怎么选", "帮我选", "辅助选")):
+        return "selection"
+    if any(k in t for k in ("进入", "入场", "要不要做", "值不值", "值得")):
+        return "market_entry"
+    if any(k in low for k in ("价格", "定价", "pricing", "收费", "成本", "性价比")):
+        return "pricing"
+    return "feature_compare"
+
+
 def _heuristic_focus_hints(focus_list: list[str]) -> dict:
     return {
         f: _FOCUS_HINTS_GENERIC.get(f, f"对比各产品在「{f}」上的差距")
@@ -380,25 +415,29 @@ def _propose_heuristic(user_input: str, domain_hint: Optional[str]) -> dict:
     ] + competitors_candidates
     competitors_suggested = _dedupe([c for c in _sug_pool if c in competitors_candidates])[:4]
 
+    intent = _detect_intent(user_input)
     focus_candidates = _focus_options_for_domain(dom_cfg, user_input) if dom_cfg else _all_focus_options()
     focus_suggested = _suggest_focus(dom_cfg, focus_candidates, user_input)
+    # 痛点/流失归因类问题:把痛点维度提到最前,别让"功能跑分"维度当主角(那会逼出一堆「推测」)
+    if intent == "pain_attribution":
+        focus_candidates = _dedupe(_PAIN_FOCUS + focus_candidates)
+        focus_suggested = _PAIN_FOCUS[0]
 
-    # purpose 也按意图/品类微调(启发式兜底;LLM 路径会给更贴合的)
+    # purpose 按意图微调(启发式兜底;LLM 路径会给更贴合的)
     purpose_candidates = list(_FALLBACK_PURPOSE)
-    if any(k in text for k in ("选型", "选择", "选谁", "怎么选", "帮.*选", "辅助选")):
-        purpose_candidates = ["辅助团队/技术选型", *purpose_candidates]
-    elif any(k in text for k in ("进入", "入场", "要不要做", "值不值", "值得")):
-        purpose_candidates = ["评估是否进入该市场", *[p for p in purpose_candidates if p != "评估是否进入该市场"]]
-    elif any(k in text for k in ("价格", "定价", "pricing", "收费", "成本")):
-        purpose_candidates = ["定价策略参考", *[p for p in purpose_candidates if p != "定价策略参考"]]
+    lead_purpose = _PURPOSE_BY_INTENT.get(intent)
+    if lead_purpose:
+        purpose_candidates = [lead_purpose, *[p for p in purpose_candidates if p != lead_purpose]]
     dom_purpose = dom_cfg.get("analysis_purpose")
-    if dom_purpose:
+    if dom_purpose and intent in ("feature_compare",):
+        # 仅功能对比类沿用本域默认目的;痛点/选型等意图以意图目的优先
         purpose_candidates = _dedupe([dom_purpose, *purpose_candidates])
-    purpose_suggested = dom_purpose or purpose_candidates[0]
+    purpose_suggested = purpose_candidates[0]
 
     return {
         "domain_key": domain_key or "",
         "domain_name": dom_cfg.get("name", ""),
+        "analysis_intent": intent,
         "target_candidates": target_candidates,
         "competitors_candidates": competitors_candidates,
         "competitors_suggested": competitors_suggested,
