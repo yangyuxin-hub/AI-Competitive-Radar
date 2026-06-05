@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Evidence } from "@/lib/types";
 import { domainOf, faviconOf, biasLabel } from "@/lib/source";
 
@@ -76,17 +77,43 @@ export function Chip({ id }: { id: string }) {
 
   const domain = domainOf(ev.source_url);
 
+  // 浮层定位:贴着 chip 下方,左右夹到视口内,靠近底部时翻到 chip 上方。
+  // 用 Portal 渲染到 body,避免被带 transform/动画(ca-stagger)的祖先当成包含块而整体偏移。
+  const PANEL_W = 320;
+  const place = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - PANEL_W - 8));
+    const estH = 132;
+    const top = r.bottom + 6 + estH > window.innerHeight
+      ? Math.max(8, r.top - estH - 6) // 翻到上方
+      : r.bottom + 6;
+    setPos({ left, top });
+  };
+
+  const panel = pos && (
+    <div
+      className="fixed z-[80] rounded-xl border border-white/10 bg-neutral-900 p-3 text-left shadow-2xl"
+      style={{ left: pos.left, top: pos.top, width: PANEL_W }}
+    >
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <Favicon url={ev.source_url} size={16} />
+        <span className="truncate text-xs text-neutral-300">{domain}</span>
+        <span className="ml-auto shrink-0 rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-neutral-400">
+          {biasLabel(ev.source_bias)} · 可信度 {ev.source_reliability}
+        </span>
+      </div>
+      <p className="line-clamp-3 text-xs leading-relaxed text-neutral-400">
+        {ev.extracted_snippet || ev.claim}
+      </p>
+      <div className="mt-1.5 text-[10px] text-sky-500">点击查看完整原文 →</div>
+    </div>
+  );
+
   return (
     <span className="relative inline-block align-baseline">
       <button
         onClick={() => open(id)}
-        onMouseEnter={(e) => {
-          const r = e.currentTarget.getBoundingClientRect();
-          setPos({
-            left: Math.min(r.left, window.innerWidth - 340),
-            top: r.bottom + 6,
-          });
-        }}
+        onMouseEnter={(e) => place(e.currentTarget)}
         onMouseLeave={() => setPos(null)}
         className="mx-0.5 inline-flex max-w-[150px] items-center gap-1 truncate rounded-md border border-white/10 bg-white/[0.04] px-1.5 py-0.5 align-baseline text-[11px] text-neutral-300 transition hover:border-sky-500/40 hover:text-sky-300"
       >
@@ -94,24 +121,7 @@ export function Chip({ id }: { id: string }) {
         <span className="truncate">{domain}</span>
       </button>
 
-      {pos && (
-        <div
-          className="fixed z-[60] w-80 rounded-xl border border-white/10 bg-neutral-900 p-3 text-left shadow-2xl"
-          style={{ left: pos.left, top: pos.top }}
-        >
-          <div className="mb-1.5 flex items-center gap-1.5">
-            <Favicon url={ev.source_url} size={16} />
-            <span className="text-xs text-neutral-300">{domain}</span>
-            <span className="ml-auto rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-neutral-400">
-              {biasLabel(ev.source_bias)} · 可信度 {ev.source_reliability}
-            </span>
-          </div>
-          <p className="line-clamp-3 text-xs leading-relaxed text-neutral-400">
-            {ev.extracted_snippet || ev.claim}
-          </p>
-          <div className="mt-1.5 text-[10px] text-sky-500">点击查看完整原文 →</div>
-        </div>
-      )}
+      {panel && typeof document !== "undefined" && createPortal(panel, document.body)}
     </span>
   );
 }
