@@ -49,22 +49,22 @@ _NODE_META = {
 _PIPELINE = ["collector", "analyzer", "writer", "reviewer"]
 _STATUS_COPY = {
     "collector": [
-        "解析产品与竞品，准备证据采集",
-        "检查官方页、缓存与 mock 兜底数据",
-        "按 feature / pricing / user_pain 覆盖率整理证据",
+        "解析产品与竞品，准备采集证据",
+        "检查官网、缓存与兜底数据",
+        "按功能/定价/痛点的覆盖情况整理证据",
     ],
     "analyzer": [
-        "把原始证据压成事实层：功能、定价、用户痛点",
-        "校验 evidence_id 是否真实存在，避免编造引用",
-        "推导 SWOT 与优先级建议，计算 priority_score",
+        "梳理事实：功能、定价、用户痛点",
+        "核对每条结论的证据来源，杜绝编造",
+        "推导 SWOT 与优先级建议",
     ],
     "writer": [
-        "把结构化 schema 渲染成可读 Markdown",
-        "为结论挂上可点击的证据 chip",
+        "把结构化结论整理成可读报告",
+        "给每条结论挂上可点击的证据标记",
     ],
     "reviewer": [
-        "运行 R1-R7 质检规则",
-        "检查证据链、引用完整性与优先级公式",
+        "逐条核查质检规则：引用、证据链、冲突",
+        "检查证据链、引用完整性与优先级",
     ],
     "degraded_writer": [
         "质量门禁未完全通过，正在生成分层降级报告",
@@ -74,9 +74,9 @@ _STATUS_COPY = {
 # 长间隙(LLM 调用中)的稳定等待文案 — 单句不轮播，配合计时表明仍在工作
 _WAIT_MESSAGE = {
     "collector": "正在联网检索并整理证据",
-    "analyzer": "正在深度分析：抽取功能/定价/痛点并推导建议，这一步最慢",
-    "writer": "正在把结构化结论渲染成报告",
-    "reviewer": "正在跑 R0-R7 质检规则",
+    "analyzer": "正在深度分析：梳理功能/定价/痛点并推导建议，这一步最慢",
+    "writer": "正在把结构化结论整理成报告",
+    "reviewer": "正在逐条核查质检规则",
     "degraded_writer": "正在生成分层降级报告",
 }
 
@@ -91,11 +91,18 @@ _NODE_TYPICAL_SEC = {
 }
 
 app = FastAPI(title="AI Competitive Radar API")
+# CORS:env `API_CORS_ORIGINS`(逗号分隔)优先;否则本地开发放行 localhost/127.0.0.1 任意端口
+# (前端 dev 端口经常变,硬编码单一端口会让跨域预检 400)。
+_cors_env = os.environ.get("API_CORS_ORIGINS", "").strip()
+if _cors_env:
+    _cors_kwargs: dict = {"allow_origins": [o.strip() for o in _cors_env.split(",") if o.strip()]}
+else:
+    _cors_kwargs = {"allow_origin_regex": r"https?://(localhost|127\.0\.0\.1)(:\d+)?"}
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
+    **_cors_kwargs,
 )
 
 
@@ -106,6 +113,7 @@ app.add_middleware(
 class ProposeReq(BaseModel):
     user_input: str
     domain_hint: Optional[str] = None
+    fast: bool = False  # =true 跳过 LLM,只返回启发式草稿(用于渐进式:先秒显,LLM 回来再刷新)
 
 
 class RunReq(BaseModel):
@@ -118,16 +126,20 @@ class RunReq(BaseModel):
 
 
 def _propose_with_timeout(req: ProposeReq, timeout_sec: Optional[float] = None) -> dict:
-    """Intent LLM 产出智能竞品 + reasoning,约需 20-25s(有波动);给足超时让其完成,
-    前端「理解意图中…」期间等待。超时仍回退启发式,保证不会卡死首屏。"""
+    """Intent LLM 产出针对性焦点维度(带引导)+ 全面竞品 + reasoning,约需 20-25s(有波动);
+    给足超时让其完成,前端「理解意图中…」期间等待。超时回退启发式,保证不卡死首屏。
+    domain_hint(预设场景卡)也走 LLM——保证「针对问题生成」而非套用通用模板;
+    它仍会传给启发式兜底用于收窄品类。"""
     import os
 
-    if req.domain_hint:
+    # 渐进式:fast=true 只跑启发式,前端先秒显澄清页,再发非 fast 请求让 LLM 刷新候选
+    if req.fast:
         draft = intake._propose_heuristic(req.user_input, req.domain_hint)  # noqa: SLF001
-        draft["_fallback_reason"] = "domain_hint_fast_path"
+        draft["_fallback_reason"] = "fast_heuristic"
         return draft
 
-    timeout_sec = timeout_sec or float(os.environ.get("INTAKE_TIMEOUT", "18"))
+    # 现为后台刷新(用户已有秒开的启发式页,不阻塞)→ 给足时间让 LLM 完成精修
+    timeout_sec = timeout_sec or float(os.environ.get("INTAKE_TIMEOUT", "45"))
     pool = ThreadPoolExecutor(max_workers=1)
     fut = pool.submit(intake.propose, req.user_input, req.domain_hint)
     try:
@@ -271,14 +283,16 @@ def _result_summary(node_name: str, state: dict) -> Optional[str]:
             parts.append(f"{len(pains)} 个痛点")
         if recs:
             parts.append(f"{len(recs)} 条建议")
-        return "提取 " + " / ".join(parts) if parts else None
+        return "得到 " + " / ".join(parts) if parts else None
     if node_name in ("writer", "degraded_writer"):
         md = state.get("report_draft") or ""
         return f"生成报告约 {len(md)} 字" if md else None
     if node_name == "reviewer":
         qr = state.get("quality_report") or {}
         if qr.get("quality_score") is not None:
-            return f"质检 {qr.get('quality_score')}/100 · {state.get('status')}"
+            _st = {"passed": "通过", "degraded": "降级", "running": "打回重跑"}.get(
+                state.get("status"), state.get("status"))
+            return f"质检 {qr.get('quality_score')}/100 · {_st}"
     return None
 
 
@@ -379,9 +393,9 @@ def _llm_status(evt: dict, elapsed: int) -> Optional[dict]:
     if phase == "chunk":
         # 流式生成中:实时显示已生成字数(真实「处理过程输出」)
         chars = int(evt.get("chars") or 0)
-        step = "事实层" if label.startswith("facts") else (
-            "推导层" if label.startswith("derivations") else (
-                "质检复核" if label.startswith("review") else "内容"
+        step = "事实梳理" if label.startswith("facts") else (
+            "结论推导" if label.startswith("derivations") else (
+                "语义复核" if label.startswith("review") else "内容"
             )
         )
         return _status_event(_node_for_label(label), f"✍️ 正在生成{step}…已写 {chars} 字", elapsed)
@@ -390,16 +404,14 @@ def _llm_status(evt: dict, elapsed: int) -> Optional[dict]:
         msg = f"{'正在发现' if phase == 'start' else '已完成'} {product} 的官方页和定价页"
         return _status_event("collector", msg, elapsed)
     if label.startswith("source_discovery"):
-        msg = "正在规划检索策略：该去哪些站搜哪类证据" if phase == "start" else "检索策略已就绪，开始联网搜索"
+        msg = "正在规划该去哪些网站搜哪类证据" if phase == "start" else "搜索方案已定，开始联网检索"
         return _status_event("collector", msg, elapsed)
-    if label.startswith("facts"):
-        msg = "正在调用模型抽取事实层 JSON" if phase == "start" else "事实层 JSON 已返回，准备本地校验"
-        return _status_event("analyzer", msg, elapsed)
-    if label.startswith("derivations"):
-        msg = "正在推导 SWOT 与改进建议" if phase == "start" else "推导层已返回，准备合并报告 schema"
-        return _status_event("analyzer", msg, elapsed)
+    # facts/derivations 的逐子调用 start/done 消息冗余(每个并行 section 都触发一次),
+    # 结构化进度已由 analyzer 的 section_done/section_fallback 表达 → 这里不再重复吐。
+    if label.startswith(("facts", "derivations")):
+        return None
     if label.startswith("review"):
-        msg = "正在运行 LLM 质检复核" if phase == "start" else "LLM 质检复核完成"
+        msg = "正在做 AI 语义复核（抗幻觉）" if phase == "start" else "AI 语义复核完成"
         return _status_event("reviewer", msg, elapsed)
     return None
 
@@ -425,49 +437,49 @@ def _analyzer_status(evt: dict, elapsed: int) -> dict:
     summary = evt.get("summary")
     note = evt.get("note")
     if step == "overview":
-        msg = summary or "Analyzer 已读取证据，准备抽取事实层"
+        msg = summary or "已读取证据，开始梳理事实"
     elif step == "facts" and phase == "enrich_start":
-        msg = summary or "按功能骨架针对性补采证据，填密对比矩阵"
+        msg = summary or "按功能清单为各产品针对性补采证据"
     elif step == "facts" and phase == "enrich_done":
         msg = f"✅ {summary}" if summary else "针对性补采完成"
     elif step == "facts" and phase == "survey_start":
-        msg = summary or "问卷/访谈采集 Agent：设计问卷并模拟用户访谈"
+        msg = summary or "问卷/访谈 Agent：设计问卷并模拟用户访谈"
     elif step == "facts" and phase == "survey_done":
         msg = f"📋 {summary}" if summary else "问卷调研完成"
     elif step == "facts" and phase == "gap_refill_start":
         msg = summary or "检测到证据空缺，正在定向补采"
     elif step == "facts" and phase == "gap_refill_done":
-        msg = f"🔁 {summary}" if summary else "缺口补采完成，重出事实层"
+        msg = f"🔁 {summary}" if summary else "补采完成，重新梳理事实"
     elif step == "facts" and phase == "start":
-        msg = "Analyzer Step 1：从证据中抽取功能、定价、用户痛点"
+        msg = "第一步 · 梳理事实：从证据中提炼功能、定价、用户痛点"
     elif step == "facts" and phase == "repair":
-        msg = f"事实层自检发现 {evt.get('issues', '?')} 个问题，正在修复引用"
+        msg = f"事实自检发现 {evt.get('issues', '?')} 处引用问题，正在修正"
     elif step == "facts" and phase == "fallback":
-        msg = f"⚠️ {summary}" if summary else "⚠️ 事实层模型超时，已使用保守降级结果"
+        msg = f"⚠️ {summary}" if summary else "⚠️ 模型超时，事实梳理改用兜底结果"
     elif step == "facts" and phase == "section_done":
         _names = {"feature_tree": "功能对比", "pricing_model": "定价模型", "user_persona": "用户画像"}
-        msg = f"事实层：{_names.get(evt.get('section'), evt.get('section'))} 完成"
+        msg = f"事实梳理 · {_names.get(evt.get('section'), evt.get('section'))} 完成"
     elif step == "facts" and phase == "section_fallback":
         _names = {"feature_tree": "功能对比", "pricing_model": "定价模型", "user_persona": "用户画像"}
-        msg = _section_fallback_message("事实层", _names.get(evt.get("section"), evt.get("section")), note)
+        msg = _section_fallback_message("事实梳理", _names.get(evt.get("section"), evt.get("section")), note)
     elif step == "facts":
-        msg = f"✅ 事实层完成 — {summary}" if summary else "事实层完成，进入推导层"
+        msg = f"✅ 事实梳理完成 — {summary}" if summary else "事实梳理完成，进入结论推导"
     elif step == "derivations" and phase == "start":
-        msg = "Analyzer Step 2：基于事实推导 SWOT 和优先级建议"
+        msg = "第二步 · 推导结论：基于事实生成 SWOT 与优先级建议"
     elif step == "derivations" and phase == "section_done":
         _names = {"swot": "SWOT 四象限", "recommendations": "优先级建议"}
-        msg = f"推导层：{_names.get(evt.get('section'), evt.get('section'))} 完成"
+        msg = f"结论推导 · {_names.get(evt.get('section'), evt.get('section'))} 完成"
     elif step == "derivations" and phase == "section_fallback":
         _names = {"swot": "SWOT 四象限", "recommendations": "优先级建议"}
-        msg = _section_fallback_message("推导层", _names.get(evt.get("section"), evt.get("section")), note)
+        msg = _section_fallback_message("结论推导", _names.get(evt.get("section"), evt.get("section")), note)
     elif step == "derivations" and phase == "repair":
-        msg = f"推导层自检发现 {evt.get('issues', '?')} 个问题，正在修复"
+        msg = f"结论自检发现 {evt.get('issues', '?')} 处问题，正在修正"
     elif step == "derivations" and phase == "fallback":
-        msg = f"⚠️ {summary}" if summary else "⚠️ 推导层模型超时，已使用保守降级建议"
+        msg = f"⚠️ {summary}" if summary else "⚠️ 模型超时，结论推导改用兜底建议"
     elif step == "derivations":
-        msg = f"✅ 推导完成 — {summary}" if summary else "推导层完成"
+        msg = f"✅ 结论推导完成 — {summary}" if summary else "结论推导完成"
     else:
-        msg = "Analyzer 正在整理结构化结论"
+        msg = "正在整理结构化结论"
     event = _status_event("analyzer", msg, elapsed)
     event["analysis_step"] = step
     event["analysis_phase"] = phase
