@@ -547,6 +547,10 @@ def _schema_refs_with_coverage(schema: dict) -> tuple[int, int]:
     for feat in (schema.get("feature_tree") or {}).get("features", []):
         add((feat.get("gap") or {}).get("evidence_ids"))
         for pdata in (feat.get("products") or {}).values():
+            # 明确「未知/弃权」的格子不计入可追溯性分母——它没下结论,不算"漏引证据"
+            # (否则诚实标 unknown 反而比硬凑结论扣更多分,与抗幻觉原则相悖)
+            if (pdata.get("support_status") or "").lower() == "unknown":
+                continue
             add(pdata.get("support_evidence_ids"))
             add((pdata.get("quality_score") or {}).get("evidence_ids"))
     for product in (schema.get("pricing_model") or {}).get("products", []):
@@ -579,18 +583,26 @@ def _quality_dimensions(
     """
     products = [analysis_meta.get("target_product"), *list(analysis_meta.get("competitors") or [])]
     products = [p for p in products if p]
-    required = ("feature_existence", "performance_quality", "pricing", "user_pain")
+    # 评分口径按意图调整:痛点/流失归因类问题看「痛点+体验」证据是否覆盖,
+    # 不强求逐功能/定价齐全(那本就不是这类问题的重点,否则会无谓拉低分)。
+    if analysis_meta.get("analysis_intent") == "pain_attribution":
+        required = ("user_pain", "performance_quality")
+    else:
+        required = ("feature_existence", "performance_quality", "pricing", "user_pain")
 
     coverage_scores: list[float] = []
     by_product = (collection_meta.get("products") or {}) if collection_meta else {}
-    if by_product:
+    # 同时认采集期 coverage 和最终 evidence —— 后者含 analyzer 补采的 survey/gap 证据,
+    # 只看 collection_meta 会漏算(痛点证据常是后加的),导致评分被低估。
+    ev_seen: dict[str, set] = {}
+    for e in evidence:
+        ev_seen.setdefault(e.get("product"), set()).add(e.get("claim_type"))
+    if products:
         for product in products:
             cov = (by_product.get(product) or {}).get("coverage") or {}
-            coverage_scores.append(sum(1 for ct in required if int(cov.get(ct) or 0) > 0) / len(required))
-    elif products:
-        for product in products:
-            seen = {e.get("claim_type") for e in evidence if e.get("product") == product}
-            coverage_scores.append(sum(1 for ct in required if ct in seen) / len(required))
+            seen = ev_seen.get(product, set())
+            covered = sum(1 for ct in required if int(cov.get(ct) or 0) > 0 or ct in seen)
+            coverage_scores.append(covered / len(required))
     evidence_coverage = _clamp_score((sum(coverage_scores) / len(coverage_scores)) * 100 if coverage_scores else 0)
 
     bias_counts = Counter(e.get("source_bias") or "unknown" for e in evidence)
@@ -641,7 +653,9 @@ def _quality_dimensions(
         "evidence_coverage": {
             "label": "证据覆盖度",
             "score": evidence_coverage,
-            "note": "目标产品与竞品是否覆盖功能、质量、定价、痛点四类证据",
+            "note": ("痛点归因:看痛点与体验证据是否覆盖目标产品与竞品"
+                     if analysis_meta.get("analysis_intent") == "pain_attribution"
+                     else "目标产品与竞品是否覆盖功能、质量、定价、痛点四类证据"),
         },
         "source_credibility": {
             "label": "来源可信度",

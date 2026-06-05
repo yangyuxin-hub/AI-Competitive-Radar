@@ -421,9 +421,14 @@ def _render_pricing(pricing_model: dict, feature_tree: dict, products: list[str]
     return "\n".join(lines)
 
 
-def _render_personas(user_persona: dict) -> str:
+def _render_personas(user_persona: dict, evidence: Optional[list[dict]] = None) -> str:
     if not user_persona:
         return ""
+    # 合成(模拟访谈)证据 id 集合 —— 给纯合成支撑的痛点打「模拟」标
+    synthetic_ids = {
+        e.get("evidence_id") for e in (evidence or [])
+        if str(e.get("source_url") or "").startswith("synthetic")
+    }
     lines = ["## 七、用户画像与痛点\n"]
 
     segs = user_persona.get("user_segments") or []
@@ -448,10 +453,14 @@ def _render_personas(user_persona: dict) -> str:
             freq = p.get("frequency") or {}
             level = freq.get("level", "?")
             count = freq.get("count", "")
-            ev = cite(freq.get("evidence_ids") or [])
+            ev_ids = freq.get("evidence_ids") or p.get("evidence_ids") or []
+            ev = cite(ev_ids)
+            # 仅靠合成证据支撑 → 描述前加「【模拟】」,避免误读为真实用户反馈
+            synth_only = bool(ev_ids) and synthetic_ids and all(i in synthetic_ids for i in ev_ids)
+            desc_md = f"【模拟】{desc}" if synth_only else desc
             affected = ", ".join(p.get("affected_products") or [])
             exp = p.get("user_expectation", "")
-            lines.append(f"| {pid} {desc} | {level} | {count} | {affected or '—'} | {exp or '待分析'} | {ev} |")
+            lines.append(f"| {pid} {desc_md} | {level} | {count} | {affected or '—'} | {exp or '待分析'} | {ev} |")
         lines.append("")
     return "\n".join(lines)
 
@@ -539,7 +548,7 @@ def writer_node(state: AgentState) -> AgentState:
         ),
         _render_feature_gaps(schema.get("feature_tree") or {}),
         _render_pricing(schema.get("pricing_model") or {}, schema.get("feature_tree") or {}, products),
-        _render_personas(schema.get("user_persona") or {}),
+        _render_personas(schema.get("user_persona") or {}, evidence),
         _render_recommendations(schema.get("recommendations") or []),
         _render_swot(schema.get("swot") or {}),
     ]

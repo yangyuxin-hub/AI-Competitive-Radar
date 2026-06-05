@@ -959,11 +959,18 @@ def _enrich_evidence_by_features(
 
 
 def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
-                       spine: Optional[list[dict]] = None) -> dict:
+                       spine: Optional[list[dict]] = None,
+                       only_products: Optional[list[str]] = None,
+                       prev_tree: Optional[dict] = None) -> dict:
     """feature_tree 2 段式(替代单次 ~127s 大调用):
     段1 骨架(只要 4-6 个对比功能 id+name,小输出) → 段2 按产品并行填充 → 段3 确定性 gap。
-    spine 可由上游(补采阶段)预生成并传入,避免重复调用。"""
+    spine 可由上游(补采阶段)预生成并传入,避免重复调用。
+    only_products 非空时只重填这些产品(缺口补采用),其余产品从 prev_tree 复用——
+    避免 gap-refill 把没缺口的产品也整套重跑(省 ~2/3 LLM 调用)。"""
     products = _target_products(meta)
+    fill_products = [p for p in (only_products or products) if p in products]
+    prev_by_fid = {f.get("feature_id"): (f.get("products") or {})
+                   for f in ((prev_tree or {}).get("features") or [])}
     target = meta.get("target_product")
     focus = " / ".join(meta.get("analysis_focus") or []) or "核心体验"
     timeout = float(os.environ.get("ANALYZER_FACTS_TIMEOUT", "90"))
@@ -1022,8 +1029,8 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
         return product, (block or {})
 
     per_product: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=max(1, len(products))) as ex:
-        futs = {ex.submit(_fill, p): p for p in products}
+    with ThreadPoolExecutor(max_workers=max(1, len(fill_products))) as ex:
+        futs = {ex.submit(_fill, p): p for p in fill_products}
         for fut in as_completed(futs):
             p = futs[fut]
             try:
@@ -1045,7 +1052,11 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
         fid = f["feature_id"]
         block = {}
         for product in products:
-            pdata = (per_product.get(product) or {}).get(fid)
+            if product in fill_products:
+                pdata = (per_product.get(product) or {}).get(fid)
+            else:
+                # 没缺口的产品:复用上一轮的填充,不重跑 LLM
+                pdata = (prev_by_fid.get(fid) or {}).get(product)
             block[product] = pdata if isinstance(pdata, dict) and pdata else _unknown_pdata()
         features_out.append({
             "feature_id": fid, "name": f["name"], "products": block,
@@ -1055,11 +1066,14 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
 
 
 def _facts_section_call(section: str, system_base: str, evidence: list[dict], meta: dict,
-                        spine: Optional[list[dict]] = None) -> tuple[str, dict]:
+                        spine: Optional[list[dict]] = None,
+                        only_products: Optional[list[str]] = None,
+                        prev_section: Optional[dict] = None) -> tuple[str, dict]:
     """单个 section 的子问答:只喂相关 claim_type 的证据、只要求输出该 section。"""
     # feature_tree 走 2 段式拆分(可用 ANALYZER_FEATURE_TREE_SPLIT=0 回退单调用)
     if section == "feature_tree" and _feature_tree_split_enabled():
-        return section, _feature_tree_call(system_base, evidence, meta, spine=spine)
+        return section, _feature_tree_call(system_base, evidence, meta, spine=spine,
+                                           only_products=only_products, prev_tree=prev_section)
     cfg = _FACTS_SECTIONS[section]
     sub_ev = _compact_evidence([e for e in evidence if e.get("claim_type") in cfg["claim_types"]])
     system = f"{system_base}\n\n## 本次任务范围(重要)\n{cfg['instruct']}\n仍需遵守上面所有 HARD CONSTRAINTS。"
@@ -1138,9 +1152,12 @@ def _deriv_section_call(section: str, system_base: str, payload: dict) -> tuple[
 
 def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0,
                  spine: Optional[list[dict]] = None,
-                 only_sections: Optional[list[str]] = None) -> dict:
+                 only_sections: Optional[list[str]] = None,
+                 only_products: Optional[list[str]] = None,
+                 prev_facts: Optional[dict] = None) -> dict:
     """Step 1 — 事实层。only_sections 非空时只重跑这些 section(用于缺口补采后的局部重出,
-    避免把没缺口的 pricing/persona 也整套重算),返回的 dict 只含这些 section,由调用方合并。"""
+    避免把没缺口的 pricing/persona 也整套重算),返回的 dict 只含这些 section,由调用方合并。
+    only_products 非空时,feature_tree 只重填这些产品(其余从 prev_facts 复用)。"""
     if is_mock_mode():
         # Mock: 从 sample_report 抽出 facts 部分
         sr = load_sample_report()
@@ -1165,9 +1182,12 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0,
     # 各 section 并行子问答,各自只输出一个顶层字段 → 不会顶满被截断
     facts: dict = {}
     fb = None  # 懒构造的兜底(整套 facts)
+    prev_ft = (prev_facts or {}).get("feature_tree")
     with ThreadPoolExecutor(max_workers=len(sections)) as ex:
         futs = {ex.submit(_facts_section_call, s, system, evidence, meta,
-                          spine if s == "feature_tree" else None): s
+                          spine if s == "feature_tree" else None,
+                          only_products if s == "feature_tree" else None,
+                          prev_ft if s == "feature_tree" else None): s
                 for s in sections}
         for fut in as_completed(futs):
             section = futs[fut]
@@ -1346,6 +1366,28 @@ def _survey_enabled() -> bool:
     return os.environ.get("ANALYZER_SURVEY", "1").strip() not in ("0", "false", "False")
 
 
+def _real_ugc_count(evidence: list[dict]) -> int:
+    """真实用户侧证据数(非合成):reddit/hn/v2ex/UGC 搜索。"""
+    return sum(
+        1 for e in evidence
+        if e.get("source_bias") == "user_generated"
+        and not str(e.get("source_url") or "").startswith("synthetic")
+    )
+
+
+def _survey_should_run(evidence: list[dict], meta: dict) -> bool:
+    """合成问卷只作兜底:真实 UGC 充足时不跑(省时 + 避免合成数据污染结论)。
+    SURVEY_MIN_REAL_UGC(默认 8)条真实用户证据以上即跳过;不足则用合成兜底(已标注)。"""
+    if not _survey_enabled():
+        return False
+    threshold = int(os.environ.get("SURVEY_MIN_REAL_UGC", "8"))
+    real = _real_ugc_count(evidence)
+    if real >= threshold:
+        print(f"[analyzer] survey 跳过:已有 {real} 条真实 UGC(≥{threshold}),不用合成兜底")
+        return False
+    return True
+
+
 def _run_survey(evidence: list[dict], meta: dict) -> tuple[list[dict], Optional[dict]]:
     """问卷/用户访谈采集 Agent(合成,已标注):对每个产品设计问卷+模拟访谈→证据。
     在 analyzer 跑(不受采集超时限制、默认全档生效)。返回 (合并 evidence, research_method)。"""
@@ -1408,9 +1450,9 @@ def analyzer_node(state: AgentState) -> AgentState:
 
     focus = (meta.get("analysis_focus") or [""])[0] if meta.get("analysis_focus") else ""
 
-    # 问卷/访谈采集 Agent(合成,已标注):默认全档生效,产出均衡的用户侧证据 + 留存问卷供报告展示
+    # 问卷/访谈采集 Agent(合成,已标注):仅作兜底——真实 UGC 不足时才跑,避免合成数据污染结论
     research_method: Optional[dict] = None
-    if (_survey_enabled() and not is_mock_mode()
+    if (_survey_should_run(evidence, meta) and not is_mock_mode()
             and (os.environ.get("LLM_API_KEY") or os.environ.get("ARK_API_KEY"))):
         try:
             _emit_progress(step="facts", phase="survey_start", summary="设计问卷并模拟用户访谈采集")
@@ -1456,13 +1498,19 @@ def analyzer_node(state: AgentState) -> AgentState:
                 evidence = evidence + new_ev
                 # 只重跑有缺口的 section(常见情况只重出 feature_tree,跳过没缺口的 pricing/persona)
                 affected = _gap_affected_sections(gaps) or list(_FACTS_SECTIONS)
+                # 再按产品收窄:feature_tree 只重填有空白格的产品,其余从上一轮复用(省 ~2/3 调用)
+                gap_products = sorted({p for p, _ in gaps["unknown_cells"]})
+                if gaps["missing_claim_types"]:
+                    gap_products = _target_products(meta)  # 缺整类证据 → 各产品都可能受影响
                 _sec_cn = {"feature_tree": "功能对比", "pricing_model": "定价", "user_persona": "用户画像"}
                 _names = "、".join(_sec_cn.get(s, s) for s in affected)
-                print(f"[analyzer] gap refill added {len(new_ev)} evidence; 只重出: {affected}")
+                _ponly = f"(仅 {len(gap_products)}/{len(_target_products(meta))} 个产品)" if gap_products and "feature_tree" in affected else ""
+                print(f"[analyzer] gap refill added {len(new_ev)} evidence; 只重出: {affected} 产品: {gap_products or '全部'}")
                 _emit_progress(step="facts", phase="gap_refill_done",
-                               summary=f"定向补采 {len(new_ev)} 条，重新梳理{_names}")
+                               summary=f"定向补采 {len(new_ev)} 条，重新梳理{_names}{_ponly}")
                 partial = _step1_facts(evidence, meta, analyzer_retry=analyzer_retry,
-                                       spine=spine, only_sections=affected)
+                                       spine=spine, only_sections=affected,
+                                       only_products=gap_products or None, prev_facts=facts)
                 facts.update(partial)
 
     derivations = _step2_derivations(facts, evidence, meta, analyzer_retry=analyzer_retry)

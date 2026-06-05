@@ -219,6 +219,12 @@ export default function ReportView({ report }: { report: Report }) {
 
   // 痛点归因类分析:能力评分仅辅助,缺证据不做「推测」兜底
   const painMode = report.meta.analysis_intent === "pain_attribution";
+  // 合成(模拟访谈)证据 id 集合——用于给"仅靠合成数据支撑"的结论打「模拟」标,避免误读为真实发现
+  const syntheticIds = new Set(
+    (report.raw_evidence ?? [])
+      .filter((e) => (e.source_url ?? "").startsWith("synthetic"))
+      .map((e) => e.evidence_id)
+  );
   const cols = s.feature_tree
     ? Object.keys(s.feature_tree.features[0]?.products ?? {})
     : [report.meta.target_product, ...report.meta.competitors];
@@ -366,7 +372,7 @@ export default function ReportView({ report }: { report: Report }) {
             {report.research_method && <ResearchMethodCard data={report.research_method} />}
             <div className="space-y-2">
               {s.user_persona.pain_points.map((p) => (
-                <PainRow key={p.pain_id} pain={p} />
+                <PainRow key={p.pain_id} pain={p} syntheticIds={syntheticIds} />
               ))}
             </div>
           </section>
@@ -961,10 +967,21 @@ function SwotQuad({
   );
 }
 
-function PainRow({ pain }: { pain: PainPoint }) {
+function PainRow({ pain, syntheticIds }: { pain: PainPoint; syntheticIds?: Set<string> }) {
+  const ids = pain.evidence_ids ?? pain.frequency?.evidence_ids ?? [];
+  // 仅靠合成(模拟访谈)证据支撑 → 明确标注,避免把虚构的精确数字误读为真实发现
+  const synthOnly = !!syntheticIds && ids.length > 0 && ids.every((i) => syntheticIds.has(i));
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 text-sm">
       <div className="flex flex-wrap items-start gap-2">
+        {synthOnly && (
+          <span
+            className="mt-0.5 shrink-0 rounded bg-violet-500/15 px-2 py-0.5 text-xs text-violet-300"
+            title="该痛点仅由模拟问卷/访谈(合成数据)支撑,非真实用户反馈,仅供参考"
+          >
+            模拟数据
+          </span>
+        )}
         {pain.frequency?.level && (
           <span className="mt-0.5 shrink-0 rounded bg-white/5 px-2 py-0.5 text-xs text-neutral-400">
             {pain.frequency.level}
