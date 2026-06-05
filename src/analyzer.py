@@ -1326,32 +1326,47 @@ def _gap_affected_sections(gaps: dict) -> list[str]:
 
 def _gap_targeted_recollect(meta: dict, gaps: dict, focus: str) -> list[dict]:
     """对缺口做定向搜索:每个空缺 (产品×功能) 一条查询 + 每个产品对缺失 claim_type 一条查询。
-    比盲目全量补采更省 DDG 额度、命中更准。复用 search.search_plan_to_evidence(带缓存/限速)。"""
+    比盲目全量补采更省 DDG 额度、命中更准。复用 search.search_plan_to_evidence(带缓存/限速)。
+
+    query/site 构造复用 source_planner 的语言一致构造器 + 站点锚定,杜绝旧版
+    `{英文产品} {中文功能} {中文焦点}` 中英混搭 + site="" 裸搜捞同名页/学术站的问题。"""
     from collections import defaultdict
 
-    from . import search
+    from . import search, source_planner as sp
     if not search.tavily_available():
         return []
+    domain = os.environ.get("DOMAIN", "").strip()
+    cat_en, cat_cn = sp._domain_category(domain)
+    by_ct = sp.load_sources_config().get("by_claim_type") or {}
     max_cells = int(os.environ.get("ANALYZER_GAP_MAX_QUERIES", "10"))
+    max_sites = int(os.environ.get("ANALYZER_GAP_MAX_SITES", "2"))
     plans: dict[str, list[dict]] = defaultdict(list)
+
+    def _emit(product: str, ct: str, focus_kw: str) -> None:
+        """按 claim_type 锚定权威源各发一条;无 site 时给一条全网兜底(相关性门兜底过滤)。"""
+        base_q = sp._build_query(product, focus_kw, ct, cat_en, cat_cn)
+        sites = sp._sites_for_claim(product, ct, by_ct)[:max_sites]
+        if sites:
+            for site, st, bias in sites:
+                plans[product].append({
+                    "query": base_q, "claim_type": ct, "site": site,
+                    "source_type": st, "bias": bias,
+                })
+        else:
+            plans[product].append({
+                "query": base_q, "claim_type": ct, "site": "",
+                "source_type": "web_search",
+                "bias": "vendor_claim" if ct in ("pricing", "feature_existence") else "third_party",
+            })
+
+    # 空白格 (产品×功能):以功能名作焦点,质量维度定向补
     for product, fname in gaps["unknown_cells"][:max_cells]:
-        plans[product].append({
-            "query": f"{product} {fname} {focus}".strip(), "claim_type": "performance_quality",
-            "bias": "third_party", "source_type": "web_search", "site": "",
-        })
-    ct_query = {
-        "pricing": "pricing plans price per month cost",
-        "feature_existence": "features capabilities overview",
-        "performance_quality": f"{focus} review performance",
-        "user_pain": f"{focus} problems complaints",
-    }
+        _emit(product, "performance_quality", fname or focus)
+    # 整类缺失:每个产品对缺失 claim_type 各补一条(焦点回退到分析焦点)
     for product in _target_products(meta):
         for ct in gaps["missing_claim_types"]:
-            plans[product].append({
-                "query": f"{product} {ct_query.get(ct, ct)}".strip(), "claim_type": ct,
-                "bias": "vendor_claim" if ct in ("pricing", "feature_existence") else "third_party",
-                "source_type": "web_search", "site": "",
-            })
+            _emit(product, ct, focus)
+
     added: list[dict] = []
     for product, plan in plans.items():
         try:
