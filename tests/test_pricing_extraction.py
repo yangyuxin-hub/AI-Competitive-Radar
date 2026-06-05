@@ -44,5 +44,26 @@ class PriceSnippetTest(unittest.TestCase):
         self.assertTrue(any("$16" in e["extracted_snippet"] for e in pricing))
 
 
+class CompactEvidenceFairnessTest(unittest.TestCase):
+    def test_low_confidence_product_not_starved(self):
+        """多产品分析:低可信度产品(官网定价)不应被全局 top-K 挤光。"""
+        from src.analyzer import _compact_evidence
+        ev = []
+        # 高可信度聚合站:Notion/Asana 各 10 条 pricing(挤占全局名额)
+        for prod in ("Notion", "Asana"):
+            for i in range(10):
+                ev.append({"evidence_id": f"S{prod[:1]}{i:06d}", "product": prod,
+                           "claim_type": "pricing", "evidence_confidence": 0.9,
+                           "extracted_snippet": f"{prod} aggregator ${i}"})
+        # 低可信度官网:Linear 3 条(0.65),旧逻辑会被全局 top-8 全挤掉
+        for i, price in enumerate(("$0", "$10", "$16")):
+            ev.append({"evidence_id": f"SL{i:06d}", "product": "Linear",
+                       "claim_type": "pricing", "evidence_confidence": 0.65,
+                       "extracted_snippet": f"Linear {price} per user/month"})
+        out = _compact_evidence(ev)
+        linear = [e for e in out if e["product"] == "Linear"]
+        self.assertEqual(len(linear), 3, f"Linear 定价被压缩饿死了: {out}")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -424,16 +424,21 @@ _REQUIRED_CT = ("feature_existence", "performance_quality", "pricing", "user_pai
 
 
 def _compact_evidence(evidence: list[dict]) -> list[dict]:
-    """给 LLM 的精简证据:按 claim_type 取 top-K(按可信度)+ 截短片段 + 只留必要字段。
+    """给 LLM 的精简证据:按 (claim_type × 产品) 各取 top-K(按可信度)+ 截短片段 + 只留必要字段。
     防止证据过多时 prompt 爆炸 → 调用超时。全量证据仍用于本地 evidence_id 校验。
-    可调:ANALYZER_MAX_EVIDENCE_PER_TYPE(默认8)、ANALYZER_SNIPPET_LEN(默认180)。"""
+
+    关键:**按产品分桶**取 top-K,而非按 claim_type 全局取——否则多产品分析里,
+    低可信度产品(如官网 pricing 0.65 < 聚合站)会被全局 top-8 挤光,导致该产品整块为空
+    (实测 Linear 官网定价 $0/$10/$16 在,却因全局截断没喂给 LLM → 报告定价空)。
+    feature_tree 调用前已按产品过滤,分桶天然单产品、行为不变。
+    可调:ANALYZER_MAX_EVIDENCE_PER_TYPE(默认8,现为每产品每类)、ANALYZER_SNIPPET_LEN(默认180)。"""
     per_type = int(os.environ.get("ANALYZER_MAX_EVIDENCE_PER_TYPE", "8"))
     snip = int(os.environ.get("ANALYZER_SNIPPET_LEN", "180"))
-    by_ct: dict[str, list[dict]] = {}
+    by_key: dict[tuple, list[dict]] = {}
     for e in evidence:
-        by_ct.setdefault(e.get("claim_type", "?"), []).append(e)
+        by_key.setdefault((e.get("claim_type", "?"), e.get("product")), []).append(e)
     out: list[dict] = []
-    for lst in by_ct.values():
+    for lst in by_key.values():
         top = sorted(lst, key=lambda e: e.get("evidence_confidence", 0) or 0, reverse=True)[:per_type]
         for e in top:
             out.append({
