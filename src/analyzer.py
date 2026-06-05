@@ -1145,7 +1145,7 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0,
 
     system = load_prompt("analyzer_facts")
     _emit_progress(step="facts", phase="start", attempt=1,
-                   summary=f"并行抽取 {len(_FACTS_SECTIONS)} 个事实 section")
+                   summary=f"并行梳理 {len(_FACTS_SECTIONS)} 个事实板块")
     # 三个 section 并行子问答,各自只输出一个顶层字段 → 不会顶满被截断
     facts: dict = {}
     fb = None  # 懒构造的兜底(整套 facts)
@@ -1358,7 +1358,7 @@ def analyzer_node(state: AgentState) -> AgentState:
     _emit_progress(
         step="overview",
         phase="ready",
-        summary=f"已读取 {len(evidence)} 条证据，开始抽取事实层",
+        summary=f"已读取 {len(evidence)} 条证据，开始梳理事实",
         preview=_evidence_preview(evidence, meta),
     )
 
@@ -1395,9 +1395,12 @@ def analyzer_node(state: AgentState) -> AgentState:
     if _gap_refill_enabled() and not is_mock_mode():
         gaps = _coverage_gaps(facts, meta, evidence)
         if gaps["unknown_cells"] or gaps["missing_claim_types"]:
+            _ct_cn = {"feature_existence": "功能", "performance_quality": "体验",
+                      "pricing": "定价", "user_pain": "痛点"}
+            _miss = "、".join(_ct_cn.get(c, c) for c in gaps["missing_claim_types"])
+            _tail = f"，并缺 {_miss}证据" if _miss else ""
             _emit_progress(step="facts", phase="gap_refill_start",
-                           summary=f"检测到 {len(gaps['unknown_cells'])} 个空缺格 + 缺 "
-                                   f"{gaps['missing_claim_types'] or '无'} 类证据，定向补采")
+                           summary=f"发现 {len(gaps['unknown_cells'])} 个空白项{_tail}，定向补采")
             try:
                 new_ev = _gap_targeted_recollect(meta, gaps, focus)
             except Exception as e:  # noqa: BLE001
@@ -1409,7 +1412,7 @@ def analyzer_node(state: AgentState) -> AgentState:
                 evidence = evidence + new_ev
                 print(f"[analyzer] gap refill added {len(new_ev)} evidence; 重出 facts")
                 _emit_progress(step="facts", phase="gap_refill_done",
-                               summary=f"定向补采 {len(new_ev)} 条，重新抽取事实层")
+                               summary=f"定向补采 {len(new_ev)} 条，重新梳理事实")
                 facts = _step1_facts(evidence, meta, analyzer_retry=analyzer_retry, spine=spine)
 
     derivations = _step2_derivations(facts, evidence, meta, analyzer_retry=analyzer_retry)

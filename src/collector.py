@@ -641,22 +641,24 @@ class SearchAdapter(SourceAdapter):
             analysis_focus=[focus] if focus else [],
             domain=self.domain,
         )
-        # 把「该去哪搜、为什么」的真实决策实时吐出来(替代轮播文案)
+        # 实时吐出「该去搜什么」——每个产品一行人话,只说产品+证据类型,
+        # 不堆原始 query 串和内部规划术语(详细 query/URL 在完成卡的「本步产出」里看)。
         _CT_CN = {
             "feature_existence": "功能",
-            "performance_quality": "性能",
+            "performance_quality": "体验",
             "pricing": "定价",
             "user_pain": "痛点",
         }
+        _seen_ct: list[str] = []
         for q in plan:
-            site = q.get("site") or "全网"
             ct = _CT_CN.get(q.get("claim_type"), q.get("claim_type") or "")
-            why = q.get("why") or ""
+            if ct and ct not in _seen_ct:
+                _seen_ct.append(ct)
+        if _seen_ct:
             _emit_progress(
                 phase="plan_decision",
                 product=product,
-                claim_type=q.get("claim_type"),
-                message=f"🔍 决定去 {site} 搜「{q.get('query')}」找{ct}证据 —— {why}",
+                message=f"🔍 联网检索 {product} 的{' / '.join(_seen_ct)}证据",
             )
         cfg = source_planner.load_sources_config()
         per_query = int((cfg.get("defaults") or {}).get("results_per_query", 5))
