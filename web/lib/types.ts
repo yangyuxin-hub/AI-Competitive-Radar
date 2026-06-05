@@ -5,6 +5,7 @@ export interface Question {
   multi: boolean;
   suggested: string[];
   allow_custom: boolean;
+  hints?: Record<string, string>; // {选项: 一句话引导},焦点/竞品逐项展示
 }
 
 export interface Evidence {

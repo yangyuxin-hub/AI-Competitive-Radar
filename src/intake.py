@@ -37,6 +37,26 @@ _FALLBACK_PURPOSE = [
     "评估是否进入该市场",
 ]
 
+# 启发式兜底时的一句话引导(LLM 路径会用更贴合的 focus_hints 覆盖)
+_FOCUS_HINTS_GENERIC = {
+    "代码补全体验": "补全的准确率、响应延迟、跨文件理解——AI 编程工具的核心体验差异",
+    "团队任务管理体验": "任务拆分、看板/视图、进度跟踪对团队协作效率的影响",
+    "界面设计协作体验": "多人实时协同、组件复用、设计到研发交付的顺畅度",
+    "通用对话与推理体验": "复杂推理、长上下文、指令遵循与稳定性的综合表现",
+    "后端开发体验与定价": "数据库/鉴权等开箱能力、自托管自由度与计费模型",
+    "定价策略": "档位划分、计费口径、性价比与企业采购友好度",
+    "核心功能完整度": "覆盖核心场景的功能广度与深度,有无明显短板",
+    "用户体验与上手成本": "新手门槛、学习曲线、文档与社区支持",
+    "集成与生态": "与现有工具链的打通、插件/API 生态的丰富度",
+}
+
+
+def _heuristic_focus_hints(focus_list: list[str]) -> dict:
+    return {
+        f: _FOCUS_HINTS_GENERIC.get(f, f"对比各产品在「{f}」上的差距")
+        for f in focus_list
+    }
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # 数据结构
@@ -52,6 +72,7 @@ class Choice:
     multi: bool = False
     suggested: list[str] = field(default_factory=list)  # 预选/推荐项
     allow_custom: bool = True  # 前端是否允许「其他」自由输入
+    hints: dict = field(default_factory=dict)  # {选项: 一句话说明},前端逐项展示引导
 
     def to_dict(self) -> dict:
         return {
@@ -61,6 +82,7 @@ class Choice:
             "multi": self.multi,
             "suggested": self.suggested,
             "allow_custom": self.allow_custom,
+            "hints": self.hints,
         }
 
 
@@ -110,6 +132,67 @@ def _dedupe(items: list[str]) -> list[str]:
     return seen
 
 
+def _norm_key(s: str) -> str:
+    """规范化匹配键:小写 + 去所有空白。'GitHub Copilot' / 'githubcopilot' → 同键。"""
+    return "".join((s or "").lower().split())
+
+
+def _product_alias_map() -> dict:
+    """{规范化键: 规范名} —— 来自 products.yaml 的 name + aliases。"""
+    out: dict = {}
+    for name, meta in load_products().items():
+        for k in [name, *(meta.get("aliases") or [])]:
+            nk = _norm_key(k)
+            if nk and nk not in out:
+                out[nk] = name
+    return out
+
+
+def _canonicalize_names(names: list[str], amap: Optional[dict] = None) -> list[str]:
+    """把名字对齐到 products.yaml 规范名(命中 alias 时),并大小写/空格无关去重。
+    未登记的陌生竞品(Penpot/Framer 等)原样保留,不丢。"""
+    amap = amap if amap is not None else _product_alias_map()
+    seen: set = set()
+    out: list[str] = []
+    for raw in names or []:
+        name = (raw or "").strip()
+        if not name:
+            continue
+        canon = amap.get(_norm_key(name), name)
+        ck = _norm_key(canon)
+        if ck and ck not in seen:
+            seen.add(ck)
+            out.append(canon)
+    return out
+
+
+def _canonicalize_draft(draft: dict) -> dict:
+    """规范化 target/竞品候选(去重 + 对齐 products.yaml 命名),同步重映射 competitor_hints。
+    解决 LLM 偶发把 'GitHub Copilot' 与 'GitHubCopilot' 混排的问题。"""
+    amap = _product_alias_map()
+    for key in ("target_candidates", "competitors_candidates", "competitors_suggested"):
+        if draft.get(key):
+            draft[key] = _canonicalize_names(draft[key], amap)
+    # target 不应混进竞品候选;竞品候选不含 target
+    target = (draft.get("target_candidates") or [""])[0]
+    if target:
+        draft["competitors_candidates"] = [
+            c for c in (draft.get("competitors_candidates") or []) if _norm_key(c) != _norm_key(target)
+        ]
+    hints = draft.get("competitor_hints") or {}
+    if hints:
+        remapped: dict = {}
+        for k, v in hints.items():
+            canon = amap.get(_norm_key(k), (k or "").strip())
+            if canon and canon not in remapped:
+                remapped[canon] = v
+        draft["competitor_hints"] = remapped
+    cand = set(draft.get("competitors_candidates") or [])
+    if draft.get("competitors_suggested"):
+        draft["competitors_suggested"] = [c for c in draft["competitors_suggested"] if c in cand]
+    return draft
+
+
 def _domain_products(dom: dict) -> list[str]:
     return _dedupe([dom.get("target_product", ""), *(dom.get("competitors") or [])])
 
@@ -144,17 +227,17 @@ def _infer_domain_key(
 
 
 def _focus_options_for_domain(dom_cfg: dict, user_input: str) -> list[str]:
-    """按任务域收窄焦点选项，避免项目管理任务里出现代码补全这类噪音。"""
+    """启发式兜底的焦点选项:以本域配置的焦点为主,只在用户明确提到定价时补「定价策略」,
+    不足 3 个才补少量通用维度。不再跨域注入(如设计任务里冒出代码补全/任务管理)。"""
     text = (user_input or "").lower()
-    opts: list[str] = []
-    opts.extend(dom_cfg.get("analysis_focus") or [])
-    if any(k in text for k in ("价格", "定价", "pricing", "price", "收费")):
+    opts: list[str] = list(dom_cfg.get("analysis_focus") or [])
+    if any(k in text for k in ("价格", "定价", "pricing", "price", "收费", "成本")):
         opts.append("定价策略")
-    if any(k in text for k in ("代码", "补全", "coding", "autocomplete")):
-        opts.append("代码补全体验")
-    if any(k in text for k in ("任务", "项目", "协作", "project", "task")):
-        opts.append("团队任务管理体验")
-    opts.extend(["核心功能完整度", "用户体验与上手成本", "集成与生态"])
+    # 仅在选项过少时补通用维度兜底,避免「每次都是同一套尾巴」
+    for generic in ("核心功能完整度", "用户体验与上手成本"):
+        if len(_dedupe(opts)) >= 3:
+            break
+        opts.append(generic)
     return _dedupe(opts)
 
 
@@ -203,6 +286,8 @@ def _scope_draft_to_domain(draft: dict, base: dict, products: dict) -> dict:
     ] or (base.get("competitors_suggested") or [])
     out["focus_candidates"] = out.get("focus_candidates") or base.get("focus_candidates")
     out["focus_suggested"] = out.get("focus_suggested") or base.get("focus_suggested")
+    out["focus_hints"] = out.get("focus_hints") or base.get("focus_hints") or {}
+    out["competitor_hints"] = out.get("competitor_hints") or base.get("competitor_hints") or {}
     out["domain_name"] = out.get("domain_name") or base.get("domain_name")
     out["domain_key"] = out.get("domain_key") or base.get("domain_key")
     return out
@@ -289,12 +374,27 @@ def _propose_heuristic(user_input: str, domain_hint: Optional[str]) -> dict:
     target = target_candidates[0] if target_candidates else ""
     competitors_candidates = [p for p in scoped_products if p != target]
     explicit_competitors = [p for p in hit_products if p != target and p in competitors_candidates]
-    competitors_suggested = explicit_competitors or [
-        c for c in (dom_cfg.get("competitors") or []) if c != target and c in competitors_candidates
-    ][:3] or competitors_candidates[:2]
+    # 推荐尽量覆盖:命中的竞品 + 本域配置竞品 + 其余候选,去重后取前 4(不再只给 2-3)
+    _sug_pool = explicit_competitors + [
+        c for c in (dom_cfg.get("competitors") or []) if c != target
+    ] + competitors_candidates
+    competitors_suggested = _dedupe([c for c in _sug_pool if c in competitors_candidates])[:4]
 
     focus_candidates = _focus_options_for_domain(dom_cfg, user_input) if dom_cfg else _all_focus_options()
     focus_suggested = _suggest_focus(dom_cfg, focus_candidates, user_input)
+
+    # purpose 也按意图/品类微调(启发式兜底;LLM 路径会给更贴合的)
+    purpose_candidates = list(_FALLBACK_PURPOSE)
+    if any(k in text for k in ("选型", "选择", "选谁", "怎么选", "帮.*选", "辅助选")):
+        purpose_candidates = ["辅助团队/技术选型", *purpose_candidates]
+    elif any(k in text for k in ("进入", "入场", "要不要做", "值不值", "值得")):
+        purpose_candidates = ["评估是否进入该市场", *[p for p in purpose_candidates if p != "评估是否进入该市场"]]
+    elif any(k in text for k in ("价格", "定价", "pricing", "收费", "成本")):
+        purpose_candidates = ["定价策略参考", *[p for p in purpose_candidates if p != "定价策略参考"]]
+    dom_purpose = dom_cfg.get("analysis_purpose")
+    if dom_purpose:
+        purpose_candidates = _dedupe([dom_purpose, *purpose_candidates])
+    purpose_suggested = dom_purpose or purpose_candidates[0]
 
     return {
         "domain_key": domain_key or "",
@@ -302,10 +402,12 @@ def _propose_heuristic(user_input: str, domain_hint: Optional[str]) -> dict:
         "target_candidates": target_candidates,
         "competitors_candidates": competitors_candidates,
         "competitors_suggested": competitors_suggested,
+        "competitor_hints": {c: "同品类竞品" for c in competitors_candidates},
         "focus_candidates": focus_candidates,
+        "focus_hints": _heuristic_focus_hints(focus_candidates),
         "focus_suggested": focus_suggested,
-        "purpose_candidates": _FALLBACK_PURPOSE,
-        "purpose_suggested": dom_cfg.get("analysis_purpose") or _FALLBACK_PURPOSE[0],
+        "purpose_candidates": purpose_candidates,
+        "purpose_suggested": purpose_suggested,
         "_domain_products": scoped_products if dom_cfg else [],
         "_hit_products": hit_products,
     }
@@ -320,8 +422,8 @@ def propose(user_input: str, domain_hint: Optional[str] = None) -> dict:
             base = _propose_heuristic(user_input, domain_hint)
             for k, v in base.items():
                 draft.setdefault(k, v)
-            return _scope_draft_to_domain(draft, base, load_products())
-    return _propose_heuristic(user_input, domain_hint)
+            return _canonicalize_draft(_scope_draft_to_domain(draft, base, load_products()))
+    return _canonicalize_draft(_propose_heuristic(user_input, domain_hint))
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -334,6 +436,8 @@ def build_questions(draft: dict) -> list[Choice]:
     comp_sug = [c for c in (draft.get("competitors_suggested") or []) if c in comp_opts]
     focus_opts = draft.get("focus_candidates") or []
     focus_sug = draft.get("focus_suggested") or (focus_opts[0] if focus_opts else "")
+    focus_hints = draft.get("focus_hints") or {}
+    comp_hints = draft.get("competitor_hints") or {}
     purpose_opts = draft.get("purpose_candidates") or _FALLBACK_PURPOSE
     purpose_sug = draft.get("purpose_suggested") or purpose_opts[0]
 
@@ -351,6 +455,7 @@ def build_questions(draft: dict) -> list[Choice]:
             options=comp_opts,
             multi=True,
             suggested=comp_sug,
+            hints={k: v for k, v in comp_hints.items() if k in comp_opts},
         ),
         Choice(
             key="focus",
@@ -358,6 +463,7 @@ def build_questions(draft: dict) -> list[Choice]:
             options=focus_opts,
             multi=True,
             suggested=[focus_sug] if focus_sug else [],
+            hints={k: v for k, v in focus_hints.items() if k in focus_opts},
         ),
         Choice(
             key="purpose",
