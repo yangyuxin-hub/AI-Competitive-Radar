@@ -123,6 +123,7 @@ class RunReq(BaseModel):
     analysis_purpose: Optional[str] = None
     user_input: Optional[str] = None
     runtime_profile: str = "balanced"
+    analysis_intent: Optional[str] = None  # 前端从 intake 带回;留空则后端按 user_input 推断
 
 
 def _propose_with_timeout(req: ProposeReq, timeout_sec: Optional[float] = None) -> dict:
@@ -639,6 +640,7 @@ def api_run(req: RunReq):
         "analysis_purpose": req.analysis_purpose,
         "user_input": req.user_input,
         "runtime_profile": req.runtime_profile,
+        "analysis_intent": req.analysis_intent,
     }
     return StreamingResponse(
         _run_stream(args),

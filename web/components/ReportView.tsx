@@ -217,6 +217,8 @@ export default function ReportView({ report }: { report: Report }) {
     return <p className="text-neutral-500">无结构化数据</p>;
   }
 
+  // 痛点归因类分析:能力评分仅辅助,缺证据不做「推测」兜底
+  const painMode = report.meta.analysis_intent === "pain_attribution";
   const cols = s.feature_tree
     ? Object.keys(s.feature_tree.features[0]?.products ?? {})
     : [report.meta.target_product, ...report.meta.competitors];
@@ -326,8 +328,8 @@ export default function ReportView({ report }: { report: Report }) {
         {s.feature_tree && (
           <section className="space-y-3">
             <SectionTitle id="matrix">功能对比矩阵 · {s.feature_tree.category}</SectionTitle>
-            <CapabilityChart features={s.feature_tree.features} cols={cols} />
-            <FeatureMatrix features={s.feature_tree.features} cols={cols} />
+            <CapabilityChart features={s.feature_tree.features} cols={cols} painMode={painMode} />
+            <FeatureMatrix features={s.feature_tree.features} cols={cols} painMode={painMode} />
           </section>
         )}
 
@@ -680,21 +682,24 @@ function UncertaintyBox({ notes }: { notes: string[] }) {
   );
 }
 
-function CapabilityChart({ features, cols }: { features: Feature[]; cols: string[] }) {
+function CapabilityChart({ features, cols, painMode }: { features: Feature[]; cols: string[]; painMode?: boolean }) {
   const rows = cols
     .map((c) => {
       const real = _mean(
         features.map((f) => realScore(f.products[c])).filter((x): x is number => x != null)
       );
-      const filled = _mean(
-        features
-          .map((f) => realScore(f.products[c]) ?? cellEstimate(f, c, features, cols)?.value ?? null)
-          .filter((x): x is number => x != null)
-      );
+      // 痛点归因分析:不做「推测」兜底,缺证据维度坦然按未评分
+      const filled = painMode
+        ? null
+        : _mean(
+            features
+              .map((f) => realScore(f.products[c]) ?? cellEstimate(f, c, features, cols)?.value ?? null)
+              .filter((x): x is number => x != null)
+          );
       const n = features.filter((f) => realScore(f.products[c]) != null).length;
       return { name: c, real, filled, n, total: features.length };
     })
-    .sort((a, b) => (b.filled ?? -1) - (a.filled ?? -1));
+    .sort((a, b) => (b.filled ?? b.real ?? -1) - (a.filled ?? a.real ?? -1));
 
   return (
     <div className="rounded-xl border border-white/10 p-4">
@@ -702,7 +707,7 @@ function CapabilityChart({ features, cols }: { features: Feature[]; cols: string
         <span>能力均分对比（满分 5）</span>
         <span className="flex items-center gap-3 text-[10px] text-neutral-500">
           <span className="flex items-center gap-1"><span className="h-2 w-3 rounded-sm bg-sky-400" />实测</span>
-          <span className="flex items-center gap-1"><span className="h-2 w-3 rounded-sm bg-sky-400/30" />含推测兜底</span>
+          {!painMode && <span className="flex items-center gap-1"><span className="h-2 w-3 rounded-sm bg-sky-400/30" />含推测兜底</span>}
         </span>
       </div>
       <div className="space-y-2.5">
@@ -738,13 +743,15 @@ function CapabilityChart({ features, cols }: { features: Feature[]; cols: string
         ))}
       </div>
       <p className="mt-3 text-[10px] leading-relaxed text-neutral-600">
-        实色=有证据的实测均分；浅色=对缺失维度的确定性推测兜底（基于同产品其他维度 / 同维度其他产品均值），仅供横向参考。括号为「已评分维度 / 总维度」。
+        {painMode
+          ? "痛点归因分析：能力评分仅作辅助参考，缺证据的维度按「未评分」处理，不做推测兜底。括号为「已评分维度 / 总维度」。"
+          : "实色=有证据的实测均分；浅色=对缺失维度的确定性推测兜底（基于同产品其他维度 / 同维度其他产品均值），仅供横向参考。括号为「已评分维度 / 总维度」。"}
       </p>
     </div>
   );
 }
 
-function FeatureMatrix({ features, cols }: { features: Feature[]; cols: string[] }) {
+function FeatureMatrix({ features, cols, painMode }: { features: Feature[]; cols: string[]; painMode?: boolean }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-white/10">
       <table className="w-full border-collapse text-sm">
@@ -777,7 +784,8 @@ function FeatureMatrix({ features, cols }: { features: Feature[]; cols: string[]
                 const scale = cell.quality_score?.scale ?? 5;
                 const real = realScore(cell);
                 const notSupported = (cell.support_status ?? "").toLowerCase() === "not_supported";
-                const est = real == null && !notSupported ? cellEstimate(f, c, features, cols) : null;
+                // 痛点归因分析:不做推测,缺证据显示「未评分」
+                const est = !painMode && real == null && !notSupported ? cellEstimate(f, c, features, cols) : null;
                 return (
                   <td key={c} className="px-3 py-3 align-top">
                     {notSupported ? (

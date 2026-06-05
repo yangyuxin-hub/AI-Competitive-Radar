@@ -975,12 +975,23 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
                    note=f"功能骨架就绪（{len(feats)} 项），按产品并行填充")
 
     # ── 段2:按产品并行填充 ──
+    # 痛点/流失归因类问题:质量分是次要的,重点是痛点与支持度。
+    # 弱化"务必拉开评分"的压力,避免对定性痛点证据硬凑 0-5 分 → 减少残余「推测」。
+    pain_intent = meta.get("analysis_intent") == "pain_attribution"
+    pain_note = (
+        "## 本次是痛点归因分析(重点不是打分)\n"
+        "本次目标是定位用户痛点与流失动因,质量分仅作辅助。**缺质量证据时坦然给 "
+        "unknown+score 0,绝不要为『拉开区分度』硬凑分**;support_status 与痛点证据优先。\n\n"
+        if pain_intent else ""
+    )
+
     def _fill(product: str) -> tuple[str, dict]:
         prod_ev = _compact_evidence(
             [e for e in ft_ev if e.get("product") == product]
         )
         fill_instruct = (
-            f"对产品「{product}」,针对下面 feature_list 中每个功能逐一评估其支持度与质量。\n"
+            pain_note
+            + f"对产品「{product}」,针对下面 feature_list 中每个功能逐一评估其支持度与质量。\n"
             '只输出 JSON: {"products":{"F001":{"support_status":"supported|partially_supported|'
             'not_supported|unknown","support_evidence_ids":["..."],"quality_score":{"score":0-5,'
             '"scale":5,"basis":"一句话依据","evidence_ids":["..."]}}}}。\n'

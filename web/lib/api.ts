@@ -29,6 +29,7 @@ export interface RunArgs {
   analysis_purpose?: string;
   user_input?: string;
   runtime_profile?: "fast" | "balanced" | "deep";
+  analysis_intent?: string; // 从 intake 草稿带回;留空则后端按 user_input 推断
 }
 
 /** 把选择题答案拼成运行参数（对齐后端 intake.assemble_meta 的口径）。 */

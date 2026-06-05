@@ -44,6 +44,7 @@ export interface ReportMeta {
   competitors: string[];
   analysis_focus: string[];
   analysis_purpose?: string;
+  analysis_intent?: string; // pain_attribution | selection | pricing | market_entry | feature_compare
   runtime_profile?: string;
   data_cutoff?: string;
   generated_at?: string;

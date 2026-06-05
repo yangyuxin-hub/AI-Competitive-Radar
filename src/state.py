@@ -33,6 +33,7 @@ def build_initial_state(
     analysis_focus: list[str],
     analysis_purpose: str = "学习竞品优点,优化自身产品",
     runtime_profile: str = "balanced",
+    analysis_intent: str = "feature_compare",
 ) -> AgentState:
     from datetime import datetime, timezone
 
@@ -48,6 +49,7 @@ def build_initial_state(
             "competitors": competitors,
             "analysis_focus": analysis_focus,
             "analysis_purpose": analysis_purpose,
+            "analysis_intent": analysis_intent,
             "runtime_profile": runtime_profile,
             "generated_at": now.isoformat(),
             "data_cutoff": now.strftime("%Y-%m-%d"),

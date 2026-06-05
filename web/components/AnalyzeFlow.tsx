@@ -75,6 +75,7 @@ export default function AnalyzeFlow() {
   const [userInput, setUserInput] = useState("");
   const [domainHint, setDomainHint] = useState<string | undefined>();
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [intakeIntent, setIntakeIntent] = useState<string | undefined>(undefined);
   const [answers, setAnswers] = useState<Answers>({});
   const [customOpts, setCustomOpts] = useState<Record<string, string[]>>({});
   const [customInput, setCustomInput] = useState<Record<string, string>>({});
@@ -108,6 +109,7 @@ export default function AnalyzeFlow() {
       const fast = await fetchQuestions(userInput, domainHint, true);
       if (intakeReqRef.current !== myReq) return;
       setQuestions(fast.questions);
+      if (typeof fast.draft?.analysis_intent === "string") setIntakeIntent(fast.draft.analysis_intent);
       setIntakeReasoning(typeof fast.draft?.reasoning === "string" ? fast.draft.reasoning : "");
       setAnswers(defaultAnswers(fast.questions));
       setCustomOpts({});
@@ -121,6 +123,7 @@ export default function AnalyzeFlow() {
         const llm = await fetchQuestions(userInput, domainHint, false);
         if (intakeReqRef.current !== myReq) return;
         setQuestions(llm.questions);
+        if (typeof llm.draft?.analysis_intent === "string") setIntakeIntent(llm.draft.analysis_intent);
         if (typeof llm.draft?.reasoning === "string" && llm.draft.reasoning) {
           setIntakeReasoning(llm.draft.reasoning);
         }
@@ -179,7 +182,7 @@ export default function AnalyzeFlow() {
   }
 
   function onRun() {
-    const args = { ...answersToRunArgs(answers, userInput), runtime_profile: runProfile };
+    const args = { ...answersToRunArgs(answers, userInput), runtime_profile: runProfile, analysis_intent: intakeIntent };
     if (!args.target_product) {
       setError("请先选择目标产品");
       return;

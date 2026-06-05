@@ -117,7 +117,8 @@ def _resolve_run_args(
     analysis_focus: Optional[list[str]],
     analysis_purpose: Optional[str],
     user_input: Optional[str],
-) -> tuple[str, list[str], list[str], str, str]:
+    analysis_intent: Optional[str] = None,
+) -> tuple[str, list[str], list[str], str, str, str]:
     dom = _load_domain_config()
     if dom:
         target_product = target_product or dom.get("target_product")
@@ -137,7 +138,14 @@ def _resolve_run_args(
     analysis_focus = analysis_focus or ["代码补全体验"]
     analysis_purpose = analysis_purpose or "学习竞品优点,优化自身产品"
     user_input = user_input or f"分析 {target_product} 与 {', '.join(competitors)} 在 {analysis_focus[0]} 上的差距"
-    return target_product, competitors, analysis_focus, analysis_purpose, user_input
+    # 意图未显式给出时,从这句话推断(痛点/选型/定价/入场/功能对比)
+    if not analysis_intent:
+        try:
+            from .intake import _detect_intent
+            analysis_intent = _detect_intent(user_input)
+        except Exception:  # noqa: BLE001
+            analysis_intent = "feature_compare"
+    return target_product, competitors, analysis_focus, analysis_purpose, user_input, analysis_intent
 
 
 def run_demo_streaming(
@@ -147,13 +155,14 @@ def run_demo_streaming(
     analysis_purpose: Optional[str] = None,
     user_input: Optional[str] = None,
     runtime_profile: str = "balanced",
+    analysis_intent: Optional[str] = None,
 ):
     """生成器: 每完成一个节点 yield (node_name, state_after_node)。
     供 Streamlit / 任何 stream UI 实时展示节点进度用。"""
     from .collector import reset_debug_file
     reset_debug_file()
-    tp, comp, focus, purpose, ui = _resolve_run_args(
-        target_product, competitors, analysis_focus, analysis_purpose, user_input
+    tp, comp, focus, purpose, ui, intent = _resolve_run_args(
+        target_product, competitors, analysis_focus, analysis_purpose, user_input, analysis_intent
     )
     app = build_app()
     initial = build_initial_state(
@@ -163,6 +172,7 @@ def run_demo_streaming(
         analysis_focus=focus,
         analysis_purpose=purpose,
         runtime_profile=runtime_profile,
+        analysis_intent=intent,
     )
     for event in app.stream(initial, config={"recursion_limit": 50}):
         # event 形如 {node_name: state_after_node}
@@ -177,11 +187,12 @@ def run_demo(
     analysis_purpose: Optional[str] = None,
     user_input: Optional[str] = None,
     runtime_profile: str = "balanced",
+    analysis_intent: Optional[str] = None,
 ) -> AgentState:
     from .collector import reset_debug_file
     reset_debug_file()
-    tp, comp, focus, purpose, ui = _resolve_run_args(
-        target_product, competitors, analysis_focus, analysis_purpose, user_input
+    tp, comp, focus, purpose, ui, intent = _resolve_run_args(
+        target_product, competitors, analysis_focus, analysis_purpose, user_input, analysis_intent
     )
 
     app = build_app()
@@ -192,6 +203,7 @@ def run_demo(
         analysis_focus=focus,
         analysis_purpose=purpose,
         runtime_profile=runtime_profile,
+        analysis_intent=intent,
     )
     # LangGraph 0.2 默认 recursion_limit=25,我们最多 collector1+analyzer2+writer1 = 4 轮重试,
     # 每轮 5 节点,理论上限 ~25。给个 50 留余量。
