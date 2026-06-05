@@ -11,7 +11,6 @@ import type {
   PricingProduct,
   PainPoint,
 } from "@/lib/schema";
-import { SUPPORT_META } from "@/lib/schema";
 import { EvidenceProvider, Chips } from "./Evidence";
 
 const SECTIONS = [
@@ -47,17 +46,93 @@ function SectionTitle({ id, children }: { id: string; children: React.ReactNode 
   );
 }
 
+/** 真实质量分:support_status=unknown 或 score<=0(Analyzer 对「证据不足」的占位)→ null(渲染「未评分」)。
+ *  与 writer._score_cell 同口径,避免把「没数据」当成真打 0 分拉低均分。 */
+function realScore(cell?: { support_status?: string; quality_score?: { score?: number } | null }): number | null {
+  if (!cell) return null;
+  if ((cell.support_status ?? "").toLowerCase() === "unknown") return null;
+  const s = cell.quality_score?.score;
+  if (typeof s !== "number" || s <= 0) return null;
+  return s;
+}
+
 function averageScores(features: Feature[], cols: string[]) {
   return Object.fromEntries(
     cols
       .map((c) => {
         const scores = features
-          .map((f) => f.products[c]?.quality_score?.score)
+          .map((f) => realScore(f.products[c]))
           .filter((x): x is number => typeof x === "number");
         return [c, scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null];
       })
       .filter(([, v]) => v != null)
   ) as Record<string, number>;
+}
+
+const _mean = (xs: number[]): number | null =>
+  xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+
+/** 缺格的「评估式推测」:确定性插值——优先用该产品在其他维度的真实均分,
+ *  否则用该维度在其他产品的真实均分。透明可解释、不调 LLM、不写回 schema,只用于 UI 兜底展示。 */
+function cellEstimate(
+  feature: Feature,
+  product: string,
+  features: Feature[],
+  cols: string[]
+): { value: number; basis: string } | null {
+  const byProduct = _mean(
+    features.map((f) => realScore(f.products[product])).filter((x): x is number => x != null)
+  );
+  if (byProduct != null) return { value: byProduct, basis: "推测·基于该产品其他维度均值" };
+  const byFeature = _mean(
+    cols.map((c) => realScore(feature.products[c])).filter((x): x is number => x != null)
+  );
+  if (byFeature != null) return { value: byFeature, basis: "推测·基于该维度其他产品均值" };
+  return null;
+}
+
+const _scoreTone = (v: number) =>
+  v >= 4 ? "bg-emerald-400" : v >= 2.5 ? "bg-sky-400" : "bg-amber-400";
+
+/** 分数可视化条:real=实色实测,estimate=虚化+「推测」,none=灰虚线「未评分」。 */
+function ScoreBar({
+  value,
+  kind,
+  scale = 5,
+  title,
+}: {
+  value: number | null;
+  kind: "real" | "estimate" | "none";
+  scale?: number;
+  title?: string;
+}) {
+  if (kind === "none" || value == null) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-neutral-600" title={title}>
+        <span className="h-1.5 w-12 rounded-full border border-dashed border-white/15" />
+        未评分
+      </span>
+    );
+  }
+  const pct = Math.max(4, Math.min(100, (value / scale) * 100));
+  const est = kind === "estimate";
+  return (
+    <span className="inline-flex items-center gap-1.5" title={title}>
+      <span className="relative h-1.5 w-12 overflow-hidden rounded-full bg-white/10">
+        <span
+          className={`absolute inset-y-0 left-0 rounded-full ${_scoreTone(value)} ${est ? "opacity-40" : ""}`}
+          style={{ width: `${pct}%` }}
+        />
+      </span>
+      <span className={`tabular-nums text-[11px] ${est ? "text-neutral-500" : "text-neutral-200"}`}>
+        {est ? `~${value.toFixed(1)}` : value}
+        <span className="text-neutral-600">/{scale}</span>
+      </span>
+      {est && (
+        <span className="rounded bg-white/5 px-1 text-[9px] leading-tight text-neutral-500">推测</span>
+      )}
+    </span>
+  );
 }
 
 function buildDecisionSummary(report: Report, cols: string[], recs: Recommendation[]) {
@@ -251,6 +326,7 @@ export default function ReportView({ report }: { report: Report }) {
         {s.feature_tree && (
           <section className="space-y-3">
             <SectionTitle id="matrix">功能对比矩阵 · {s.feature_tree.category}</SectionTitle>
+            <CapabilityChart features={s.feature_tree.features} cols={cols} />
             <FeatureMatrix features={s.feature_tree.features} cols={cols} />
           </section>
         )}
@@ -604,6 +680,70 @@ function UncertaintyBox({ notes }: { notes: string[] }) {
   );
 }
 
+function CapabilityChart({ features, cols }: { features: Feature[]; cols: string[] }) {
+  const rows = cols
+    .map((c) => {
+      const real = _mean(
+        features.map((f) => realScore(f.products[c])).filter((x): x is number => x != null)
+      );
+      const filled = _mean(
+        features
+          .map((f) => realScore(f.products[c]) ?? cellEstimate(f, c, features, cols)?.value ?? null)
+          .filter((x): x is number => x != null)
+      );
+      const n = features.filter((f) => realScore(f.products[c]) != null).length;
+      return { name: c, real, filled, n, total: features.length };
+    })
+    .sort((a, b) => (b.filled ?? -1) - (a.filled ?? -1));
+
+  return (
+    <div className="rounded-xl border border-white/10 p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-neutral-400">
+        <span>能力均分对比（满分 5）</span>
+        <span className="flex items-center gap-3 text-[10px] text-neutral-500">
+          <span className="flex items-center gap-1"><span className="h-2 w-3 rounded-sm bg-sky-400" />实测</span>
+          <span className="flex items-center gap-1"><span className="h-2 w-3 rounded-sm bg-sky-400/30" />含推测兜底</span>
+        </span>
+      </div>
+      <div className="space-y-2.5">
+        {rows.map((r) => (
+          <div key={r.name} className="flex items-center gap-3">
+            <div className="w-24 shrink-0 truncate text-xs text-neutral-300">{r.name}</div>
+            <div className="relative h-4 flex-1 overflow-hidden rounded bg-white/[0.04]">
+              {r.filled != null && (
+                <div
+                  className="absolute inset-y-0 left-0 rounded bg-sky-400/25"
+                  style={{ width: `${Math.min(100, (r.filled / 5) * 100)}%` }}
+                />
+              )}
+              {r.real != null && (
+                <div
+                  className={`absolute inset-y-0 left-0 rounded ${_scoreTone(r.real)}`}
+                  style={{ width: `${Math.min(100, (r.real / 5) * 100)}%` }}
+                />
+              )}
+            </div>
+            <div className="w-32 shrink-0 text-right text-[11px] tabular-nums">
+              {r.real != null ? (
+                <span className="text-neutral-200">{r.real.toFixed(1)}</span>
+              ) : (
+                <span className="text-neutral-600">未评分</span>
+              )}
+              {r.filled != null && (r.real == null || Math.abs(r.filled - r.real) > 0.05) && (
+                <span className="text-neutral-500"> · 含推测~{r.filled.toFixed(1)}</span>
+              )}
+              <span className="ml-1 text-neutral-600">({r.n}/{r.total})</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="mt-3 text-[10px] leading-relaxed text-neutral-600">
+        实色=有证据的实测均分；浅色=对缺失维度的确定性推测兜底（基于同产品其他维度 / 同维度其他产品均值），仅供横向参考。括号为「已评分维度 / 总维度」。
+      </p>
+    </div>
+  );
+}
+
 function FeatureMatrix({ features, cols }: { features: Feature[]; cols: string[] }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-white/10">
@@ -634,20 +774,23 @@ function FeatureMatrix({ features, cols }: { features: Feature[]; cols: string[]
                       —
                     </td>
                   );
-                const meta = SUPPORT_META[cell.support_status];
+                const scale = cell.quality_score?.scale ?? 5;
+                const real = realScore(cell);
+                const notSupported = (cell.support_status ?? "").toLowerCase() === "not_supported";
+                const est = real == null && !notSupported ? cellEstimate(f, c, features, cols) : null;
                 return (
                   <td key={c} className="px-3 py-3 align-top">
-                    <div className={`flex items-center gap-1 ${meta.tone}`}>
-                      <span>{meta.icon}</span>
-                      {cell.quality_score && (
-                        <span className="text-xs">
-                          {cell.quality_score.score}/{cell.quality_score.scale}
-                        </span>
-                      )}
-                    </div>
-                    <Chips
-                      ids={cell.quality_score?.evidence_ids ?? cell.support_evidence_ids}
-                    />
+                    {notSupported ? (
+                      <span className="text-xs text-red-400/80">✕ 不支持</span>
+                    ) : (
+                      <ScoreBar
+                        value={real ?? est?.value ?? null}
+                        kind={real != null ? "real" : est ? "estimate" : "none"}
+                        scale={scale}
+                        title={est?.basis}
+                      />
+                    )}
+                    <Chips ids={cell.quality_score?.evidence_ids ?? cell.support_evidence_ids} />
                   </td>
                 );
               })}
@@ -765,7 +908,9 @@ function PriceAbilityMap({
               <tr key={name} className="border-t border-white/10">
                 <td className="px-3 py-2 text-neutral-200">{name}</td>
                 <td className="px-3 py-2 font-mono text-sky-300">{price != null ? `$${price}/mo` : "待确认"}</td>
-                <td className="px-3 py-2 text-neutral-300">{score != null ? `${score.toFixed(1)}/5` : "—"}</td>
+                <td className="px-3 py-2">
+                  <ScoreBar value={score ?? null} kind={score != null ? "real" : "none"} />
+                </td>
                 <td className="px-3 py-2 text-neutral-400">{value}</td>
                 <td className="px-3 py-2 text-neutral-400">{threat}</td>
               </tr>
