@@ -434,7 +434,10 @@ class OfficialPageAdapter(SourceAdapter):
             with path.open(encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
             for name, p in (cfg.get("products") or {}).items():
-                self._urls[name] = list(p.get("official_pages") or [])
+                # 官网页 + 定价页都要抓:定价页是价格最权威出处,旧版漏加导致定价只能靠二手聚合站
+                urls = list(p.get("official_pages") or []) + list(p.get("pricing_pages") or [])
+                seen: set[str] = set()
+                self._urls[name] = [u for u in urls if not (u in seen or seen.add(u))]
         except Exception:
             self._urls = {}
         # 动态 URL 覆盖 yaml 配置
@@ -513,6 +516,60 @@ class OfficialPageAdapter(SourceAdapter):
             finally:
                 browser.close()
 
+    # 价格 token:$/￥/€/£ + 数字(允许 .,),如 $10、$13.49、￥99
+    _PRICE_RE = re.compile(r"[\$￥€£]\s?\d[\d.,]*")
+
+    @staticmethod
+    def _price_snippets(soup, html: str) -> list[str]:
+        """定价页专用:抓真实档位价。两条路径互补——
+        1) 可见 DOM:对每个含价格 token 的文本节点,上溯到「卡片级」容器(8~220 字符),
+           得到「Plus $10 per user/month …」这类 plan名+价 的片段(突破 40 字符门槛);
+        2) 内嵌 JSON(__NEXT_DATA__ / ld+json):Notion/Asana 把价放 JSON 里,DOM 兜不住时补。
+        返回去重后的短片段列表(供 _extract 置顶为 pricing 证据)。"""
+        snips: list[str] = []
+        seen: set[str] = set()
+
+        def _add(t: str) -> None:
+            t = (t or "").strip()
+            if not t or len(t) > 220 or not OfficialPageAdapter._PRICE_RE.search(t):
+                return
+            key = t[:120]
+            if key not in seen:
+                seen.add(key)
+                snips.append(t)
+
+        # 路径 1:可见 DOM 卡片
+        try:
+            for node in soup.find_all(string=OfficialPageAdapter._PRICE_RE):
+                cur = node.parent
+                for _ in range(4):  # 上溯至多 4 层找到含价的卡片容器
+                    if cur is None:
+                        break
+                    txt = cur.get_text(" ", strip=True)
+                    if 8 <= len(txt) <= 220 and OfficialPageAdapter._PRICE_RE.search(txt):
+                        _add(txt)
+                        break
+                    cur = cur.parent
+        except Exception:  # noqa: BLE001 — 提取尽力而为,失败不阻断
+            pass
+
+        # 路径 2:内嵌 JSON 里的 price/amount + 货币
+        try:
+            for sc in soup.find_all("script"):
+                raw = sc.string or sc.get_text() or ""
+                if not raw or ('"price"' not in raw and '"amount"' not in raw and "priceCurrency" not in raw):
+                    continue
+                for m in re.finditer(
+                    r'"(?:name|tier|plan|title)"\s*:\s*"([^"]{1,40})"[^{}]{0,200}?'
+                    r'"(?:price|amount)"\s*:\s*"?(\d[\d.]*)"?', raw):
+                    _add(f"{m.group(1)}: ${m.group(2)}")
+                if len(snips) >= 12:
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+
+        return snips[:12]
+
     @staticmethod
     def _extract(product: str, url: str, html: str) -> list[dict]:
         try:
@@ -550,6 +607,12 @@ class OfficialPageAdapter(SourceAdapter):
             if any(kw in text_lower for kw in _NOISE_KEYWORDS):
                 continue
             chunks.append(text)
+
+        # 定价页专用:价格藏在短 <span>$10</span> 或内嵌 JSON,会被上面 40 字符门槛漏掉。
+        # 单独抓「含价格 token 的卡片级文本」放到最前,确保真实档位价进证据。
+        if default_claim_type == "pricing":
+            price_snips = OfficialPageAdapter._price_snippets(soup, html)
+            chunks = price_snips + [c for c in chunks if c not in price_snips]
 
         # 信息密度排序: 优先保留含有数字、功能关键词的段落
         def _info_density(t: str) -> int:
