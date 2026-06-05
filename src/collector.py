@@ -95,6 +95,31 @@ def _load_products_config() -> dict:
         return {}
 
 
+def _search_url_candidates(product: str, max_results: int = 6) -> list[dict]:
+    """给 url_discovery 接地的真实候选:搜「X official site」「X pricing」,返回 [{title,url}]。
+    让 LLM 从真实搜索结果里挑官方域名,而非凭产品名瞎猜(否则会抓回 Uber/无关站当官网)。
+    无搜索能力时返回 [](LLM 仍可保守返回空,胜过编造)。"""
+    try:
+        from . import search
+        if not search.search_available():
+            return []
+        out: list[dict] = []
+        seen: set = set()
+        for q in (f"{product} official site", f"{product} pricing"):
+            try:
+                for r in search.web_search(q, max_results=max_results):
+                    url = (r.get("url") or "").strip()
+                    if not url or url in seen:
+                        continue
+                    seen.add(url)
+                    out.append({"title": (r.get("title") or "").strip()[:80], "url": url})
+            except Exception:  # noqa: BLE001
+                continue
+        return out[:12]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def discover_urls(product: str, products_config: Optional[dict] = None, allow_llm: bool = True) -> dict:
     """为单个产品发现官网 URL。
 
@@ -128,7 +153,8 @@ def discover_urls(product: str, products_config: Optional[dict] = None, allow_ll
             "只返回官方域名下的页面，不要第三方网站。"
         )
 
-    payload = {"product": product, "language": "en"}
+    payload = {"product": product, "language": "en",
+               "search_results": _search_url_candidates(product)}
     try:
         result = llm.call_json(system, payload, max_tokens=1024, label=f"url_discovery_{product}")
         return {

@@ -361,14 +361,70 @@ def _llm_available() -> bool:
     return bool(os.environ.get("ARK_API_KEY"))
 
 
+def _guess_target_for_discovery(user_input: str) -> str:
+    """竞品发现搜索用的目标名:优先取用户输入里命中的已知产品,否则取整句(让搜索自己消歧)。"""
+    text = user_input or ""
+    amap = _product_alias_map()
+    for nk, canon in amap.items():
+        # 用别名原文匹配(不区分大小写),命中即用规范名
+        for meta in [load_products().get(canon, {})]:
+            for alias in [canon, *(meta.get("aliases") or [])]:
+                if alias and alias.lower() in text.lower():
+                    return canon
+    return text.strip()
+
+
+def _competitor_web_context(user_input: str, max_results: int = 8) -> list[dict]:
+    """实时搜索竞品线索 —— 破解 LLM 训练截止盲区(认不出 Stitch/Claude Designer 这类新锐)。
+    搜「X alternatives/competitors 2026」,把标题+摘要交给 intake LLM 去提取主流 + 新锐 AI 玩家。
+    无搜索能力时返回 [](启发式/无网络路径不受影响)。可用 INTAKE_DISCOVER=0 关闭。"""
+    if os.environ.get("INTAKE_DISCOVER", "1").strip() in ("0", "false", "False"):
+        return []
+    try:
+        from . import search
+        if not search.search_available():
+            return []
+        target = _guess_target_for_discovery(user_input)
+        if not target:
+            return []
+        queries = [
+            f"{target} alternatives 2026",
+            f"best {target} competitors",
+            f"AI {target} alternative new",  # 偏向召回 AI 原生/新锐颠覆者
+        ]
+        seen: set = set()
+        out: list[dict] = []
+        for q in queries:
+            try:
+                for r in search.web_search(q, max_results=max_results):
+                    title = (r.get("title") or "").strip()
+                    key = title.lower()
+                    if not title or key in seen:
+                        continue
+                    seen.add(key)
+                    out.append({"title": title, "snippet": (r.get("content") or "")[:200]})
+            except Exception:  # noqa: BLE001 — 单条搜索失败不阻断
+                continue
+            if len(out) >= 18:
+                break
+        return out[:18]
+    except Exception as e:  # noqa: BLE001
+        print(f"[intake] 竞品发现搜索失败,跳过: {type(e).__name__}: {e}")
+        return []
+
+
 def _propose_via_llm(user_input: str) -> Optional[dict]:
     try:
         from .llm import get_llm
+        signals = _competitor_web_context(user_input)
+        if signals:
+            print(f"[intake] 竞品发现:实时搜到 {len(signals)} 条线索,交给 LLM 提取主流+新锐")
         draft = get_llm().call_json(
             system_prompt=_load_prompt("intake"),
             user_payload={
                 "user_input": user_input,
                 "known_products": _known_product_names(),
+                "web_competitor_signals": signals,
             },
             max_tokens=1024,
             label="intake",
