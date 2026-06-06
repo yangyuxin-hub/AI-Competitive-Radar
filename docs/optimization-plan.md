@@ -63,9 +63,12 @@
    - 性能:prompt 变小 → 快、省 token
    - 可控:能看清"这结论召回了哪几条" → 好审核
 
-**这是治本功能矩阵塌陷的正解**(比剪枝/打回更根本)。架构改动大,定方案后单独排期实现。
-
-> 实现要点(排期时细化):evidence 索引存哪(内存/sqlite/向量库)、召回用 embedding 还是 BM25/关键词、每维度召回 top-k 与阈值、与现有 `_compact_evidence` 的关系(召回取代/前置于分桶)。
+> **❌ 诊断后决定不建(2026-06-06)**。详见 [rag-recall-design.md](rag-recall-design.md)(完整设计已写,留档)。
+> `scripts/diag_collapse.py` 在三方向样例上判定每个 unknown 格子是"错配(RAG能救)"还是"缺失(采集没覆盖)":
+> **48 格仅 10 unknown(矩阵其实已基本不塌),其中 RAG 可救的"错配"≤5(还被宽匹配器高估),其余是采集缺失**。
+> 为救 ≤5 格引入 embedding 依赖 + 调阈值 + 跨语种测,投入产出倒挂 → **不建**。
+> **改走轻量「定向采补覆盖缺失维度」**(见下,已落地):spine 给维度英文别名,gap-recollect 用英文别名搜官网/文档,
+> 专治"缺失-维度级"(中文维度名搜英文文档命中低)。剩余少量"错配"靠补采加证据 + 重出兜住。
 
 ---
 
@@ -103,5 +106,6 @@
 - [x] P0 · ④-1 chip 可跳转溯源卡 —— 正文 markdown 的 `[SXXXXXXX]` 解析成富 chip(favicon+域名/悬浮概要/点击弹面板含可跳转原网址)。`ReportView.tsx` `injectChips` + react-markdown `components`
 - [x] P0 · ②-2 分层定价抽取(`tier.segment`)—— pricing 抽取按档位定位归类 个人/团队/企业/通用;writer 定价表 + 前端卡片 + `PricingTier.segment` 类型
 - [x] P0 · ④-2 内容覆盖打回(reviewer **R8**)—— 定价/功能整缺 → 打回 collector 补采;`REVIEWER_CONTENT_GATE=0` 可降级 warning
-- [ ] P1 · ③ 证据索引 + 按维度召回(待排期,先出详设)
+- [~] P1 · ③ RAG 召回 —— **诊断后不建**(错配≤5/48,投入产出倒挂);改走轻量定向采补 ↓
+- [x] P1 · ③' 定向采补覆盖缺失维度 —— spine 给维度 `name_en`,gap-recollect 用英文别名搜官网/文档,治"缺失-维度级"
 - [ ] P1 · ① 画像驱动检索
