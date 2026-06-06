@@ -221,7 +221,8 @@ RUNTIME_PROFILES = {
         "skills": False,
         "cache": True,
         "url_discovery_llm": False,
-        "timeout_sec": 45,
+        # 官网 SPA(Playwright 渲染大页)抓取较慢,45s 在多产品时易整体超时丢官网证据 → 放宽到 70s
+        "timeout_sec": 70,
         "max_evidence_per_product": 32,
     },
     "deep": {
@@ -449,6 +450,32 @@ def classify_claim_types_llm(snippets: list[str]) -> Optional[list[Optional[str]
     except Exception as e:  # noqa: BLE001 — 失败回退关键词,不阻断采集
         print(f"[collector] LLM claim_type 分类失败,回退关键词: {type(e).__name__}: {e}")
         return None
+
+
+def _reclassify_official_claim_types(evidence: list[dict]) -> int:
+    """采集收尾:对官网证据的 claim_type 做一次批量 LLM 精分类(替代关键词,任何语言/行业自适应)。
+    放在抓取之后、不在 timed fetch 里 → 不拖慢采集、不触发超时。失败/无 LLM 保留关键词标签。
+    返回被修正的条数。"""
+    if not _claim_llm_enabled():
+        return 0
+    idxs = [i for i, e in enumerate(evidence) if e.get("source_type") == "official_page"]
+    if not idxs:
+        return 0
+    changed = 0
+    batch = int(os.environ.get("CLAIM_LLM_BATCH", "40"))
+    for s in range(0, len(idxs), batch):
+        chunk = idxs[s:s + batch]
+        labels = classify_claim_types_llm(
+            [(evidence[i].get("extracted_snippet") or evidence[i].get("claim") or "") for i in chunk])
+        if not labels:
+            continue
+        for j, i in enumerate(chunk):
+            if labels[j] and labels[j] != evidence[i].get("claim_type"):
+                evidence[i]["claim_type"] = labels[j]
+                changed += 1
+    if changed:
+        print(f"[collector] 官网证据 claim_type LLM 批量精分类:修正 {changed}/{len(idxs)} 条")
+    return changed
 
 
 def patch_by_requirements(
@@ -762,16 +789,15 @@ class OfficialPageAdapter(SourceAdapter):
 
         observed = datetime.now().strftime("%Y-%m-%d")
         out: list[dict] = []
-        selected = chunks[:15]
-        # claim_type 分类:优先 LLM 批量分(一页一次调用,任何语言/行业自适应);判不准/无 LLM → 关键词兜底
-        llm_labels = classify_claim_types_llm(selected) if _claim_llm_enabled() else None
-        for idx, snippet in enumerate(selected):
+        # claim_type 用关键词快速定标(抓取阶段要快,不在 timed fetch 里塞 LLM 调用——否则 SPA 大页
+        # 叠加 25s/页 的 LLM 调用会冲爆 wall-clock 超时,官网证据反被砍。LLM 精分类移到 collector_node
+        # 收尾做一次批量(见 _reclassify_official_claim_types),不阻塞抓取。
+        for idx, snippet in enumerate(chunks[:15]):
             claim = snippet if len(snippet) <= 120 else snippet[:117] + "..."
             # 加入 idx 避免同一页面内相同文本段产生相同 evidence_id
             eid = generate_evidence_id(product, f"{url}#{idx}", claim)
 
-            claim_type = (llm_labels[idx] if llm_labels and llm_labels[idx]
-                          else infer_claim_type(snippet, default_claim_type, OfficialPageAdapter._PRICE_RE))
+            claim_type = infer_claim_type(snippet, default_claim_type, OfficialPageAdapter._PRICE_RE)
 
             # 根据片段长度和信息量调整置信度
             conf = 0.60
@@ -1259,6 +1285,9 @@ def collector_node(state: AgentState) -> AgentState:
 
     # 每个产品按 confidence 取 top N；不同运行模式控制 prompt 体积与等待时间
     merged = cap_evidence_per_product(merged, limit=int(settings["max_evidence_per_product"]))
+
+    # 官网证据 claim_type 批量 LLM 精分类(抓取已完成,不影响超时)
+    _reclassify_official_claim_types(merged)
     dump_evidence_debug(merged, run_id=run_id)
 
     # ── 官网获取 check:官网是最权威源(功能/定价大量靠它),逐产品核对到底抓到没有,没抓到明确报红 ──
