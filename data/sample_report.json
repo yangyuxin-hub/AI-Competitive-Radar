@@ -417,6 +417,76 @@
         "user_expectation": "Agent 能力 GA 化,与 Cursor/Windsurf 缩短至 1 个 minor 周期内",
         "confidence": 0.80
       }
+    ],
+    "praise_points": [
+      {
+        "praise_id": "PR001",
+        "description": "跨文件补全准确性强,用户主观估计召回约 80%,重构任务体验好",
+        "frequency": {
+          "level": "high",
+          "count": "多条独立用户反馈一致称赞",
+          "sample_size": 3,
+          "evidence_ids": ["SCABE005", "SCABE007"]
+        },
+        "affected_products": ["Cursor"],
+        "affected_segments": ["U001"],
+        "confidence": 0.80
+      },
+      {
+        "praise_id": "PR002",
+        "description": "Agent 模式已 GA,可端到端执行多文件任务 + 终端命令,效率提升明显",
+        "frequency": {
+          "level": "medium",
+          "count": "2 条用户/第三方反馈",
+          "sample_size": 2,
+          "evidence_ids": ["SCABE002", "SCABE006"]
+        },
+        "affected_products": ["Cursor"],
+        "affected_segments": ["U001"],
+        "confidence": 0.78
+      }
+    ]
+  },
+
+  "competitor_landscape": {
+    "direct": [
+      {"name": "Windsurf", "relation": "direct",
+       "reason": "同为 AI-first 代码编辑器,正面争夺同一批重度开发者,Cascade Agent 与 Cursor Agent 直接对标",
+       "evidence_ids": ["SDEAD001"]},
+      {"name": "GitHubCopilot", "relation": "direct",
+       "reason": "最普及的 AI 编码助手,背靠 GitHub/VS Code 生态与企业渠道,是企业市场的主要对手",
+       "evidence_ids": ["SFACE001"]}
+    ],
+    "indirect": [
+      {"name": "传统 IDE + 通用对话模型", "relation": "indirect",
+       "reason": "不更换编辑器,用 VS Code/JetBrains + ChatGPT/Claude 做补全与答疑的低成本组合,分流价格敏感用户",
+       "evidence_ids": []}
+    ],
+    "alternative": [
+      {"name": "开源/自托管编码 Agent", "relation": "alternative",
+       "reason": "面向高级与隐私敏感用户的可控替代路径(自带模型 API、本地部署),侵蚀对成本与数据主权敏感的人群",
+       "evidence_ids": []}
+    ],
+    "selection_rationale": "纳入标准:面向同一开发者群体、解决同一核心任务(AI 辅助编码)、存在真实替代关系、且有足够公开证据可分析。Windsurf / GitHub Copilot 满足直接竞品条件并有充分证据,作为重点对比对象;传统 IDE+通用模型、开源 Agent 作为间接/替代方案纳入格局判断但不逐项跑分。"
+  },
+
+  "positioning_map": {
+    "products": [
+      {"name": "Cursor", "target_user": "重度 AI 编程开发者 / 独立开发者",
+       "core_scenario": "项目级代码生成、理解与多文件编辑",
+       "value_proposition": "AI-first 代码编辑器:跨文件上下文 + Agent 端到端执行,把 AI 做进编辑器核心",
+       "positioning_label": "AI IDE",
+       "evidence_ids": ["SCABE002", "SCABE003"]},
+      {"name": "Windsurf", "target_user": "开发者 / 追求响应速度的团队",
+       "core_scenario": "Agentic coding workflow,实时协作式自动编码",
+       "value_proposition": "以 Cascade 实时协作 Agent + 自研推理栈主打速度感知的 Agent IDE",
+       "positioning_label": "Agent IDE",
+       "evidence_ids": ["SDEAD001", "SDEAD004"]},
+      {"name": "GitHubCopilot", "target_user": "广泛开发者 / 企业团队",
+       "core_scenario": "IDE 内补全、Chat 问答、代码生成",
+       "value_proposition": "依托 GitHub 生态与企业渠道的 AI pair programmer,覆盖最广开发者基础",
+       "positioning_label": "开发者助手",
+       "evidence_ids": ["SFACE001"]}
     ]
   },
 

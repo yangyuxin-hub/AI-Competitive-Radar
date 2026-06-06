@@ -5,10 +5,78 @@
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 from typing import Optional
 
 from .state import AgentState
+
+
+_ORDINALS = ["一", "二", "三", "四", "五", "六", "七", "八", "九",
+             "十", "十一", "十二", "十三", "十四", "十五"]
+
+
+def _renumber_sections(sections: list[str]) -> list[str]:
+    """中央重编号:给每个非空 section 的首个顶级 `## ` 标题顺序编上中文序号。
+    各 _render_* 函数标题里若已带旧序号(## 一、…)会被剥掉重排,这样调整章节顺序/增删
+    模块时不必逐个改函数。h1(`# `)标题与 `### ` 子标题不动。"""
+    out: list[str] = []
+    idx = 0
+    for s in sections:
+        if not s or not s.strip():
+            continue
+        lines = s.split("\n")
+        for i, ln in enumerate(lines):
+            if ln.startswith("## "):
+                title = re.sub(r"^##\s+(?:[一二三四五六七八九十]+、\s*)?", "", ln)
+                num = _ORDINALS[idx] if idx < len(_ORDINALS) else str(idx + 1)
+                lines[i] = f"## {num}、{title}"
+                idx += 1
+                break
+        out.append("\n".join(lines))
+    return out
+
+
+_RELATION_LABELS = {"direct": "直接竞品", "indirect": "间接竞品", "alternative": "替代方案"}
+
+
+def _render_competitor_landscape(landscape: dict) -> str:
+    if not landscape:
+        return ""
+    rows: list[str] = []
+    for key in ("direct", "indirect", "alternative"):
+        for item in landscape.get(key) or []:
+            name = item.get("name", "?")
+            reason = item.get("reason", "")
+            ev = cite(item.get("evidence_ids") or [])
+            rows.append(f"| {_RELATION_LABELS.get(key, key)} | {name} | {reason} | {ev} |")
+    if not rows:
+        return ""
+    lines = ["## 竞品格局(直接 / 间接 / 替代)\n"]
+    lines.append("| 关系 | 竞品 | 为何纳入 | 证据 |")
+    lines.append("|------|------|----------|------|")
+    lines.extend(rows)
+    rationale = landscape.get("selection_rationale")
+    if rationale:
+        lines.append("")
+        lines.append(f"> **竞品筛选理由**:{rationale}")
+    return "\n".join(lines)
+
+
+def _render_positioning_map(positioning: dict) -> str:
+    products = (positioning or {}).get("products") or []
+    if not products:
+        return ""
+    lines = ["## 产品定位地图\n"]
+    lines.append("| 产品 | 目标用户 | 核心场景 | 价值主张 | 定位标签 | 证据 |")
+    lines.append("|------|----------|----------|----------|----------|------|")
+    for p in products:
+        ev = cite(p.get("evidence_ids") or [])
+        lines.append(
+            f"| {p.get('name', '?')} | {p.get('target_user', '')} | {p.get('core_scenario', '')} | "
+            f"{p.get('value_proposition', '')} | {p.get('positioning_label', '')} | {ev} |"
+        )
+    return "\n".join(lines)
 
 
 _SUPPORT_ICONS = {
@@ -25,6 +93,7 @@ _GAP_LABELS = {
     "usability": "易用性",
     "performance": "性能",
     "insufficient_evidence": "证据不足",
+    "parity_unrated": "能力对等(未评分)",
     "unknown": "待确认",
 }
 
@@ -106,7 +175,15 @@ def _render_executive_summary(schema: dict, meta: dict) -> str:
     recs = schema.get("recommendations") or []
     pains = (schema.get("user_persona") or {}).get("pain_points") or []
 
-    if leader and leader == target:
+    if len(avgs) < 2:
+        # 不足 2 个产品有质量分 → 评分对比不成立,不宣布领先(避免单格误导)
+        if avgs:
+            only = next(iter(avgs))
+            position = (f"仅 {only} 有足够质量证据({avgs[only]:.1f}/5),"
+                        "其余产品质量证据不足,暂不判定综合领先,功能对比以「是否具备」为主。")
+        else:
+            position = "当前缺少质量证据,无法形成综合评分,功能对比以「是否具备」为主。"
+    elif leader and leader == target:
         position = f"{target} 当前综合评分领先({avgs[leader]:.1f}/5)。"
     elif leader and target_score is not None:
         position = (
@@ -245,13 +322,23 @@ def _render_score_overview(feature_tree: dict, products: list[str]) -> str:
         by_product = feat.get("products") or {}
         cells = []
         for product in products:
-            score = _score_cell(by_product.get(product) or {})
-            if score is None:
-                cells.append("—")
-            else:
+            pdata = by_product.get(product) or {}
+            score = _score_cell(pdata)
+            if score is not None:
                 product_scores.setdefault(product, []).append(score)
                 cells.append(f"{score:.1f}/5")
-        scored_in_row = [c for c in cells if c != "—"]
+            else:
+                # 无质量分:若官网已确认具备,显示支持度图标(不再一律 "—" 显得整列空白)
+                status = (pdata.get("support_status") or "").lower()
+                if status == "supported":
+                    cells.append("✅具备")
+                elif status == "partially_supported":
+                    cells.append("⚠️部分")
+                elif status == "not_supported":
+                    cells.append("❌无")
+                else:
+                    cells.append("—")
+        scored_in_row = [c for c in cells if c not in ("—", "✅具备", "⚠️部分", "❌无")]
         gap = feat.get("gap") or {}
         winner = gap.get("winner")
         reason = gap.get("reason", "")
@@ -277,15 +364,19 @@ def _render_score_overview(feature_tree: dict, products: list[str]) -> str:
     for product in products:
         scores = product_scores.get(product) or []
         avg_cells.append(f"**{sum(scores) / len(scores):.1f}/5**" if scores else "—")
-    leader = "—"
     ranked = [
         (sum(scores) / len(scores), product)
         for product, scores in product_scores.items()
         if scores
     ]
-    if ranked:
-        leader = max(ranked)[1]
-    lines.append("| **综合均分** | " + " | ".join(avg_cells) + f" | **{leader} 综合领先** | 作为定位判断的第一层依据 |")
+    # 只有 ≥2 个产品有质量分时才宣布"综合领先";否则不下结论(避免单格=领先的误导)
+    if len(ranked) >= 2:
+        leader_text = f"**{max(ranked)[1]} 综合领先**"
+        implication = "作为定位判断的第一层依据"
+    else:
+        leader_text = "评分覆盖过低,不判定综合领先"
+        implication = "需补采用户/第三方质量证据后再比"
+    lines.append("| **综合均分** | " + " | ".join(avg_cells) + f" | {leader_text} | {implication} |")
     return "\n".join(lines)
 
 
@@ -429,7 +520,7 @@ def _render_personas(user_persona: dict, evidence: Optional[list[dict]] = None) 
         e.get("evidence_id") for e in (evidence or [])
         if str(e.get("source_url") or "").startswith("synthetic")
     }
-    lines = ["## 七、用户画像与痛点\n"]
+    lines = ["## 用户之声 — 画像 / 正向反馈 / 痛点\n"]
 
     segs = user_persona.get("user_segments") or []
     if segs:
@@ -440,6 +531,25 @@ def _render_personas(user_persona: dict, evidence: Optional[list[dict]] = None) 
             desc = u.get("description", "")
             ev = cite(u.get("evidence_ids") or [])
             lines.append(f"- **{uid} {name}** — {desc} {ev}")
+        lines.append("")
+
+    praises = user_persona.get("praise_points") or []
+    if praises:
+        lines.append("### 正向反馈(高频表扬)\n")
+        lines.append("| 亮点 | 热度 | 出现频次 | 涉及产品 | 证据 |")
+        lines.append("|------|------|----------|----------|------|")
+        for p in praises:
+            prid = p.get("praise_id", "?")
+            desc = p.get("description", "")
+            freq = p.get("frequency") or {}
+            level = freq.get("level", "?")
+            count = freq.get("count", "")
+            ev_ids = freq.get("evidence_ids") or p.get("evidence_ids") or []
+            ev = cite(ev_ids)
+            synth_only = bool(ev_ids) and synthetic_ids and all(i in synthetic_ids for i in ev_ids)
+            desc_md = f"【模拟】{desc}" if synth_only else desc
+            affected = ", ".join(p.get("affected_products") or [])
+            lines.append(f"| {prid} {desc_md} | {level} | {count} | {affected or '—'} | {ev} |")
         lines.append("")
 
     pains = user_persona.get("pain_points") or []
@@ -532,6 +642,9 @@ def writer_node(state: AgentState) -> AgentState:
     products = _products(meta)
     evidence = state.get("raw_evidence") or []
 
+    # 章节顺序对齐 8 模块框架:概览 → 竞品格局 → 定位地图 → 功能对比(评分+差距) →
+    # 定价 → 用户之声 → 竞争洞察(SWOT) → 建议;证据覆盖/不确定性作为支撑章节收尾。
+    feature_tree = schema.get("feature_tree") or {}
     sections = [
         _render_header(
             meta,
@@ -540,17 +653,17 @@ def writer_node(state: AgentState) -> AgentState:
             focus=list(meta.get("analysis_focus") or []),
         ),
         _render_executive_summary(schema, meta),
+        _render_competitor_landscape(schema.get("competitor_landscape") or {}),
+        _render_positioning_map(schema.get("positioning_map") or {}),
+        _render_score_overview(feature_tree, products),
+        _render_feature_gaps(feature_tree),
+        _render_pricing(schema.get("pricing_model") or {}, feature_tree, products),
+        _render_personas(schema.get("user_persona") or {}, evidence),
+        _render_swot(schema.get("swot") or {}),
+        _render_recommendations(schema.get("recommendations") or []),
         _render_evidence_coverage(evidence),
         _render_uncertainty(evidence, schema),
-        _render_score_overview(
-            schema.get("feature_tree") or {},
-            products,
-        ),
-        _render_feature_gaps(schema.get("feature_tree") or {}),
-        _render_pricing(schema.get("pricing_model") or {}, schema.get("feature_tree") or {}, products),
-        _render_personas(schema.get("user_persona") or {}, evidence),
-        _render_recommendations(schema.get("recommendations") or []),
-        _render_swot(schema.get("swot") or {}),
     ]
+    sections = _renumber_sections(sections)
     report = "\n\n".join(s for s in sections if s.strip())
     return {**state, "report_draft": report}

@@ -321,6 +321,7 @@ def _fallback_facts(evidence: list[dict], meta: dict, reason: str) -> dict:
                     "confidence": 0.35 if pain_ids else 0.0,
                 }
             ] if pain_ids else [],
+            "praise_points": [],
         },
     }
 
@@ -391,6 +392,24 @@ def _fallback_derivations(facts: dict, evidence: list[dict], meta: dict, reason:
                 },
             }
         ],
+        "competitor_landscape": {
+            "direct": [
+                {"name": c, "relation": "direct",
+                 "reason": "本次分析纳入的对比竞品", "evidence_ids": []}
+                for c in (meta.get("competitors") or [])
+            ],
+            "indirect": [],
+            "alternative": [],
+            "selection_rationale": f"模型推导阶段超时({reason});竞品格局按本次分析输入的竞品列表保守给出,未做关系细分。",
+        },
+        "positioning_map": {
+            "products": [
+                {"name": p, "target_user": "", "core_scenario": "",
+                 "value_proposition": "模型推导超时,定位信息待补", "positioning_label": "",
+                 "evidence_ids": []}
+                for p in _target_products(meta)
+            ],
+        },
     }
 
 
@@ -828,8 +847,13 @@ _FACTS_SECTIONS = {
     },
     "user_persona": {
         "claim_types": ("user_pain", "market_signal", "performance_quality"),
-        "instruct": "本次任务只输出 `user_persona` 这一个顶层字段(user_segments + pain_points)。"
-                    "不要输出 feature_tree / pricing_model。",
+        "instruct": "本次任务只输出 `user_persona` 这一个顶层字段"
+                    "(user_segments + pain_points + praise_points)。不要输出 feature_tree / pricing_model。\n"
+                    "- pain_points:高频负向反馈/痛点(保持原结构);\n"
+                    "- praise_points:高频正向反馈/被用户反复称赞的亮点。每条 {praise_id:PR001..,"
+                    "description, frequency:{level,count,sample_size,evidence_ids}, affected_products, confidence}。\n"
+                    "- praise_points.frequency.evidence_ids 优先用 performance_quality 的正面证据;"
+                    "**无正向证据就给空数组,严禁为凑数把痛点/负面证据塞进来**。",
     },
 }
 
@@ -872,8 +896,18 @@ def _compute_gap(name: str, products_block: dict, meta: dict) -> dict:
                 + ((pdata.get("quality_score") or {}).get("evidence_ids") or []))[:4]
 
     if not rated:
+        # 全员都没质量分,但若官网已确认各产品都具备 → 是「能力对等、未评分」,不是「没证据」
+        supported = [(p, d) for p, d in products_block.items()
+                     if (d.get("support_status") or "").lower() in ("supported", "partially_supported")]
+        if len(supported) >= 2:
+            sids: list[str] = []
+            for _, d in supported:
+                sids += (d.get("support_evidence_ids") or [])
+            return {"winner": "unknown", "gap_type": "parity_unrated",
+                    "reason": f"各产品均具备「{name}」能力(官网/证据确认),但缺少用户质量证据,暂不分优劣",
+                    "evidence_ids": sids[:4], "confidence": 0.2}
         return {"winner": "unknown", "gap_type": "unknown",
-                "reason": f"各产品在「{name}」上均缺少质量证据，暂不判断胜负",
+                "reason": f"各产品在「{name}」上均缺少证据，暂不判断胜负",
                 "evidence_ids": [], "confidence": 0.0}
 
     if len(rated) == 1:
@@ -907,10 +941,17 @@ def _feature_spine(system_base: str, evidence: list[dict], meta: dict) -> list[d
     ft_ev = [e for e in evidence if e.get("claim_type") in _FT_CLAIM_TYPES]
     spine_instruct = (
         f"本次只做一件事:基于证据,列出 {focus} 维度下 4-6 个**适合跨产品横向对比**的功能点。\n"
-        "要求:功能维度必须**产品中立**(是该品类的通用对比维度,不能是某个产品的专有叫法/卖点),"
-        "这样每个产品都能在同一维度被公平评估;优先选证据里反复出现、各产品都可能涉及的维度。\n"
+        "要求:\n"
+        "1. **产品中立**:是该品类的通用对比维度,不能是某个产品的专有叫法/卖点,这样每个产品都能在同一维度被公平评估。\n"
+        "2. **粒度必须是「产品能力级」,不是「工程实现细节级」**:维度应是用户能感知、**官网产品介绍/功能页里会专门描述、"
+        "各产品都可能具备**的能力模块。**绝不要**把一个能力拆成实现细节——那种维度官网不会逐条写、证据极稀疏,"
+        "会导致整列全空、矩阵塌方。\n"
+        "   - ✅ 好维度(官网会写、可对比):实时多人协同 / 组件与设计系统 / 原型与交互 / 开发者交付 / 版本管理\n"
+        "   - ❌ 坏维度(太细、官网不会逐条写、证据接不住):实时光标同步 / 操作同步延迟 / 编辑冲突处理 / 断网重连恢复\n"
+        "3. **维度必须能被现有证据接住**:优先选 raw_evidence 里反复出现、且 target 和至少一个 competitor 都涉及的能力;"
+        "宁可少给两个扎实维度,也不要为凑数造出证据接不住的细维度。\n"
         '只输出 JSON: {"features":[{"feature_id":"F001","name":"功能名"}]}。\n'
-        "feature_id 用 F001/F002…;name 尽量简洁(≤10字);不要输出 products / gap / quality 等其它字段。"
+        "feature_id 用 F001/F002…;name 用产品能力级短语(≤12字);不要输出 products / gap / quality 等其它字段。"
     )
     spine = get_llm().call_json(
         f"{system_base}\n\n## 本次任务范围(重要)\n{spine_instruct}",
@@ -1018,21 +1059,27 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
             '"scale":5,"basis":"一句话依据","evidence_ids":["..."]}}}}。\n'
             "support_evidence_ids 只能用 feature_existence 证据;quality_score.evidence_ids 只能用 "
             "performance_quality / user_pain 证据。\n"
-            "## 评分锚点(务必拉开区分度,不要都给 3-4 分)\n"
-            "- 5=多条第三方/用户证据一致称该功能体验业界领先;4=明确优于同类,证据较强;\n"
-            "- 3=可用但中规中矩 / 评价不一;2=明显短板或负面反馈较多;1=几乎不可用;\n"
-            "- 0=**该功能无任何质量证据** → 必须同时 support_status:unknown(不是真实低分)。\n"
+            "## 关键:支持度 与 质量分 分开判,各用各的证据(不要绑死)\n"
+            "### support_status —— 该产品**是否具备**这个能力(优先用 feature_existence / 官网 vendor_claim 证据)\n"
+            "- supported=官网功能页/产品介绍明确描述了该能力;partially_supported=只部分具备或明显受限;\n"
+            "- not_supported=证据明确表明没有;unknown=**连官网都没有任何相关介绍**(真的一点线索都没有时才用)。\n"
+            "- **核心:官网产品介绍能证明『具备』,就给 supported,哪怕完全没有用户体验数据**——"
+            "绝不要因为缺质量证据,就把本可由官网确认的支持度也写成 unknown。这是矩阵不塌方的关键。\n"
+            "### quality_score —— 该能力**好不好**(只用 performance_quality / user_pain 证据,严禁用官网营销话术补分)\n"
+            "- 5=多条用户/第三方证据一致称业界领先;4=明确优于同类;3=可用/评价不一;2=明显短板;1=几乎不可用;\n"
+            "- 0=**没有任何质量证据** → score 0,basis 写『仅确认具备,无质量证据』;"
+            "**这条只代表没评分,不要因此改动上面的 support_status**。\n"
             "## 纪律\n"
-            "- 证据不足就给 unknown + score 0,**严禁用常识或厂商营销话术补分**;\n"
-            "- 质量分优先采信 user_generated / third_party 证据,vendor_claim 仅作功能具备性佐证;\n"
-            "- basis 写成**可对比**的一句话(点出快/慢、准/糙的具体程度),不要泛泛而谈;\n"
+            "- support_status 可采信官网/feature_existence;quality_score **只**采信 user_generated/third_party;\n"
+            "- basis 写成**可对比**的一句话(点出快/慢、准/糙),或在无质量证据时如实写『仅确认具备』;\n"
             "- 严禁编造 evidence_id。\n"
             "## 微示例\n"
-            '正面: {"support_status":"supported","support_evidence_ids":["SAAA1111"],'
-            '"quality_score":{"score":4,"scale":5,"basis":"第三方实测延迟100-200ms,优于多数同类",'
-            '"evidence_ids":["SBBB2222"]}}\n'
-            '无证据: {"support_status":"unknown","support_evidence_ids":[],'
-            '"quality_score":{"score":0,"scale":5,"basis":"未检索到该功能的质量证据","evidence_ids":[]}}'
+            '有官网无评价(常见,务必照此填): {"support_status":"supported","support_evidence_ids":["SAAA1111"],'
+            '"quality_score":{"score":0,"scale":5,"basis":"官网功能页确认具备该能力,但无用户质量证据","evidence_ids":[]}}\n'
+            '有评价: {"support_status":"supported","support_evidence_ids":["SAAA1111"],'
+            '"quality_score":{"score":4,"scale":5,"basis":"第三方实测延迟100-200ms,优于多数同类","evidence_ids":["SBBB2222"]}}\n'
+            '真无任何线索: {"support_status":"unknown","support_evidence_ids":[],'
+            '"quality_score":{"score":0,"scale":5,"basis":"未检索到该能力的任何证据","evidence_ids":[]}}'
         )
         out = get_llm().call_json(
             f"{system_base}\n\n## 本次任务范围(重要)\n{fill_instruct}",
@@ -1154,6 +1201,17 @@ _DERIV_SECTIONS = {
                        "final_score=各项×权重之和(保留两位小数), priority 为 P0/P1/P2}。\n"
                        "另尽量补齐可落地字段(让 PM 能直接立项):`expected_impact`(预期收益)、"
                        "`success_metric`(验收指标)、`risk`(主要风险)、`time_horizon`(周期)。无把握的字段可省略,不要编造。",
+    "competitor_landscape": "本次任务只输出 `competitor_landscape` 一个顶层字段。把 analysis_meta.competitors "
+                            "及你从证据中识别到的相关玩家,按竞争关系分三类:direct(直接竞品)/indirect(间接竞品)/"
+                            "alternative(替代方案),每类是数组,元素 {name, relation, reason(为何纳入,一句话), "
+                            "evidence_ids(可空)}。再给一句 selection_rationale(纳入与筛选标准)。\n"
+                            "analysis_meta.competitors 里的产品默认归 direct;间接/替代可补充同品类相邻方案。"
+                            "evidence_ids 只引用 raw_evidence 里真实存在的 ID,没有就给空数组,**严禁编造**。",
+    "positioning_map": "本次任务只输出 `positioning_map` 一个顶层字段:{products:[{name, target_user, core_scenario, "
+                       "value_proposition(官方价值主张/定位摘要), positioning_label(≤6字定位标签,如 'AI IDE'), "
+                       "evidence_ids(可空)}]},覆盖 target + 各 competitor 共 N 个产品。\n"
+                       "evidence_ids 优先引用该产品的 feature_existence / vendor_claim 证据,只引用真实存在的 ID,"
+                       "没有就空数组,**严禁编造**。",
 }
 
 
@@ -1281,6 +1339,8 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
         der = {
             "swot": sr["swot"],
             "recommendations": sr["recommendations"],
+            "competitor_landscape": sr.get("competitor_landscape", {}),
+            "positioning_map": sr.get("positioning_map", {}),
         }
         # DEMO_LOOP: 首轮额外注入 R5(priority 公式)和 R4(无 source_refs)错误
         if _is_demo_loop() and analyzer_retry == 0:
@@ -1593,9 +1653,11 @@ def analyzer_node(state: AgentState) -> AgentState:
     }
     if research_method:
         schema_draft["research_method"] = research_method  # 供报告「调研方法」卡展示
-    if is_mock_mode():
-        schema_draft, dropped = sanitize_schema_evidence_refs(schema_draft, evidence)
-        if dropped:
-            print(f"[analyzer] mock schema sanitize dropped {dropped} invalid evidence refs")
+    # 收尾确定性安全网(幂等):清掉任何不存在的 evidence 引用。覆盖新模块
+    # competitor_landscape / positioning_map / praise_points —— 它们不在 collect_all_evidence_refs
+    # 校验范围内,live 模式下靠这层兜住,杜绝幻觉 ID 漏进 writer chip。
+    schema_draft, dropped = sanitize_schema_evidence_refs(schema_draft, evidence)
+    if dropped:
+        print(f"[analyzer] schema sanitize dropped {dropped} invalid evidence refs")
     # 补采可能扩充了 evidence → 写回 state,保证 writer/reviewer 看到的引用都真实存在
     return {**state, "raw_evidence": evidence, "schema_draft": schema_draft}
