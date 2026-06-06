@@ -56,6 +56,21 @@ def main():
 
     # ── ③ 检索词 + 检索站点设计 ──
     from src import source_planner as sp
+    # 与 collector_node 一致:把②发现的官网域名注入,未配置产品的检索才会锚定官网
+    # (否则本表对未配置产品恒显示「全网」,与真实采集行为不符,误导审核)
+    from urllib.parse import urlparse
+    _disc_domains = {}
+    for p in PRODUCTS:
+        d = discovered.get(p) or {}
+        doms = []
+        for u in (d.get("official_pages") or []) + (d.get("pricing_pages") or []):
+            h = (urlparse(u).hostname or "").lower()
+            h = h[4:] if h.startswith("www.") else h
+            if h and h not in doms:
+                doms.append(h)
+        if doms:
+            _disc_domains[p] = doms
+    sp.set_discovered_domains(_disc_domains)
     sec("③ 检索词设计 + 锚定站点(逐产品 × claim_type)")
     plan_all = {}
     for p in PRODUCTS:
