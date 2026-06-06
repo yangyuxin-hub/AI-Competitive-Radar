@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   fetchQuestions,
+  streamIntake,
   answersToRunArgs,
   runAnalysis,
 } from "@/lib/api";
@@ -82,11 +83,13 @@ export default function AnalyzeFlow() {
   const [events, setEvents] = useState<ProgressEvent[]>([]);
   const [report, setReport] = useState<Report | null>(null);
   const [intakeReasoning, setIntakeReasoning] = useState<string>("");
+  const [intakeStatus, setIntakeStatus] = useState<string>(""); // 流式阶段进度文案
   const [runProfile, setRunProfile] = useState<RuntimeProfile>("balanced");
   const [busy, setBusy] = useState(false);
-  const [refining, setRefining] = useState(false); // 渐进式:LLM 在后台精修候选
+  const [refining, setRefining] = useState(false); // 渐进式:LLM 在后台精修候选(流式)
   const [error, setError] = useState<string | null>(null);
   const cancelRunRef = useRef<(() => void) | null>(null);
+  const cancelIntakeRef = useRef<(() => void) | null>(null); // 中止上一次流式精修
   const touchedRef = useRef<Set<string>>(new Set()); // 用户手动改过的问题,LLM 刷新时不覆盖
   const intakeReqRef = useRef(0); // 防止过期的 LLM 响应覆盖新一次提交
 
@@ -117,28 +120,45 @@ export default function AnalyzeFlow() {
       setStage("clarify");
       setBusy(false);
 
-      // 2) 后台:LLM 精修候选(针对性焦点 + 全面竞品),回来后合并刷新,保留用户已改动的项
+      // 2) 后台:LLM 流式精修候选——逐字推送思考过程 + 阶段进度,回来后合并刷新,保留用户已改动的项
       setRefining(true);
-      try {
-        const llm = await fetchQuestions(userInput, domainHint, false);
-        if (intakeReqRef.current !== myReq) return;
-        setQuestions(llm.questions);
-        if (typeof llm.draft?.analysis_intent === "string") setIntakeIntent(llm.draft.analysis_intent);
-        if (typeof llm.draft?.reasoning === "string" && llm.draft.reasoning) {
-          setIntakeReasoning(llm.draft.reasoning);
-        }
-        setAnswers((prev) => {
-          const next = { ...prev };
-          for (const q of llm.questions) {
-            if (touchedRef.current.has(q.key)) continue; // 用户改过的不动
-            next[q.key] = q.multi ? [...q.suggested] : (q.suggested[0] ?? q.options[0] ?? "");
-          }
-          return next;
+      setIntakeReasoning("");          // 清空,准备逐字流式
+      setIntakeStatus("正在检索竞品线索…");
+      cancelIntakeRef.current?.();      // 中止可能仍在跑的上一次流
+      await new Promise<void>((resolve) => {
+        cancelIntakeRef.current = streamIntake(userInput, domainHint, {
+          onStatus: (t) => {
+            if (intakeReqRef.current === myReq) setIntakeStatus(t);
+          },
+          onReasoning: (d) => {
+            if (intakeReqRef.current === myReq) setIntakeReasoning((p) => p + d);
+          },
+          onDone: (draft, qs) => {
+            if (intakeReqRef.current !== myReq) {
+              resolve();
+              return;
+            }
+            if (qs.length) setQuestions(qs);
+            if (typeof draft?.analysis_intent === "string") setIntakeIntent(draft.analysis_intent as string);
+            if (typeof draft?.reasoning === "string" && draft.reasoning) {
+              setIntakeReasoning(draft.reasoning as string);
+            }
+            setAnswers((prev) => {
+              const next = { ...prev };
+              for (const q of qs) {
+                if (touchedRef.current.has(q.key)) continue; // 用户改过的不动
+                next[q.key] = q.multi ? [...q.suggested] : (q.suggested[0] ?? q.options[0] ?? "");
+              }
+              return next;
+            });
+            resolve();
+          },
+          onError: () => resolve(), // 流式失败 → 保留启发式结果即可
         });
-      } catch {
-        /* LLM 失败 → 保留启发式结果即可 */
-      } finally {
-        if (intakeReqRef.current === myReq) setRefining(false);
+      });
+      if (intakeReqRef.current === myReq) {
+        setRefining(false);
+        setIntakeStatus("");
       }
     } catch (e) {
       if (intakeReqRef.current === myReq) {
@@ -222,6 +242,7 @@ export default function AnalyzeFlow() {
     setCustomOpts({});
     setCustomInput({});
     setIntakeReasoning("");
+    setIntakeStatus("");
     setEvents([]);
     setReport(null);
     setError(null);
@@ -231,6 +252,8 @@ export default function AnalyzeFlow() {
     intakeReqRef.current++;
     cancelRunRef.current?.();
     cancelRunRef.current = null;
+    cancelIntakeRef.current?.();
+    cancelIntakeRef.current = null;
   }
 
   return (
@@ -289,15 +312,20 @@ export default function AnalyzeFlow() {
           {refining && (
             <div className="flex items-center gap-2 rounded-lg border border-sky-500/20 bg-sky-500/[0.06] px-3 py-2 text-xs text-sky-300">
               <span className="inline-block h-1.5 w-1.5 animate-ping rounded-full bg-sky-400" />
-              正在用 AI 生成更贴合的角度与竞品…候选会自动刷新，你已选的不会变
+              {intakeStatus || "正在用 AI 生成更贴合的角度与竞品…"}候选会自动刷新，你已选的不会变
             </div>
           )}
-          {intakeReasoning && (
+          {(intakeReasoning || refining) && (
             <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.05] p-4">
               <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-sky-300">
-                <span>🧭</span> Agent 的判断
+                <span>🧭</span> Agent 的思考
               </div>
-              <p className="text-sm leading-relaxed text-neutral-300">{intakeReasoning}</p>
+              <p className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-300">
+                {intakeReasoning}
+                {refining && (
+                  <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-sky-400 align-middle" />
+                )}
+              </p>
             </div>
           )}
           <p className="text-sm text-neutral-400">

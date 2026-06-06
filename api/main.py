@@ -171,6 +171,33 @@ def api_questions(req: ProposeReq):
     return {"draft": draft, "questions": questions}
 
 
+@app.post("/api/intake/stream")
+def api_intake_stream(req: ProposeReq):
+    """流式意图澄清:逐字推送模型思考 + 阶段进度,最后给最终 draft + questions。
+    替代原来阻塞式的二段 LLM 精修,把 ~20s 的等待变成可见的思考过程。
+    前端仍先用 /questions?fast=1 秒开澄清页,再用本流式接口刷新候选。"""
+    def gen():
+        final_draft: dict = {}
+        try:
+            for kind, payload in intake.propose_stream(req.user_input, req.domain_hint):
+                if kind == "status":
+                    yield _sse({"type": "status", "text": payload})
+                elif kind == "reasoning":
+                    yield _sse({"type": "reasoning", "delta": payload})
+                elif kind == "draft":
+                    final_draft = payload or {}
+            questions = [c.to_dict() for c in intake.build_questions(final_draft)]
+            yield _sse({"type": "done", "draft": final_draft, "questions": questions})
+        except Exception as e:  # noqa: BLE001
+            yield _sse({"type": "error", "message": str(e)})
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # 运行分析 (SSE)
 # ────────────────────────────────────────────────────────────────────────────

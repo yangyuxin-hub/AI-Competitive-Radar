@@ -62,10 +62,12 @@
 
 ### 你必须输出
 
-只输出 JSON,不要多余文字:
+只输出 JSON,不要多余文字。**`reasoning` 必须放在第一个字段**——前端会逐字流式展示它,
+所以先用 2-3 句讲清你的判断思路,再给出各项候选:
 
 ```json
 {
+  "reasoning": "2-3 句:从这句话识别出的品类/目标、为什么推荐这些竞品(覆盖了哪些不同竞争逻辑)、为什么挑这几个焦点维度",
   "domain_name": "中文品类名",
   "analysis_intent": "pain_attribution | selection | pricing | market_entry | feature_compare",
   "target_candidates": ["最可能的目标在最前", "..."],
@@ -76,8 +78,7 @@
   "focus_hints": {"维度名": "这个维度看什么、为什么对这次对比重要"},
   "focus_suggested": "最贴合用户意图的一个焦点",
   "purpose_candidates": ["分析目的候选"],
-  "purpose_suggested": "最可能的目的",
-  "reasoning": "2-3 句:从这句话识别出的品类/目标、为什么推荐这些竞品(覆盖了哪些不同竞争逻辑)、为什么挑这几个焦点维度"
+  "purpose_suggested": "最可能的目的"
 }
 ```
 
@@ -94,6 +95,7 @@
 **输出**:
 ```json
 {
+  "reasoning": "识别为设计协作工具品类,目标 Figma。竞品上既给了 Sketch/Adobe XD 这类直接竞品,也补了 Canva(模板化替代)、Framer(原型新秀)、Penpot(开源自托管),覆盖不同竞争逻辑。焦点维度围绕设计协作的真实差异点展开——协同、设计系统、原型、研发交付,而非泛泛的功能/体验。",
   "domain_name": "设计协作工具",
   "target_candidates": ["Figma", "Sketch", "Canva"],
   "competitors_candidates": ["Sketch", "Canva", "Adobe XD", "Framer", "Penpot", "InVision", "Miro", "Zeplin"],
@@ -119,8 +121,7 @@
   },
   "focus_suggested": "实时多人协同",
   "purpose_candidates": ["学习竞品优点,优化自身产品", "寻找差异化定位机会", "评估是否进入该市场"],
-  "purpose_suggested": "学习竞品优点,优化自身产品",
-  "reasoning": "识别为设计协作工具品类,目标 Figma。竞品上既给了 Sketch/Adobe XD 这类直接竞品,也补了 Canva(模板化替代)、Framer(原型新秀)、Penpot(开源自托管),覆盖不同竞争逻辑。焦点维度围绕设计协作的真实差异点展开——协同、设计系统、原型、研发交付,而非泛泛的功能/体验。"
+  "purpose_suggested": "学习竞品优点,优化自身产品"
 }
 ```
 
@@ -131,6 +132,7 @@
 **输出**(节选):
 ```json
 {
+  "reasoning": "这是『为什么流失 + 在吐槽什么』,意图是痛点归因而非功能跑分。所以焦点以高频痛点、迁移动因、相对短板打头,目的定为理解流失原因,而不是逐功能 0-5 评分。",
   "domain_name": "项目与团队协作工具",
   "analysis_intent": "pain_attribution",
   "focus_candidates": ["高频吐槽与核心痛点", "用户流失与迁移动因", "Notion 相对短板(性能/任务管理)", "值得迁移的临界点", "定价与性价比争议"],
@@ -141,7 +143,6 @@
   },
   "focus_suggested": "高频吐槽与核心痛点",
   "purpose_candidates": ["理解用户流失原因与核心痛点", "学习竞品优点,优化自身产品", "寻找差异化定位机会"],
-  "purpose_suggested": "理解用户流失原因与核心痛点",
-  "reasoning": "这是『为什么流失 + 在吐槽什么』,意图是痛点归因而非功能跑分。所以焦点以高频痛点、迁移动因、相对短板打头,目的定为理解流失原因,而不是逐功能 0-5 评分。"
+  "purpose_suggested": "理解用户流失原因与核心痛点"
 }
 ```

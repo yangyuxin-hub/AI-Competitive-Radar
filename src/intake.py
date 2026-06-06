@@ -586,6 +586,87 @@ def propose(user_input: str, domain_hint: Optional[str] = None) -> dict:
     return _canonicalize_draft(_propose_heuristic(user_input, domain_hint))
 
 
+def _partial_json_string(acc: str, field: str) -> Optional[str]:
+    """从(可能尚未闭合的)JSON 文本里取出某 string 字段的当前值,用于流式逐字显示。
+    定位字段名后的冒号与起始引号,读到下一个未转义引号(或文本末尾,即还没生成完)。
+    轻量反转义 \\n \\t \\" \\\\,够展示用。"""
+    import re
+    m = re.search(r'"' + re.escape(field) + r'"\s*:\s*"', acc)
+    if not m:
+        return None
+    i = m.end()
+    out: list[str] = []
+    while i < len(acc):
+        ch = acc[i]
+        if ch == "\\" and i + 1 < len(acc):
+            out.append({"n": "\n", "t": "\t", '"': '"', "\\": "\\"}.get(acc[i + 1], acc[i + 1]))
+            i += 2
+            continue
+        if ch == '"':
+            break
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def propose_stream(user_input: str, domain_hint: Optional[str] = None):
+    """流式版 propose。生成器,逐步 yield 给上层(SSE)推送:
+        ("status", text)      阶段性真实进度(检索竞品线索 / 识别玩家)
+        ("reasoning", delta)  模型思考增量(逐字;优先用思维链通道,否则从 JSON reasoning 字段抠)
+        ("draft", dict)       最终草稿(与 propose() 返回同构)
+    无 LLM / 流式失败 → 直接给启发式 draft,不阻塞首屏。"""
+    base = _propose_heuristic(user_input, domain_hint)
+    if not _llm_available():
+        yield ("draft", _canonicalize_draft(base))
+        return
+
+    yield ("status", "正在检索竞品线索…")
+    signals = _competitor_web_context(user_input)
+    if signals:
+        yield ("status", f"命中 {len(signals)} 条竞品线索,交给模型识别主流 + 新锐玩家…")
+    else:
+        yield ("status", "正在分析意图、竞品格局与焦点维度…")
+
+    draft: Optional[dict] = None
+    try:
+        from .llm import get_llm
+        acc: list[str] = []
+        emitted = 0          # 已 yield 的 JSON-reasoning 字符数(无思维链通道时的兜底游标)
+        saw_reasoning = False
+        for kind, payload in get_llm().stream_json(
+                system_prompt=_load_prompt("intake"),
+                user_payload={
+                    "user_input": user_input,
+                    "known_products": _known_product_names(),
+                    "web_competitor_signals": signals,
+                },
+                max_tokens=1024, label="intake"):
+            if kind == "reasoning":
+                saw_reasoning = True
+                yield ("reasoning", payload)
+            elif kind == "answer":
+                acc.append(payload)
+                if not saw_reasoning:
+                    # 模型无独立思维链通道 → 从 JSON 的 reasoning 字段(已前置)里抠出来逐字推
+                    cur = _partial_json_string("".join(acc), "reasoning")
+                    if cur and len(cur) > emitted:
+                        yield ("reasoning", cur[emitted:])
+                        emitted = len(cur)
+            elif kind == "done":
+                if isinstance(payload, dict) and payload.get("target_candidates"):
+                    draft = payload
+    except Exception as e:  # noqa: BLE001 — 流式失败回退启发式,不让澄清页卡死
+        print(f"[intake] 流式草拟失败,回退启发式: {type(e).__name__}: {e}")
+
+    if draft:
+        for k, v in base.items():
+            draft.setdefault(k, v)
+        final = _canonicalize_draft(_scope_draft_to_domain(draft, base, load_products()))
+    else:
+        final = _canonicalize_draft(base)
+    yield ("draft", final)
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # 草稿 → 选择题
 # ────────────────────────────────────────────────────────────────────────────

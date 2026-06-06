@@ -222,6 +222,80 @@ class LLMClient:
                     f"LLM 输出无法解析为 JSON: {e}; 原始输出已保存到 {path}"
                 ) from e
 
+    def stream_json(
+        self,
+        system_prompt: str,
+        user_payload: dict,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        label: str = "call",
+        timeout: Optional[float] = None,
+    ):
+        """流式版 call_json。生成器,逐块 yield 过程事件,最后 yield 解析结果:
+            ("reasoning", delta)  模型思维链增量(模型走 reasoning_content 通道时才有)
+            ("answer", delta)     正式输出(JSON 正文)字符增量
+            ("done", dict)        解析后的完整 JSON;解析失败 → {}
+        给「等待感重」的 intake 用:把一次性阻塞调用变成可见的逐字思考。Mock 模式不应调用。"""
+        if is_mock_mode():
+            raise RuntimeError("Mock 模式下不应直接调用 stream_json")
+
+        client = self._ensure()
+        if model is None:
+            if os.environ.get("LLM_MODEL") or os.environ.get("LLM_API_KEY"):
+                model = os.environ.get("LLM_MODEL") or "mimo-v2.5-pro"
+            else:
+                model = os.environ.get("ARK_EP") or "doubao-seed-2-0-lite-250428"
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        ]
+        kwargs = {"model": model, "messages": messages, "temperature": 0.2, "stream": True}
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        call_client = client.with_options(timeout=timeout) if timeout is not None else client
+
+        t0 = time.time()
+        _emit_llm(label=label, phase="start")
+        parts: list[str] = []
+        try:
+            stream = call_client.chat.completions.create(**kwargs)
+            for chunk in stream:
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    continue
+                delta = choices[0].delta
+                rc = getattr(delta, "reasoning_content", None)
+                if rc:
+                    yield ("reasoning", rc)
+                c = getattr(delta, "content", None)
+                if c:
+                    parts.append(c)
+                    yield ("answer", c)
+        except Exception as e:  # noqa: BLE001 — 流式失败 → 给空结果,上层回退启发式
+            print(f"[llm] {label}(stream) 失败: {type(e).__name__}: {e}")
+            yield ("done", {})
+            return
+
+        raw = "".join(parts) or "{}"
+        elapsed = time.time() - t0
+        print(f"[llm] {label}(stream): {elapsed:.1f}s · chars={len(raw)}")
+        _emit_llm(label=label, phase="done", duration=elapsed, json_mode=False,
+                  prompt_tokens=0, completion_tokens=0)
+        try:
+            _trace_call(label, model, system_prompt, user_payload, raw, 0, 0, elapsed)
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            try:
+                parsed = json.loads(_strip_json(raw))
+            except json.JSONDecodeError:
+                _save_raw(label, raw)
+                parsed = {}
+        yield ("done", parsed)
+
 
 # 单例
 _default_client: Optional[LLMClient] = None

@@ -22,6 +22,58 @@ export async function fetchQuestions(
   return res.json();
 }
 
+export interface IntakeStreamHandlers {
+  onStatus?: (text: string) => void;
+  onReasoning?: (delta: string) => void;
+  onDone: (draft: Record<string, unknown>, questions: Question[]) => void;
+  onError?: (msg: string) => void;
+}
+
+/** POST /api/intake/stream，逐 SSE 事件回调（思考逐字流式 + 阶段进度）。返回中止函数。 */
+export function streamIntake(
+  userInput: string,
+  domainHint: string | undefined,
+  h: IntakeStreamHandlers
+): () => void {
+  const controller = new AbortController();
+  (async () => {
+    const res = await fetch(`${BASE}/api/intake/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_input: userInput, domain_hint: domainHint }),
+      signal: controller.signal,
+    });
+    if (!res.ok || !res.body) throw new Error(`intake stream failed: ${res.status}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() ?? "";
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith("data:")) continue;
+        let evt: { type?: string; text?: string; delta?: string; draft?: Record<string, unknown>; questions?: Question[]; message?: string };
+        try {
+          evt = JSON.parse(line.slice(5).trim());
+        } catch {
+          continue;
+        }
+        if (evt.type === "status") h.onStatus?.(evt.text ?? "");
+        else if (evt.type === "reasoning") h.onReasoning?.(evt.delta ?? "");
+        else if (evt.type === "done") h.onDone(evt.draft ?? {}, evt.questions ?? []);
+        else if (evt.type === "error") h.onError?.(evt.message ?? "intake error");
+      }
+    }
+  })().catch((err) => {
+    if (err?.name !== "AbortError") h.onError?.(String(err?.message ?? err));
+  });
+  return () => controller.abort();
+}
+
 export interface RunArgs {
   target_product: string;
   competitors: string[];
