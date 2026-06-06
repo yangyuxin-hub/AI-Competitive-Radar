@@ -386,6 +386,33 @@ def dedupe_evidence(evidences: list[dict]) -> list[dict]:
     return list(merged.values())
 
 
+# claim_type 推断:加权关键词打分(替代裸 if/elif 首命中,减少误分)。
+_CT_KEYWORDS = {
+    "pricing": ("price", "pricing", "per month", "per year", "per user", "/mo", "/user",
+                "plan", "plans", "subscription", "billed", "free tier", "定价", "套餐", "免费"),
+    "performance_quality": ("fast", "speed", "latency", "performance", "benchmark",
+                            "accuracy", "accurate", "reliable", "responsive", "throughput"),
+    "user_pain": ("issue", "bug", "problem", "frustrat", "complain", "slow", "crash",
+                  "annoying", "lacks", "missing", "cannot", "can't", "fails", "broken", "buggy"),
+    "feature_existence": ("support", "feature", "enable", "allow", "provide", "offer",
+                          "integrate", "build", "create", "generate", "automate", "collaborate"),
+}
+# pricing 的真实价格信号词(光出现 plan/free 不算定价,得有币种价或周期价)
+_PRICE_SIGNAL_WORDS = ("per month", "per user", "per year", "/mo", "/user", "/yr")
+
+
+def infer_claim_type(snippet: str, default: str, price_re) -> str:
+    """加权关键词打分推断 claim_type。pricing 须有真实价格信号(币种价/周期价)兜底,
+    避免把含 'plan'/'free' 的功能段误判成定价。无任何信号 → 回退 default。"""
+    low = (snippet or "").lower()
+    scores = {ct: sum(low.count(kw) for kw in kws) for ct, kws in _CT_KEYWORDS.items()}
+    has_price = bool(price_re.search(snippet or "")) or any(w in low for w in _PRICE_SIGNAL_WORDS)
+    if not has_price:
+        scores["pricing"] = 0  # 没有真实价格信号 → 不判为定价
+    best = max(scores, key=lambda k: scores[k])
+    return best if scores[best] > 0 else default
+
+
 def patch_by_requirements(
     existing: list[dict],
     new: list[dict],
@@ -703,16 +730,8 @@ class OfficialPageAdapter(SourceAdapter):
             # 加入 idx 避免同一页面内相同文本段产生相同 evidence_id
             eid = generate_evidence_id(product, f"{url}#{idx}", claim)
 
-            # 根据内容推断更精确的 claim_type
-            claim_type = default_claim_type
-            snippet_lower = snippet.lower()
-            if default_claim_type == "feature_existence":
-                if any(w in snippet_lower for w in ("price", "pricing", "free", "$", "per month", "per year", "plan")):
-                    claim_type = "pricing"
-                elif any(w in snippet_lower for w in ("fast", "speed", "latency", "performance", "benchmark")):
-                    claim_type = "performance_quality"
-                elif any(w in snippet_lower for w in ("issue", "bug", "problem", "frustrat", "complain", "slow")):
-                    claim_type = "user_pain"
+            # 根据内容推断更精确的 claim_type(加权打分,pricing 须有真实价格信号)
+            claim_type = infer_claim_type(snippet, default_claim_type, OfficialPageAdapter._PRICE_RE)
 
             # 根据片段长度和信息量调整置信度
             conf = 0.60

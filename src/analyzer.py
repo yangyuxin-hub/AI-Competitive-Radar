@@ -442,24 +442,52 @@ def _corrupt_derivations_for_demo(derivations: dict) -> dict:
 _REQUIRED_CT = ("feature_existence", "performance_quality", "pricing", "user_pain")
 
 
+def _norm_tokens(text: str) -> set:
+    """归一化成 token 集合(小写、仅留字母数字),用于近似去重相似度。"""
+    import re
+    return set(re.findall(r"[a-z0-9]+", (text or "").lower()))
+
+
+def _near_dup(a: set, b: set, thresh: float = 0.82) -> bool:
+    """两段文本的 token Jaccard ≥ thresh 视为近似重复(同一吐槽的不同措辞)。
+    不同档位定价('$10/mo Plus' vs '$20/mo Pro')token 差异大,不会被误判。"""
+    if not a or not b:
+        return False
+    union = len(a | b)
+    return union > 0 and len(a & b) / union >= thresh
+
+
 def _compact_evidence(evidence: list[dict]) -> list[dict]:
-    """给 LLM 的精简证据:按 (claim_type × 产品) 各取 top-K(按可信度)+ 截短片段 + 只留必要字段。
+    """给 LLM 的精简证据:按 (claim_type × 产品) 各取 top-K(按可信度)+ 近似去重 + 截短片段。
     防止证据过多时 prompt 爆炸 → 调用超时。全量证据仍用于本地 evidence_id 校验。
 
     关键:**按产品分桶**取 top-K,而非按 claim_type 全局取——否则多产品分析里,
     低可信度产品(如官网 pricing 0.65 < 聚合站)会被全局 top-8 挤光,导致该产品整块为空
     (实测 Linear 官网定价 $0/$10/$16 在,却因全局截断没喂给 LLM → 报告定价空)。
     feature_tree 调用前已按产品过滤,分桶天然单产品、行为不变。
-    可调:ANALYZER_MAX_EVIDENCE_PER_TYPE(默认8,现为每产品每类)、ANALYZER_SNIPPET_LEN(默认180)。"""
+
+    去冗余:每桶先按可信度排序,再做近似去重——8 个槽位装 8 个**不同的点**,
+    而非同一吐槽的 8 种措辞,提升喂给 LLM 的信息密度。空片段直接丢。
+    可调:ANALYZER_MAX_EVIDENCE_PER_TYPE(默认8,现为每产品每类)、ANALYZER_SNIPPET_LEN(默认180)、
+    ANALYZER_NEARDUP_THRESH(默认0.82,设 1.1 等于关闭近似去重)。"""
     per_type = int(os.environ.get("ANALYZER_MAX_EVIDENCE_PER_TYPE", "8"))
     snip = int(os.environ.get("ANALYZER_SNIPPET_LEN", "180"))
+    thresh = float(os.environ.get("ANALYZER_NEARDUP_THRESH", "0.82"))
     by_key: dict[tuple, list[dict]] = {}
     for e in evidence:
         by_key.setdefault((e.get("claim_type", "?"), e.get("product")), []).append(e)
     out: list[dict] = []
     for lst in by_key.values():
-        top = sorted(lst, key=lambda e: e.get("evidence_confidence", 0) or 0, reverse=True)[:per_type]
-        for e in top:
+        ranked = sorted(lst, key=lambda e: e.get("evidence_confidence", 0) or 0, reverse=True)
+        kept_tok: list[set] = []
+        for e in ranked:
+            text = (e.get("extracted_snippet") or e.get("claim") or "").strip()
+            if not text:
+                continue
+            tok = _norm_tokens(text)
+            if any(_near_dup(tok, kt, thresh) for kt in kept_tok):
+                continue  # 近似重复,已有更高可信度的代表
+            kept_tok.append(tok)
             out.append({
                 "evidence_id": e.get("evidence_id"),
                 "product": e.get("product"),
@@ -468,6 +496,8 @@ def _compact_evidence(evidence: list[dict]) -> list[dict]:
                 "claim": e.get("claim"),
                 "extracted_snippet": (e.get("extracted_snippet") or "")[:snip],
             })
+            if len(kept_tok) >= per_type:
+                break
     return out
 
 
@@ -841,8 +871,11 @@ _FACTS_SECTIONS = {
                     "- **同一套餐的年付/月付算同一档**:price 用**月度归一**值(normalized_usd_month);"
                     "年付价请换算成每月(年付总额/12 或证据直接给的「per month billed annually」数),"
                     "可在 billing_cycle / note 注明另一计费周期价。\n"
-                    "- 每档:{tier_name, price:{amount,currency,normalized_usd_month}, evidence_ids}。"
+                    "- 每档:{tier_name, segment, price:{amount,currency,normalized_usd_month}, evidence_ids}。"
                     "价格只能来自 pricing 证据,拿不准的档宁可不列,**不要编价**。\n"
+                    "- **segment(面向哪类用户)**:据定价页的档位定位归类——`个人`(Free/Personal/Individual/Pro 个人版)、"
+                    "`团队`(Team/按人计费的中间档)、`企业`(Enterprise/Business/联系销售档)、`通用`(无法判断时)。"
+                    "这样定价表能直接回答「不同规模用户各该选哪档」。\n"
                     "- 免费档只列一条(amount=0);不要重复输出同价档位。",
     },
     "user_persona": {
@@ -939,6 +972,11 @@ def _feature_spine(system_base: str, evidence: list[dict], meta: dict) -> list[d
     focus = " / ".join(meta.get("analysis_focus") or []) or "核心体验"
     timeout = float(os.environ.get("ANALYZER_FACTS_TIMEOUT", "90"))
     ft_ev = [e for e in evidence if e.get("claim_type") in _FT_CLAIM_TYPES]
+    # 喂给 spine:每个产品有多少 feature 类证据 → 引导它只挑「多数产品都接得住」的能力维度
+    cov_by_prod: dict[str, int] = {}
+    for e in ft_ev:
+        p = e.get("product") or "?"
+        cov_by_prod[p] = cov_by_prod.get(p, 0) + 1
     spine_instruct = (
         f"本次只做一件事:基于证据,列出 {focus} 维度下 4-6 个**适合跨产品横向对比**的功能点。\n"
         "要求:\n"
@@ -948,14 +986,18 @@ def _feature_spine(system_base: str, evidence: list[dict], meta: dict) -> list[d
         "会导致整列全空、矩阵塌方。\n"
         "   - ✅ 好维度(官网会写、可对比):实时多人协同 / 组件与设计系统 / 原型与交互 / 开发者交付 / 版本管理\n"
         "   - ❌ 坏维度(太细、官网不会逐条写、证据接不住):实时光标同步 / 操作同步延迟 / 编辑冲突处理 / 断网重连恢复\n"
-        "3. **维度必须能被现有证据接住**:优先选 raw_evidence 里反复出现、且 target 和至少一个 competitor 都涉及的能力;"
-        "宁可少给两个扎实维度,也不要为凑数造出证据接不住的细维度。\n"
+        "3. **严禁把「计划档位 / 资源配额 / 访问权限 / 价格细节」当功能维度**——那是定价分析的范畴,放进功能矩阵必然整列空、塌方。\n"
+        "   - ❌ 坏维度(计划/配额/权限,绝不要):免费版权益配置 / 团队成员上限 / 离线使用权限 / 各档位资源配额 / AI功能使用权限 / 存储空间上限\n"
+        "   - ✅ 对应应改成的能力维度:协作与权限管理(整体能力)/ AI与自动化能力 / 离线与跨端可用性 —— 用「能力」表述,不要用「档位/配额/权益」。\n"
+        "4. **维度必须能被现有证据接住**:优先选 raw_evidence 里反复出现、且 **target 和至少一个 competitor 都涉及**的能力;"
+        "参考下方 `feature_evidence_count_by_product`——别选只有一个产品有证据的维度。宁可少给两个扎实维度,也不要凑数造细维度。\n"
         '只输出 JSON: {"features":[{"feature_id":"F001","name":"功能名"}]}。\n'
         "feature_id 用 F001/F002…;name 用产品能力级短语(≤12字);不要输出 products / gap / quality 等其它字段。"
     )
     spine = get_llm().call_json(
         f"{system_base}\n\n## 本次任务范围(重要)\n{spine_instruct}",
-        {"analysis_meta": meta, "raw_evidence": _compact_evidence(ft_ev)},
+        {"analysis_meta": meta, "feature_evidence_count_by_product": cov_by_prod,
+         "raw_evidence": _compact_evidence(ft_ev)},
         label="facts:feature_spine", timeout=timeout,
     )
     feats = (spine.get("features") if isinstance(spine, dict) else None) or []
@@ -1123,6 +1165,18 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
             "feature_id": fid, "name": f["name"], "products": block,
             "gap": _compute_gap(f["name"], block, meta),
         })
+    # 剪枝:整行所有产品都是 support unknown(矩阵里全"—")= 取不到任何证据的过细/跑偏维度(常是定价细节
+    # 被当功能,如「团队成员上限」)。这种行搜了也填不上,是噪声 → 移出矩阵,展示有据可依的维度更可信;
+    # 同时让下一轮 _coverage_gaps 不再把它们算作 unknown_cells 去空转补采。至少保留 3 行避免空表。
+    grounded = [
+        f for f in features_out
+        if any((f["products"].get(p) or {}).get("support_status") != "unknown" for p in products)
+    ]
+    # floor=2:整行全"—"的噪声行一律剪掉,只要还剩 ≥2 行。薄而诚实的矩阵 > 补一堆空行的"伪塌方"。
+    # 剩 <2 行说明证据太稀(集采问题),此时保留全部(含空行)给读者看"尝试过哪些维度"。
+    if len(grounded) >= 2 and len(grounded) < len(features_out):
+        print(f"[analyzer] 功能矩阵剪枝:移除 {len(features_out) - len(grounded)} 个全无证据维度(全'—'行)")
+        features_out = grounded
     return {"category": focus, "features": features_out}
 
 
@@ -1413,16 +1467,34 @@ def _coverage_gaps(facts: dict, meta: dict, evidence: list[dict]) -> dict:
 
     # 定价抽到了但整张表没有任何可用价格数值(全 $0/None)→ 抽取失败,当作缺口触发定向重搜定价。
     # 只在「全表无正价」时触发(强信号),避免把某个真免费档误判成缺口。
-    all_tiers = [t for p in (facts.get("pricing_model") or {}).get("products") or []
-                 for t in (p.get("tiers") or [])]
+    pm_products = (facts.get("pricing_model") or {}).get("products") or []
+    tiers_by_prod: dict[str, list] = {p.get("product"): (p.get("tiers") or []) for p in pm_products}
+    all_tiers = [t for ts in tiers_by_prod.values() for t in ts]
+
+    def _amt(t):
+        return (t.get("price") or {}).get("normalized_usd_month")
+
     if all_tiers and "pricing" not in missing_ct:
-        def _amt(t):
-            return (t.get("price") or {}).get("normalized_usd_month")
         if not any(isinstance(_amt(t), (int, float)) and _amt(t) > 0 for t in all_tiers):
             missing_ct.append("pricing")
             print("[analyzer] pricing 全表无可用价格,标记为缺口 → 定向重搜定价")
 
-    return {"unknown_cells": unknown_cells, "missing_claim_types": missing_ct}
+    # per-product 定价缺口:某 target 产品在 pricing_model 里一档都没有,而至少一个别的产品有正价
+    # → 多半是该产品定价抽取/抓取漏了(而非它真免费),定向补回。比「全表空」的强信号更细。
+    pricing_gap_products: list[str] = []
+    any_priced = any(isinstance(_amt(t), (int, float)) and _amt(t) > 0 for t in all_tiers)
+    if any_priced and "pricing" not in missing_ct:
+        for p in products:
+            if not tiers_by_prod.get(p):  # 该产品缺席 pricing_model 或 0 档
+                pricing_gap_products.append(p)
+        if pricing_gap_products:
+            print(f"[analyzer] per-product 定价缺口: {pricing_gap_products} 无档位而别家有 → 定向补采")
+
+    return {
+        "unknown_cells": unknown_cells,
+        "missing_claim_types": missing_ct,
+        "pricing_gap_products": pricing_gap_products,
+    }
 
 
 def _gap_affected_sections(gaps: dict) -> list[str]:
@@ -1430,6 +1502,8 @@ def _gap_affected_sections(gaps: dict) -> list[str]:
     secs: set = set()
     if gaps.get("unknown_cells"):
         secs.add("feature_tree")
+    if gaps.get("pricing_gap_products"):
+        secs.add("pricing_model")
     for ct in gaps.get("missing_claim_types") or []:
         if ct == "pricing":
             secs.add("pricing_model")
@@ -1440,28 +1514,71 @@ def _gap_affected_sections(gaps: dict) -> list[str]:
     return [s for s in _FACTS_SECTIONS if s in secs]
 
 
-def _gap_targeted_recollect(meta: dict, gaps: dict, focus: str) -> list[dict]:
-    """对缺口做定向搜索:每个空缺 (产品×功能) 一条查询 + 每个产品对缺失 claim_type 一条查询。
-    比盲目全量补采更省 DDG 额度、命中更准。复用 search.search_plan_to_evidence(带缓存/限速)。
+def _recollect_pricing_official(products: list[str], focus: str) -> list[dict]:
+    """定价缺口治本:对配了 pricing_pages/official_pages 的产品,直接走官网定价页 +
+    Playwright 渲染(SPA 档位价的权威出处),比 web_search 命中准、能拿到真实档位。
+    未配 URL 的产品由调用方的 web_search 兜底。"""
+    if not products:
+        return []
+    try:
+        from .collector import OfficialPageAdapter
+    except Exception:  # noqa: BLE001
+        return []
+    official = OfficialPageAdapter()
+    out: list[dict] = []
+    for product in products:
+        if not official.can_fetch(product):
+            continue
+        try:
+            evs = official.fetch(product, focus)
+            priced = [e for e in evs if e.get("claim_type") == "pricing"]
+            out.extend(priced)
+            print(f"[analyzer] 官网定价补采 '{product}': {len(priced)} 条 pricing 证据")
+        except Exception as e:  # noqa: BLE001
+            print(f"[analyzer] 官网定价补采 '{product}' failed: {type(e).__name__}: {e}")
+    return out
+
+
+def _gap_targeted_recollect(meta: dict, gaps: dict, focus: str, round_idx: int = 0) -> list[dict]:
+    """对缺口做定向搜索:每个空缺 (产品×功能) 一条查询 + 每个产品对缺失 claim_type 一条查询 +
+    per-product 定价缺口走官网渲染。比盲目全量补采更省额度、命中更准。
 
     query/site 构造复用 source_planner 的语言一致构造器 + 站点锚定,杜绝旧版
-    `{英文产品} {中文功能} {中文焦点}` 中英混搭 + site="" 裸搜捞同名页/学术站的问题。"""
+    `{英文产品} {中文功能} {中文焦点}` 中英混搭 + site="" 裸搜捞同名页/学术站的问题。
+    round_idx≥1(多轮升级):提高 results_per_query 并放开站点锚定(全网兜底),扩大召回。"""
     from collections import defaultdict
 
     from . import search, source_planner as sp
+
+    added: list[dict] = []
+    # 定价缺口走官网渲染(不依赖搜索额度,SPA 档位价最权威),两种触发:
+    #   - per-product 缺口(有的产品有价、有的没);
+    #   - 全表无价(pricing 整类缺失;per-product 因 any_priced=False 不触发,这里兜住——治"AI编程定价全空")。
+    pricing_gap_products = gaps.get("pricing_gap_products") or []
+    pricing_targets = list(pricing_gap_products)
+    if "pricing" in (gaps.get("missing_claim_types") or []):
+        for p in _target_products(meta):
+            if p not in pricing_targets:
+                pricing_targets.append(p)
+    if pricing_targets:
+        added.extend(_recollect_pricing_official(pricing_targets, focus))
+
     if not search.tavily_available():
-        return []
+        return added
     domain = os.environ.get("DOMAIN", "").strip()
     cat_en, cat_cn = sp._domain_category(domain)
     by_ct = sp.load_sources_config().get("by_claim_type") or {}
     max_cells = int(os.environ.get("ANALYZER_GAP_MAX_QUERIES", "10"))
     max_sites = int(os.environ.get("ANALYZER_GAP_MAX_SITES", "2"))
+    # 多轮升级:第 2 轮起放开站点锚定 + 多取结果,把第一轮没补到的缺口用更宽的网捞
+    widen = round_idx >= 1
+    rpq = 3 if round_idx == 0 else 5
     plans: dict[str, list[dict]] = defaultdict(list)
 
     def _emit(product: str, ct: str, focus_kw: str) -> None:
-        """按 claim_type 锚定权威源各发一条;无 site 时给一条全网兜底(相关性门兜底过滤)。"""
+        """按 claim_type 锚定权威源各发一条;widen/无 site 时给一条全网兜底(相关性门兜底过滤)。"""
         base_q = sp._build_query(product, focus_kw, ct, cat_en, cat_cn)
-        sites = sp._sites_for_claim(product, ct, by_ct)[:max_sites]
+        sites = [] if widen else sp._sites_for_claim(product, ct, by_ct)[:max_sites]
         if sites:
             for site, st, bias in sites:
                 plans[product].append({
@@ -1475,18 +1592,23 @@ def _gap_targeted_recollect(meta: dict, gaps: dict, focus: str) -> list[dict]:
                 "bias": "vendor_claim" if ct in ("pricing", "feature_existence") else "third_party",
             })
 
-    # 空白格 (产品×功能):以功能名作焦点,质量维度定向补
+    # 空白格 (产品×功能,support_status=unknown):缺的是「该产品到底有没有这个能力」=feature_existence,
+    # 官网/文档是权威出处(和定价同理)。旧版搜 performance_quality(UGC质量)填不了「—」格,导致矩阵塌陷。
+    # 同时补一条质量搜索:若该能力确实存在,顺带捞 UGC 评价(命中则连质量分一起补上)。
     for product, fname in gaps["unknown_cells"][:max_cells]:
+        _emit(product, "feature_existence", fname or focus)
         _emit(product, "performance_quality", fname or focus)
     # 整类缺失:每个产品对缺失 claim_type 各补一条(焦点回退到分析焦点)
     for product in _target_products(meta):
         for ct in gaps["missing_claim_types"]:
             _emit(product, ct, focus)
+    # per-product 定价缺口:除官网外,再补一条 pricing 搜索(覆盖未配官网 URL 的产品)
+    for product in pricing_gap_products:
+        _emit(product, "pricing", focus)
 
-    added: list[dict] = []
     for product, plan in plans.items():
         try:
-            evs, _ = search.search_plan_to_evidence(product, plan, results_per_query=3)
+            evs, _ = search.search_plan_to_evidence(product, plan, results_per_query=rpq)
             added.extend(evs)
         except Exception as e:  # noqa: BLE001
             print(f"[analyzer] gap recollect '{product}' failed: {type(e).__name__}: {e}")
@@ -1550,12 +1672,29 @@ def _run_survey(evidence: list[dict], meta: dict) -> tuple[list[dict], Optional[
                         personas.add(persona)
     if not added:
         return evidence, None
+    # 访谈回答原文:从合成证据里还原 persona/问题/反馈/期望,供报告「调研方法」卡逐条展示
+    findings_list: list[dict] = []
+    for e in added:
+        md = e.get("metadata") or {}
+        finding_text = (e.get("claim") or "").replace("[模拟访谈]", "").strip()
+        if not finding_text:
+            continue
+        findings_list.append({
+            "product": e.get("product") or "",
+            "persona": md.get("persona") or "匿名受访者",
+            "question_id": md.get("question_id") or "",
+            "claim_type": e.get("claim_type") or "",
+            "finding": finding_text,
+            "expectation": md.get("expectation") or "",
+            "evidence_id": e.get("evidence_id") or "",
+        })
     research_method = {
         "method": "LLM 模拟问卷调研 + 用户访谈(合成数据,非真实用户,已脱敏)",
         "synthetic": True,
         "questions": [{"id": q.get("id"), "text": q.get("text")} for q in questions if q.get("text")][:6],
         "n_findings": len(added),
         "personas": sorted(personas)[:8],
+        "findings": findings_list[:16],  # 控量:逐条访谈回答,前端可展开
     }
     return evidence + added, research_method
 
@@ -1610,39 +1749,72 @@ def analyzer_node(state: AgentState) -> AgentState:
     # 就**只对这些缺口**定向搜索 → 合并写回 evidence → 重出一遍 facts。比盲目全量补采省额度、命中准。
     # 同时充当覆盖兜底:缺失的必需 claim_type 会被主动补回。ANALYZER_GAP_REFILL=0 可关。
     if _gap_refill_enabled() and not is_mock_mode():
-        gaps = _coverage_gaps(facts, meta, evidence)
-        if gaps["unknown_cells"] or gaps["missing_claim_types"]:
-            _ct_cn = {"feature_existence": "功能", "performance_quality": "体验",
-                      "pricing": "定价", "user_pain": "痛点"}
+        # 多轮补采:每轮自检缺口 → 定向补 → 局部重出 facts → 再自检。直到无缺口 / 补不到新证据 /
+        # 用完轮数。第 2 轮起 _gap_targeted_recollect 自动放开站点锚定 + 多取结果(韧性升级)。
+        max_rounds = max(1, int(os.environ.get("ANALYZER_GAP_MAX_ROUNDS", "2")))
+        _ct_cn = {"feature_existence": "功能", "performance_quality": "体验",
+                  "pricing": "定价", "user_pain": "痛点"}
+        _sec_cn = {"feature_tree": "功能对比", "pricing_model": "定价", "user_persona": "用户画像"}
+        exhausted_pricing: set = set()   # 已尽力仍抓不到价的产品(如 Asana SPA),不再触发 pricing_model 重算
+        prev_pgap: set = set()
+        for round_idx in range(max_rounds):
+            gaps = _coverage_gaps(facts, meta, evidence)
+            # per-product 定价已尽力剔除:上一轮补过、这一轮仍缺的产品 = 抓不动 → 标记后不再触发,
+            # 避免昂贵的 pricing_model 为补不上的缺口空转重算(实测旧版 4×/183s 的元凶)。
+            cur_pgap = set(gaps.get("pricing_gap_products") or [])
+            newly = cur_pgap & prev_pgap
+            if newly:
+                exhausted_pricing |= newly
+                print(f"[analyzer] 定价已尽力仍缺,停止重试: {sorted(newly)}")
+            prev_pgap = cur_pgap
+            gaps["pricing_gap_products"] = sorted(p for p in cur_pgap if p not in exhausted_pricing)
+            pgap = gaps["pricing_gap_products"]
+            if not (gaps["unknown_cells"] or gaps["missing_claim_types"] or pgap):
+                break  # 无缺口(或剩下的都已尽力),收敛
             _miss = "、".join(_ct_cn.get(c, c) for c in gaps["missing_claim_types"])
             _tail = f"，并缺 {_miss}证据" if _miss else ""
+            _ptail = f"，{len(pgap)} 个产品定价缺失" if pgap else ""
+            _rtag = f"第{round_idx + 1}轮：" if round_idx else ""
             _emit_progress(step="facts", phase="gap_refill_start",
-                           summary=f"发现 {len(gaps['unknown_cells'])} 个空白项{_tail}，定向补采")
+                           summary=f"{_rtag}发现 {len(gaps['unknown_cells'])} 个空白项{_tail}{_ptail}，定向补采")
             try:
-                new_ev = _gap_targeted_recollect(meta, gaps, focus)
+                new_ev = _gap_targeted_recollect(meta, gaps, focus, round_idx=round_idx)
             except Exception as e:  # noqa: BLE001
                 print(f"[analyzer] gap refill 失败(忽略): {e}")
                 new_ev = []
             existing_ids = {e.get("evidence_id") for e in evidence}
             new_ev = [e for e in new_ev if e.get("evidence_id") not in existing_ids]
-            if new_ev:
-                evidence = evidence + new_ev
-                # 只重跑有缺口的 section(常见情况只重出 feature_tree,跳过没缺口的 pricing/persona)
-                affected = _gap_affected_sections(gaps) or list(_FACTS_SECTIONS)
-                # 再按产品收窄:feature_tree 只重填有空白格的产品,其余从上一轮复用(省 ~2/3 调用)
-                gap_products = sorted({p for p, _ in gaps["unknown_cells"]})
-                if gaps["missing_claim_types"]:
-                    gap_products = _target_products(meta)  # 缺整类证据 → 各产品都可能受影响
-                _sec_cn = {"feature_tree": "功能对比", "pricing_model": "定价", "user_persona": "用户画像"}
-                _names = "、".join(_sec_cn.get(s, s) for s in affected)
-                _ponly = f"(仅 {len(gap_products)}/{len(_target_products(meta))} 个产品)" if gap_products and "feature_tree" in affected else ""
-                print(f"[analyzer] gap refill added {len(new_ev)} evidence; 只重出: {affected} 产品: {gap_products or '全部'}")
-                _emit_progress(step="facts", phase="gap_refill_done",
-                               summary=f"定向补采 {len(new_ev)} 条，重新梳理{_names}{_ponly}")
-                partial = _step1_facts(evidence, meta, analyzer_retry=analyzer_retry,
-                                       spine=spine, only_sections=affected,
-                                       only_products=gap_products or None, prev_facts=facts)
-                facts.update(partial)
+            if not new_ev:
+                print(f"[analyzer] gap refill round {round_idx + 1}: 没补到新证据,停止")
+                break  # 补不到新证据 → 再循环也白搭
+            evidence = evidence + new_ev
+            # 成本闸门:只重跑「这一轮真补到了对应类型新证据」的 section。
+            # 否则像 Asana 付费档这种客观补不上的缺口,会让昂贵的 pricing_model 每轮空转重算(实测 4×/183s)。
+            new_cts = {e.get("claim_type") for e in new_ev}
+            sec_for_ct = {
+                "feature_tree": {"feature_existence", "performance_quality"},
+                "pricing_model": {"pricing"},
+                "user_persona": {"user_pain"},
+            }
+            gap_secs = _gap_affected_sections(gaps) or list(_FACTS_SECTIONS)
+            affected = [s for s in gap_secs if (sec_for_ct.get(s, set()) & new_cts)]
+            if not affected:
+                print(f"[analyzer] gap refill round {round_idx + 1}: 补到的证据类型与缺口 section 不匹配"
+                      f"(new={sorted(c for c in new_cts if c)}),跳过重算,停止")
+                break  # 补到的不是缺口要的类型 → 重算也不会变,停
+            # 再按产品收窄:feature_tree 只重填有空白格的产品,其余从上一轮复用(省 ~2/3 调用)
+            gap_products = sorted({p for p, _ in gaps["unknown_cells"]})
+            if gaps["missing_claim_types"]:
+                gap_products = _target_products(meta)  # 缺整类证据 → 各产品都可能受影响
+            _names = "、".join(_sec_cn.get(s, s) for s in affected)
+            _ponly = f"(仅 {len(gap_products)}/{len(_target_products(meta))} 个产品)" if gap_products and "feature_tree" in affected else ""
+            print(f"[analyzer] gap refill round {round_idx + 1} added {len(new_ev)} evidence; 只重出: {affected} 产品: {gap_products or '全部'}")
+            _emit_progress(step="facts", phase="gap_refill_done",
+                           summary=f"{_rtag}定向补采 {len(new_ev)} 条，重新梳理{_names}{_ponly}")
+            partial = _step1_facts(evidence, meta, analyzer_retry=analyzer_retry,
+                                   spine=spine, only_sections=affected,
+                                   only_products=gap_products or None, prev_facts=facts)
+            facts.update(partial)
 
     derivations = _step2_derivations(facts, evidence, meta, analyzer_retry=analyzer_retry)
 
