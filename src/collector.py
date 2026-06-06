@@ -1224,6 +1224,26 @@ def collector_node(state: AgentState) -> AgentState:
             for url in pp:
                 print(f"    pricing:  {url}")
 
+    # 把发现的官网域名注入 source_planner → 未配置产品的 feature/pricing 检索也锚定官网(与已配置拉平)
+    try:
+        from urllib.parse import urlparse
+        from . import source_planner as _sp
+        _disc_domains: dict[str, list[str]] = {}
+        for p, info in discovered.items():
+            doms: list[str] = []
+            for u in (info.get("official_pages") or []) + (info.get("pricing_pages") or []):
+                h = (urlparse(u).hostname or "").lower()
+                h = h[4:] if h.startswith("www.") else h
+                if h and h not in doms:
+                    doms.append(h)
+            if doms:
+                _disc_domains[p] = doms
+        _sp.set_discovered_domains(_disc_domains)
+        if _disc_domains:
+            print(f"[collector] 注入官网域名锚定: {_disc_domains}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[collector] 注入官网域名失败(忽略): {type(e).__name__}: {e}")
+
     fetched: list[dict] = []
     collection_meta: dict = {
         "products": {},

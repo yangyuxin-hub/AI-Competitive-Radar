@@ -125,8 +125,20 @@ _PRODUCTS_YAML = _ROOT / "config" / "products.yaml"
 _official_domains_cache: Optional[dict] = None
 
 
+# LLM/URL 发现注入的官网域名(让未在 products.yaml 配置的产品也能锚定官网检索)
+_discovered_domains: dict[str, list[str]] = {}
+
+
+def set_discovered_domains(mapping: dict[str, list[str]]) -> None:
+    """由 collector 在 URL 发现后注入 {product: [官网域名]}。每轮重置。
+    解决:未配置产品的 feature/pricing 检索丢官网 site 锚定 → 走全网,和已配置产品不一致。"""
+    global _discovered_domains
+    _discovered_domains = {k: list(v) for k, v in (mapping or {}).items() if v}
+
+
 def _product_official_domains(product: str) -> list[str]:
-    """products.yaml 里该产品官网/定价页的域名 —— feature/pricing 检索的最权威出处。"""
+    """该产品官网/定价页域名 —— feature/pricing 检索的最权威出处。
+    合并两个来源:products.yaml 配置(缓存)+ 本轮 URL 发现注入的域名,去重保序。"""
     global _official_domains_cache
     if _official_domains_cache is None:
         _official_domains_cache = {}
@@ -143,7 +155,8 @@ def _product_official_domains(product: str) -> list[str]:
                 _official_domains_cache[name] = sorted(ds)
         except Exception:  # noqa: BLE001
             _official_domains_cache = {}
-    return _official_domains_cache.get(product, [])
+    return list(dict.fromkeys([*_official_domains_cache.get(product, []),
+                               *_discovered_domains.get(product, [])]))
 
 
 def _sites_for_claim(product: str, ct: str, by_ct: dict) -> list[tuple]:
