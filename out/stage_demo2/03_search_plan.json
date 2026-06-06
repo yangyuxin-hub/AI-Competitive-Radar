@@ -1,0 +1,248 @@
+{
+  "Cursor": [
+    {
+      "claim_type": "feature_existence",
+      "query": "Cursor AI coding assistant features",
+      "site": "cursor.com",
+      "source_type": "official_page",
+      "bias": "vendor_claim",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "feature_existence",
+      "query": "Cursor AI coding assistant features",
+      "site": "",
+      "source_type": "web_search",
+      "bias": "vendor_claim",
+      "why": "全网兜底(相关性门过滤)"
+    },
+    {
+      "claim_type": "performance_quality",
+      "query": "Cursor AI coding assistant review",
+      "site": "reddit.com",
+      "source_type": "reddit",
+      "bias": "user_generated",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "performance_quality",
+      "query": "Cursor AI coding assistant review",
+      "site": "g2.com",
+      "source_type": "web_search",
+      "bias": "user_generated",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "performance_quality",
+      "query": "Cursor AI coding assistant review",
+      "site": "",
+      "source_type": "web_search",
+      "bias": "user_generated",
+      "why": "全网兜底(相关性门过滤)"
+    },
+    {
+      "claim_type": "pricing",
+      "query": "Cursor AI coding assistant pricing plans",
+      "site": "cursor.com",
+      "source_type": "pricing_page",
+      "bias": "vendor_claim",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "pricing",
+      "query": "Cursor AI coding assistant pricing plans",
+      "site": "",
+      "source_type": "web_search",
+      "bias": "vendor_claim",
+      "why": "全网兜底(相关性门过滤)"
+    },
+    {
+      "claim_type": "user_pain",
+      "query": "Cursor AI coding assistant complaints problems",
+      "site": "reddit.com",
+      "source_type": "reddit",
+      "bias": "user_generated",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "user_pain",
+      "query": "Cursor AI coding assistant complaints problems",
+      "site": "news.ycombinator.com",
+      "source_type": "hn",
+      "bias": "user_generated",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "user_pain",
+      "query": "Cursor AI coding assistant complaints problems",
+      "site": "",
+      "source_type": "web_search",
+      "bias": "user_generated",
+      "why": "全网兜底(相关性门过滤)"
+    }
+  ],
+  "Windsurf": [
+    {
+      "claim_type": "feature_existence",
+      "query": "Windsurf AI coding assistant features",
+      "site": "codeium.com",
+      "source_type": "official_page",
+      "bias": "vendor_claim",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "feature_existence",
+      "query": "Windsurf AI coding assistant features",
+      "site": "",
+      "source_type": "web_search",
+      "bias": "vendor_claim",
+      "why": "全网兜底(相关性门过滤)"
+    },
+    {
+      "claim_type": "performance_quality",
+      "query": "Windsurf AI coding assistant review",
+      "site": "reddit.com",
+      "source_type": "reddit",
+      "bias": "user_generated",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "performance_quality",
+      "query": "Windsurf AI coding assistant review",
+      "site": "g2.com",
+      "source_type": "web_search",
+      "bias": "user_generated",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "performance_quality",
+      "query": "Windsurf AI coding assistant review",
+      "site": "",
+      "source_type": "web_search",
+      "bias": "user_generated",
+      "why": "全网兜底(相关性门过滤)"
+    },
+    {
+      "claim_type": "pricing",
+      "query": "Windsurf AI coding assistant pricing plans",
+      "site": "codeium.com",
+      "source_type": "pricing_page",
+      "bias": "vendor_claim",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "pricing",
+      "query": "Windsurf AI coding assistant pricing plans",
+      "site": "",
+      "source_type": "web_search",
+      "bias": "vendor_claim",
+      "why": "全网兜底(相关性门过滤)"
+    },
+    {
+      "claim_type": "user_pain",
+      "query": "Windsurf AI coding assistant complaints problems",
+      "site": "reddit.com",
+      "source_type": "reddit",
+      "bias": "user_generated",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "user_pain",
+      "query": "Windsurf AI coding assistant complaints problems",
+      "site": "news.ycombinator.com",
+      "source_type": "hn",
+      "bias": "user_generated",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "user_pain",
+      "query": "Windsurf AI coding assistant complaints problems",
+      "site": "",
+      "source_type": "web_search",
+      "bias": "user_generated",
+      "why": "全网兜底(相关性门过滤)"
+    }
+  ],
+  "GitHubCopilot": [
+    {
+      "claim_type": "feature_existence",
+      "query": "GitHubCopilot AI coding assistant features",
+      "site": "github.com",
+      "source_type": "official_page",
+      "bias": "vendor_claim",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "feature_existence",
+      "query": "GitHubCopilot AI coding assistant features",
+      "site": "",
+      "source_type": "web_search",
+      "bias": "vendor_claim",
+      "why": "全网兜底(相关性门过滤)"
+    },
+    {
+      "claim_type": "performance_quality",
+      "query": "GitHubCopilot AI coding assistant review",
+      "site": "reddit.com",
+      "source_type": "reddit",
+      "bias": "user_generated",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "performance_quality",
+      "query": "GitHubCopilot AI coding assistant review",
+      "site": "g2.com",
+      "source_type": "web_search",
+      "bias": "user_generated",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "performance_quality",
+      "query": "GitHubCopilot AI coding assistant review",
+      "site": "",
+      "source_type": "web_search",
+      "bias": "user_generated",
+      "why": "全网兜底(相关性门过滤)"
+    },
+    {
+      "claim_type": "pricing",
+      "query": "GitHubCopilot AI coding assistant pricing plans",
+      "site": "github.com",
+      "source_type": "pricing_page",
+      "bias": "vendor_claim",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "pricing",
+      "query": "GitHubCopilot AI coding assistant pricing plans",
+      "site": "",
+      "source_type": "web_search",
+      "bias": "vendor_claim",
+      "why": "全网兜底(相关性门过滤)"
+    },
+    {
+      "claim_type": "user_pain",
+      "query": "GitHubCopilot AI coding assistant complaints problems",
+      "site": "reddit.com",
+      "source_type": "reddit",
+      "bias": "user_generated",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "user_pain",
+      "query": "GitHubCopilot AI coding assistant complaints problems",
+      "site": "news.ycombinator.com",
+      "source_type": "hn",
+      "bias": "user_generated",
+      "why": "权威源定向"
+    },
+    {
+      "claim_type": "user_pain",
+      "query": "GitHubCopilot AI coding assistant complaints problems",
+      "site": "",
+      "source_type": "web_search",
+      "bias": "user_generated",
+      "why": "全网兜底(相关性门过滤)"
+    }
+  ]
+}

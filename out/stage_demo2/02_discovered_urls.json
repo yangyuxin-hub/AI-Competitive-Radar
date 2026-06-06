@@ -1,0 +1,41 @@
+{
+  "Cursor": {
+    "official_pages": [
+      "https://cursor.com/features"
+    ],
+    "pricing_pages": [
+      "https://cursor.com/pricing"
+    ],
+    "aliases": [
+      "Cursor AI",
+      "Cursor editor"
+    ],
+    "source": "config"
+  },
+  "GitHubCopilot": {
+    "official_pages": [
+      "https://github.com/features/copilot"
+    ],
+    "pricing_pages": [
+      "https://github.com/features/copilot/plans"
+    ],
+    "aliases": [
+      "GitHub Copilot",
+      "Copilot"
+    ],
+    "source": "config"
+  },
+  "Windsurf": {
+    "official_pages": [
+      "https://codeium.com/windsurf"
+    ],
+    "pricing_pages": [
+      "https://codeium.com/pricing"
+    ],
+    "aliases": [
+      "Windsurf",
+      "Codeium Windsurf"
+    ],
+    "source": "config"
+  }
+}

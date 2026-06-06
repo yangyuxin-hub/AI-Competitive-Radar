@@ -1,0 +1,74 @@
+{
+  "reasoning": "识别为AI编程助手品类，用户明确要求对比Cursor、Windsurf、GitHub Copilot的代码补全体验差距，意图属于功能对比。竞品从2026年最新的公开替代榜单中提取，覆盖主流同体量产品、开源新锐挑战者、大厂生态方案、差异化命令行/云IDE替代，覆盖不同竞争逻辑。焦点维度全部围绕代码补全体验的核心指标展开，没有使用泛化的通用维度，完全贴合用户指定的分析方向。",
+  "domain_name": "AI编程助手",
+  "analysis_intent": "feature_compare",
+  "target_candidates": [
+    "Cursor",
+    "Windsurf",
+    "GitHubCopilot"
+  ],
+  "competitors_candidates": [
+    "Windsurf",
+    "GitHubCopilot",
+    "Cline",
+    "Continue.dev",
+    "Aider",
+    "Zed",
+    "Claude Code",
+    "Trae AI",
+    "Devin",
+    "Replit AI"
+  ],
+  "competitors_suggested": [
+    "Windsurf",
+    "GitHubCopilot",
+    "Cline"
+  ],
+  "competitor_hints": {
+    "Windsurf": "【主流现有】原Codeium团队推出的AI IDE，主打高性价比补全体验",
+    "GitHubCopilot": "【大厂生态】微软+OpenAI联合推出的VS Code原生扩展，生态适配极强",
+    "Cline": "【新锐AI】2026年爆火的开源AI编码助手，SWE-bench跑分行业领先",
+    "Continue.dev": "【差异化替代】完全开源可自托管的IDE插件，无厂商数据锁定",
+    "Aider": "【差异化替代】命令行端的AI编码助手，支持多仓库大文件补全",
+    "Zed": "【新锐AI】高性能原生AI IDE，主打低延迟实时补全",
+    "Claude Code": "【大厂生态】Anthropic推出的原生编码助手，长上下文补全能力突出",
+    "Trae AI": "【大厂生态】字节跳动推出的国产AI IDE，适配国内开发者使用习惯",
+    "Devin": "【新锐AI】Cognition推出的端到端AI编程代理，支持全流程自动编码",
+    "Replit AI": "【差异化替代】在线云IDE内置的AI编码能力，无需本地环境即可使用"
+  },
+  "focus_candidates": [
+    "实时行内补全准确率",
+    "长上下文多文件补全能力",
+    "补全触发响应延迟",
+    "补全代码可直接运行率",
+    "自定义补全规则适配",
+    "大模型切换自由度"
+  ],
+  "focus_hints": {
+    "实时行内补全准确率": "日常写单行/小段代码时补全的正确率，直接决定日常编码效率",
+    "长上下文多文件补全能力": "跨多个关联文件理解项目上下文后给出补全的能力，是拉开体验差距的核心",
+    "补全触发响应延迟": "输入代码后补全弹窗弹出的等待时长，直接影响编码流畅度",
+    "补全代码可直接运行率": "生成的补全代码无需修改就能直接运行的比例，减少后续调试成本",
+    "自定义补全规则适配": "支持用户自定义项目专属补全规则、内部库提示词的灵活度",
+    "大模型切换自由度": "是否支持用户自行切换不同大模型作为补全后端，适配不同场景需求"
+  },
+  "focus_suggested": "实时行内补全准确率",
+  "purpose_candidates": [
+    "评估不同AI编程助手的代码补全能力差异",
+    "辅助个人/团队选型适配的AI编码工具",
+    "找到自身产品补全体验的优化方向",
+    "梳理2026年AI编码赛道补全能力的行业基准"
+  ],
+  "purpose_suggested": "评估不同AI编程助手的代码补全能力差异",
+  "domain_key": "ai_coding",
+  "_domain_products": [
+    "Cursor",
+    "Windsurf",
+    "GitHubCopilot"
+  ],
+  "_hit_products": [
+    "Cursor",
+    "Windsurf",
+    "GitHubCopilot"
+  ]
+}

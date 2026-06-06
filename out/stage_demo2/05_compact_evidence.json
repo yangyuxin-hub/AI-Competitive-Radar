@@ -1,0 +1,666 @@
+[
+  {
+    "evidence_id": "SB00FAB4",
+    "product": "Windsurf",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "mcp-registry.codeium.com",
+    "extracted_snippet": "{\"servers\":[{\"server\":{\"$schema\":\"https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json\",\"name\":\"io.windsurf/filesystem\",\"title\":\"Filesystem\",\"description\":\""
+  },
+  {
+    "evidence_id": "SFBE6636",
+    "product": "Windsurf",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "windsurf-stable.codeium.com",
+    "extracted_snippet": "{\"url\":\"https://windsurf-stable.codeiumdata.com/win32-x64-user/stable/a335ac3d8c6b04d563d8bd757cadc86d305e3b12/DevinUserSetup-x64-3.0.12.exe\",\"name\":\"1.110.1\",\"notes\":\"a335ac3d8c6b"
+  },
+  {
+    "evidence_id": "S4F567D2",
+    "product": "Windsurf",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "Windsurf - The best AI for Coding",
+    "extracted_snippet": "Windsurf is the world's most advanced AI coding assistant for developers and enterprises. Windsurf Editor — the first AI-native IDE that keeps developers in flow."
+  },
+  {
+    "evidence_id": "SD785395",
+    "product": "Windsurf",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "Windsurf Tutorial for Beginners (AI Code Editor) - Better... - YouTube",
+    "extracted_snippet": "About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy & Safety How YouTube works Test new features."
+  },
+  {
+    "evidence_id": "S249F056",
+    "product": "Windsurf",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "Windsurf AI Review 2026: The Best Coding IDE for... | NxCode",
+    "extracted_snippet": "The team pivoted in late 2024, rebranding as Windsurf and releasing a full-featured AI IDE built on a VS Code foundation."
+  },
+  {
+    "evidence_id": "S74DE73A",
+    "product": "Windsurf",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "Unlimited access to SWE-1.6, the fastest coding model in the world.",
+    "extracted_snippet": "Unlimited access to SWE-1.6, the fastest coding model in the world."
+  },
+  {
+    "evidence_id": "SD43D838",
+    "product": "Windsurf",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "You decide what to build, then your agents write the code, chase the edge cases, and test every detail.",
+    "extracted_snippet": "You decide what to build, then your agents write the code, chase the edge cases, and test every detail."
+  },
+  {
+    "evidence_id": "SC297D8B",
+    "product": "Windsurf",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "To build a dashboard for real-time store sales data, we will stream events from Kafka over websockets and render them...",
+    "extracted_snippet": "To build a dashboard for real-time store sales data, we will stream events from Kafka over websockets and render them onto a three.js globe."
+  },
+  {
+    "evidence_id": "S8645718",
+    "product": "Windsurf",
+    "claim_type": "performance_quality",
+    "source_bias": "vendor_claim",
+    "claim": "Fast Context finds the exact files and lines your agent needs—in milliseconds.",
+    "extracted_snippet": "Fast Context finds the exact files and lines your agent needs—in milliseconds."
+  },
+  {
+    "evidence_id": "S21E9C9F",
+    "product": "Windsurf",
+    "claim_type": "performance_quality",
+    "source_bias": "user_generated",
+    "claim": "Is Windsurf really that good or just hype ? : r/ChatGPTCoding - Reddit",
+    "extracted_snippet": "Nov 21, 2024 · To me, windsurf is the best and most reliable for editing multiple files hands down. It just seems to know the context better. But it needs some polish and ..."
+  },
+  {
+    "evidence_id": "S66C709B",
+    "product": "Windsurf",
+    "claim_type": "performance_quality",
+    "source_bias": "user_generated",
+    "claim": "Windsurf is actually great. - Reddit",
+    "extracted_snippet": "Jan 4, 2026 · So I tried Copilot, Kiro and Windsurf and found Windsurf to be the best in terms of pricing and value. ... r/windsurf - Goodbye Windsurf. 103. 28 ..."
+  },
+  {
+    "evidence_id": "SBC8356E",
+    "product": "Windsurf",
+    "claim_type": "performance_quality",
+    "source_bias": "user_generated",
+    "claim": "Any real dev have legit review of Windsurf? : r/cursor - Reddit",
+    "extracted_snippet": "Mar 30, 2025 · Overall I still have better experience with cursor, windsurf a lot of times just abandon the task given if it's too big or complicated, cursos ..."
+  },
+  {
+    "evidence_id": "S3780DA1",
+    "product": "Windsurf",
+    "claim_type": "performance_quality",
+    "source_bias": "user_generated",
+    "claim": "Windsurf Reviews 2026: Details, Pricing, & Features | G2",
+    "extracted_snippet": "Filter 33 reviews by the users' company size, role or industry to find out how Windsurf works for a business like yours."
+  },
+  {
+    "evidence_id": "S15EDE59",
+    "product": "Windsurf",
+    "claim_type": "performance_quality",
+    "source_bias": "user_generated",
+    "claim": "Windsurf Pros and Cons | User Likes & Dislikes - G2",
+    "extracted_snippet": "Explore Windsurf's top pros, cons, and user-rated features‚ based on real, verified reviews from teams who use it every day."
+  },
+  {
+    "evidence_id": "S4B2B734",
+    "product": "Windsurf",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "Windsurf Issues : r/Codeium - Reddit",
+    "extracted_snippet": "Jan 18, 2025 · Windsurf Issues · Ignores directions: It frequently disregards instructions, even after being corrected. · Constant re-reading of files: Instead ..."
+  },
+  {
+    "evidence_id": "SF7718BE",
+    "product": "Windsurf",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "Report from a Windsurf user : r/Codeium - Reddit",
+    "extracted_snippet": "Jan 3, 2025 · I was a big fan of Codeium's Windsurf, until December 2024. A cascade of errors, bugs, problems and lack of support started to happen."
+  },
+  {
+    "evidence_id": "SB25AF39",
+    "product": "Windsurf",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "Anyone else having issues with Windsurf editing files? - Reddit",
+    "extracted_snippet": "Mar 12, 2025 · Windsurf cannot edit any files without tool errors. Everyone should petition a version rollback feature so that we can rollback Windsurf to a previous stable ..."
+  },
+  {
+    "evidence_id": "S65D18BD",
+    "product": "Windsurf",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "Ask HN: Cursor or Windsurf? - Hacker News",
+    "extracted_snippet": "May 12, 2025 · On an older mid-range laptop, I ran into problems with a bunch of its auto-pair stuff of all things. ... Windsurf has minor UI-issues all over."
+  },
+  {
+    "evidence_id": "S53C45A6",
+    "product": "Windsurf",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Pricing - Windsurf",
+    "extracted_snippet": "Compare plans ; Free. $0/month. Light ; Pro. $20/month. Standard ; Max. $200/month. Heavy ; Teams. $40/user/month. Standard ; Enterprise. Let's talk. Let's talk."
+  },
+  {
+    "evidence_id": "S175E9ED",
+    "product": "Windsurf",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Blog | Windsurf",
+    "extracted_snippet": "Introducing our new Windsurf pricing plans. We're simplifying Windsurf pricing across Free, Pro, and Teams alongside launching a new Max plan for our power ..."
+  },
+  {
+    "evidence_id": "SE957AC8",
+    "product": "Windsurf",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Windsurf for Enterprise",
+    "extracted_snippet": "Plans and Pricing overview. Teams. $40. per user / month. Select plan. Everything ..."
+  },
+  {
+    "evidence_id": "S1EA5110",
+    "product": "Windsurf",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Introducing our new Windsurf pricing plans | Devin",
+    "extracted_snippet": "March 18, 2026 - We're simplifying Windsurf pricing across Free, Pro, and Teams alongside launching a new Max plan for our power users. The new plans replace the current credit-bas"
+  },
+  {
+    "evidence_id": "S0D76DF4",
+    "product": "Windsurf",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Plans and Usage - Devin Docs",
+    "extracted_snippet": "Paid plans include Pro/Max for individuals, Teams for organizations, and Enterprise for larger companies.We accept all major credit cards, Apple Pay, Cash App Pay, Google Pay, Link"
+  },
+  {
+    "evidence_id": "S5D9E9B8",
+    "product": "Windsurf",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Windsurf Pricing 2026: Plans, Quotas & What Changed - Verdent Guides",
+    "extracted_snippet": "March 24, 2026 - Windsurf is not changing prices for paying subscribers, and is including a free extra week to try the new system before you commit. Pre-purchased credits are conve"
+  },
+  {
+    "evidence_id": "S26EAE1A",
+    "product": "Windsurf",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Frequently Asked Questions · Free $0 Download Light quota to code with agents Limited model availability Unlimited in...",
+    "extracted_snippet": "Frequently Asked Questions · Free $0 Download Light quota to code with agents Limited model availability Unlimited inline edits Unlimited Tab completions"
+  },
+  {
+    "evidence_id": "S2223916",
+    "product": "Windsurf",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Frequently Asked Questions · +$40/month per full user Each full user includes their own generous quota and access to ...",
+    "extracted_snippet": "Frequently Asked Questions · +$40/month per full user Each full user includes their own generous quota and access to Devin Desktop"
+  },
+  {
+    "evidence_id": "SA2BA026",
+    "product": "GitHubCopilot",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "GitHub Copilot · Your AI pair programmer · GitHub",
+    "extracted_snippet": "GitHub Copilot Business primarily features GitHub Copilot in the coding environment - that is the IDE, CLI and GitHub Mobile."
+  },
+  {
+    "evidence_id": "S4F1BE05",
+    "product": "GitHubCopilot",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "GitHub Copilot features - GitHub Docs",
+    "extracted_snippet": "Use GitHub Copilot. Best practices. Get code suggestions.Copilot also offers a suite of features for administrators."
+  },
+  {
+    "evidence_id": "S68683F7",
+    "product": "GitHubCopilot",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "GitHub Copilot features",
+    "extracted_snippet": "Assistive features These tools are used synchronously, providing advice or suggestions as people work on a task. Copilot Chat A chat interface that lets you ask coding-related ques"
+  },
+  {
+    "evidence_id": "SBA78E21",
+    "product": "GitHubCopilot",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "GitHub for Beginners: Essential features of GitHub Copilot",
+    "extracted_snippet": "Welcome back to our second GitHub for Beginners series, where we are diving into the world of GitHub Copilot. In our previous episode, we introduced you to GitHub Copilot and gave "
+  },
+  {
+    "evidence_id": "S208F4F5",
+    "product": "GitHubCopilot",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "Top 10 GitHub Copilot Features Every Developer Should Know",
+    "extracted_snippet": "Discover the top 10 GitHub Copilot features that can boost your productivity as a developer. From smart code completions to Copilot Chat, learn how to use Copilot effectively."
+  },
+  {
+    "evidence_id": "SCD709A9",
+    "product": "GitHubCopilot",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "GitHub Copilot is powered by generative AI models developed by GitHub, OpenAI, and Microsoft. It has been trained on ...",
+    "extracted_snippet": "GitHub Copilot is powered by generative AI models developed by GitHub, OpenAI, and Microsoft. It has been trained on natural language text and source code from publicly available s"
+  },
+  {
+    "evidence_id": "S6D56447",
+    "product": "GitHubCopilot",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "GitHub Copilot · Plans & pricing · GitHub",
+    "extracted_snippet": "GitHub Copilot Max is built for heavy Copilot usage, including sustained agent-driven workflows, and includes $100/month in GitHub AI Credits."
+  },
+  {
+    "evidence_id": "S4D1D5D7",
+    "product": "GitHubCopilot",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "GitHub Copilot · Plans & pricing",
+    "extracted_snippet": "Explore GitHub Copilot plans for individuals and organizations, offering AI-powered coding assistance directly in your editor for enhanced productivity."
+  },
+  {
+    "evidence_id": "S3B6FA48",
+    "product": "GitHubCopilot",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Plans for GitHub Copilot",
+    "extracted_snippet": "GitHub Copilot Business is for organizations on GitHub Free or GitHub Team plan, or enterprises on GitHub Enterprise Cloud. This plan includes Copilot cloud agent, access to a broa"
+  },
+  {
+    "evidence_id": "SDE2D015",
+    "product": "GitHubCopilot",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "About individual GitHub Copilot plans and benefits",
+    "extracted_snippet": "GitHub offers several Copilot plans for individual developers, each with different features, model access, and usage limits to support a wide range of coding needs."
+  },
+  {
+    "evidence_id": "SF81FA60",
+    "product": "GitHubCopilot",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "GitHub Copilot Pricing (2026): Plans, Costs & Is It Worth It?",
+    "extracted_snippet": "Mar 17, 2026 · Full breakdown of GitHub Copilot's Free, Pro, Business, and Enterprise plans -- what each tier includes, limits, and whether it's worth paying for."
+  },
+  {
+    "evidence_id": "S2C964C8",
+    "product": "GitHubCopilot",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "GitHub Copilot Pricing 2026: Free to $39/user/month — All 5 Plans",
+    "extracted_snippet": "May 29, 2026 · GitHub Copilot pricing: Free (50 requests/mo), Pro $10, Pro+ $39, Business $19/user, Enterprise $39/user. Compare all plans. Verified April 2026."
+  },
+  {
+    "evidence_id": "SFFC36D1",
+    "product": "GitHubCopilot",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "GitHub Copilot Pricing — Business & Enterprise Plans | Copilot",
+    "extracted_snippet": "GitHub Copilot pricing for Business and Enterprise plans. Per-seat rates, bulk discounts from 10+ seats, and a $4,999 Org Enterprise package. Compare plans now."
+  },
+  {
+    "evidence_id": "S74E8FAF",
+    "product": "GitHubCopilot",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Usage from your existing licensed users continues to draw from their included monthly allowance as it does today. Beg...",
+    "extracted_snippet": "Usage from your existing licensed users continues to draw from their included monthly allowance as it does today. Beginning June 1, 2026, code review workflows also consume GitHub "
+  },
+  {
+    "evidence_id": "S8047A45",
+    "product": "GitHubCopilot",
+    "claim_type": "performance_quality",
+    "source_bias": "vendor_claim",
+    "claim": "GitHub Copilot enables developers to focus more energy on problem solving and collaboration and spend less effort on ...",
+    "extracted_snippet": "GitHub Copilot enables developers to focus more energy on problem solving and collaboration and spend less effort on the mundane and boilerplate. That’s why developers who use GitH"
+  },
+  {
+    "evidence_id": "SF259F5C",
+    "product": "GitHubCopilot",
+    "claim_type": "performance_quality",
+    "source_bias": "user_generated",
+    "claim": "Why does GitHub Copilot pull request reviews give such poor ... - Reddit",
+    "extracted_snippet": "Jul 12, 2025 · Co pilot does a bunch of context “optimizations” to save on cost that make the outputs significantly worse. It's pretty much unusable compared ..."
+  },
+  {
+    "evidence_id": "SBF0C947",
+    "product": "GitHubCopilot",
+    "claim_type": "performance_quality",
+    "source_bias": "user_generated",
+    "claim": "Is Github Copilot worth it? : r/ExperiencedDevs - Reddit",
+    "extracted_snippet": "May 27, 2025 · Past month I was experimenting with GitHub Copilot and my conclusion is no. Features I was using: Autocomplete (completes code as you type)."
+  },
+  {
+    "evidence_id": "S859DA7B",
+    "product": "GitHubCopilot",
+    "claim_type": "performance_quality",
+    "source_bias": "user_generated",
+    "claim": "GitHub copilot for code reviewer - Reddit",
+    "extracted_snippet": "Mar 11, 2026 · It works great for us. We turned it on so it automatically reviews all PRs and we don't merge anything that doesn't have all the copilot ..."
+  },
+  {
+    "evidence_id": "SFC14712",
+    "product": "GitHubCopilot",
+    "claim_type": "performance_quality",
+    "source_bias": "user_generated",
+    "claim": "Top 10 Gemini Alternatives & Competitors in 2026 | G2",
+    "extracted_snippet": "The best Gemini alternatives are ChatGPT, GitHub Copilot, and Canva.Top 10 Alternatives to Gemini Recently Reviewed By G2 Community. Browse options below."
+  },
+  {
+    "evidence_id": "SBBD71EA",
+    "product": "GitHubCopilot",
+    "claim_type": "performance_quality",
+    "source_bias": "user_generated",
+    "claim": "8 Best AI Coding Assistants I Recommend for 2026",
+    "extracted_snippet": "GitHub Copilot: Best for IDE-integrated AI coding across any language or framework Delivers inline code suggestions, chat-based assistance, and broad IDE support to help developers"
+  },
+  {
+    "evidence_id": "S30618A0",
+    "product": "GitHubCopilot",
+    "claim_type": "performance_quality",
+    "source_bias": "user_generated",
+    "claim": "I Tried GitHub Copilot vs. ChatGPT for Coding: What I Learned",
+    "extracted_snippet": "TL;DR: GitHub Copilot vs. ChatGPT. GitHub Copilot is best for developers who want real-time code suggestions and autocompletion directly inside their IDE."
+  },
+  {
+    "evidence_id": "SFA50E79",
+    "product": "GitHubCopilot",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "GitHub issues are getting filled with low quality Copilot reports - Reddit",
+    "extracted_snippet": "Feb 3, 2026 · For some time now, I have noticed that the VS Code GitHub issues page is filling up with soft complaints and low quality reports."
+  },
+  {
+    "evidence_id": "S89AE4F4",
+    "product": "GitHubCopilot",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "I get the frustration, but is the whole point of this sub to complain? - Reddit",
+    "extracted_snippet": "Apr 16, 2026 · There are two places: issues and community discussion. Both are officially locations to give Copilot feedback and report problems. Odysseyan."
+  },
+  {
+    "evidence_id": "SDAF5489",
+    "product": "GitHubCopilot",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "Copilot is rubbish, and I'm tired of pretending it isn't. : r/github - Reddit",
+    "extracted_snippet": "Aug 7, 2023 · This tool cannot write context, sensible comments or summarize a file effectively. It simply spits out walls of text, which often take longer to read than ..."
+  },
+  {
+    "evidence_id": "S37D435F",
+    "product": "GitHubCopilot",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "We've filed a lawsuit against GitHub Copilot | Hacker News",
+    "extracted_snippet": "November 12, 2022 - “AI” is just fancy speak for “complex math program”. If I make a program that’s simply given an arbitrary input then, thought math operations, outputs Microsoft"
+  },
+  {
+    "evidence_id": "SA00BA35",
+    "product": "GitHubCopilot",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "GitHub's Copilot lies about its documentation. Why would I trust it with my code | Hacker News",
+    "extracted_snippet": "October 3, 2024 - Today, I sense a similar mindset among those who oppose AI assistants in software development. They tend to focus on the perceived limitations of these tools, oft"
+  },
+  {
+    "evidence_id": "S2D8B676",
+    "product": "GitHubCopilot",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "I find GitHub Copilot close to useless for production code. The worst, most obsc... | Hacker News",
+    "extracted_snippet": "May 16, 2024 - It's a different story for test code. Test code is often formulaic and \"standardized\" (given/when/then). For instance, I find myself writing the first test case and "
+  },
+  {
+    "evidence_id": "SEC9E5B7",
+    "product": "GitHubCopilot",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "Common GitHub Copilot Complaints | CrowdMind Atlas",
+    "extracted_snippet": "GitHub Copilot complaints cluster around suggestion quality, context limits, pricing, enterprise controls, noisy autocomplete, weak fit for large codebases, and uncertainty about w"
+  },
+  {
+    "evidence_id": "SB5D150C",
+    "product": "GitHubCopilot",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "Is GitHub Copilot Getting Worse in 2026? What Changed... | NxCode",
+    "extracted_snippet": "The Specific Complaints. Developer complaints about Copilot cluster into four categories, each well-documented across GitHub Discussions, Reddit, and developer blogs."
+  },
+  {
+    "evidence_id": "S9B45556",
+    "product": "Cursor",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "Cursor: The best coding agent",
+    "extracted_snippet": "This element contains an interactive demo for sighted users. It's a demonstration of Cursor's IDE showing AI-powered coding assistance features."
+  },
+  {
+    "evidence_id": "S6CABA2E",
+    "product": "Cursor",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "Cursor — Build Software with AI Agents",
+    "extracted_snippet": "Interactive demo with multiple windows showing Cursor's AI-powered features."
+  },
+  {
+    "evidence_id": "SBE04DD1",
+    "product": "Cursor",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "Meet the new Cursor · Cursor",
+    "extracted_snippet": "Building on the best features of Cursor Alpha users told us that a lot of what they like about Cursor 3 is the way it combines the best parts of the IDE with more recent capabiliti"
+  },
+  {
+    "evidence_id": "S04B3758",
+    "product": "Cursor",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "Cursor AI April-May 2026 Update: 5 New Features That Actually Matter",
+    "extracted_snippet": "What actually changed in Cursor AI this spring? See the 5 updates that matter most, including Background Agents, stronger Agent mode, Plan Mode, MCP integration, and faster tab com"
+  },
+  {
+    "evidence_id": "S88AD1C5",
+    "product": "Cursor",
+    "claim_type": "feature_existence",
+    "source_bias": "vendor_claim",
+    "claim": "Cursor Release Notes - June 2026 Latest Updates - Releasebot",
+    "extracted_snippet": "Complete list of Cursor latest updates for June 2026: get every product news, release note, and changelog from Cursor summarized in one timeline."
+  },
+  {
+    "evidence_id": "S3296F18",
+    "product": "Cursor",
+    "claim_type": "performance_quality",
+    "source_bias": "vendor_claim",
+    "claim": "Cursor - The AI Code Editor",
+    "extracted_snippet": "Intelligent, fast, and familiar, Cursor is the best way to code with AI. See more features."
+  },
+  {
+    "evidence_id": "S9B28BF1",
+    "product": "Cursor",
+    "claim_type": "performance_quality",
+    "source_bias": "vendor_claim",
+    "claim": "“ It was night and day from one batch to another, adoption went from single digits to over 80%. It just spread like w...",
+    "extracted_snippet": "“ It was night and day from one batch to another, adoption went from single digits to over 80%. It just spread like wildfire, all the best builders were using Cursor. ”"
+  },
+  {
+    "evidence_id": "SFD8091B",
+    "product": "Cursor",
+    "claim_type": "performance_quality",
+    "source_bias": "vendor_claim",
+    "claim": "“ My favorite enterprise AI service is Cursor. Every one of our engineers, some 40,000, are now assisted by AI and ou...",
+    "extracted_snippet": "“ My favorite enterprise AI service is Cursor. Every one of our engineers, some 40,000, are now assisted by AI and our productivity has gone up incredibly. ”"
+  },
+  {
+    "evidence_id": "SA1E71DA",
+    "product": "Cursor",
+    "claim_type": "performance_quality",
+    "source_bias": "vendor_claim",
+    "claim": "“ It's definitely becoming more fun to be a programmer. We are at the 1% of what's possible, and it's in interactive ...",
+    "extracted_snippet": "“ It's definitely becoming more fun to be a programmer. We are at the 1% of what's possible, and it's in interactive experiences like Cursor where models like GPT-5 shine brightest"
+  },
+  {
+    "evidence_id": "S00ABC2D",
+    "product": "Cursor",
+    "claim_type": "performance_quality",
+    "source_bias": "vendor_claim",
+    "claim": "“ The most useful AI tool that I currently pay for, hands down, is Cursor. It's fast, autocompletes when and where yo...",
+    "extracted_snippet": "“ The most useful AI tool that I currently pay for, hands down, is Cursor. It's fast, autocompletes when and where you need it to, handles brackets properly, sensible keyboard shor"
+  },
+  {
+    "evidence_id": "S235AA3F",
+    "product": "Cursor",
+    "claim_type": "performance_quality",
+    "source_bias": "user_generated",
+    "claim": "Cursor is not nearly as good as this sub makes it sound, what ... - Reddit",
+    "extracted_snippet": "Cursor is not nearly as good as this sub makes it sound, what's going on?"
+  },
+  {
+    "evidence_id": "S9A2FCBB",
+    "product": "Cursor",
+    "claim_type": "performance_quality",
+    "source_bias": "user_generated",
+    "claim": "cursor - Reddit",
+    "extracted_snippet": "An unofficial subreddit for the AI-first IDE by Anysphere - cursor.sh."
+  },
+  {
+    "evidence_id": "S433FB37",
+    "product": "Cursor",
+    "claim_type": "performance_quality",
+    "source_bias": "user_generated",
+    "claim": "Cursor.sh is Amazing : r/ChatGPT - Reddit",
+    "extracted_snippet": "Cursor I find has very good AI features but is a somewhat unpolished product with many problems not just with the Linux AppImage but the Windows version, can't connect to WSL remot"
+  },
+  {
+    "evidence_id": "S6B9D3DE",
+    "product": "Cursor",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Cursor · Pricing",
+    "extracted_snippet": "2 weeks ago - If you prefer a private conversation, feel free to email us directly at hi@cursor.com. ... We recommend Pro+ for daily agent users, and Ultra for agent power users. T"
+  },
+  {
+    "evidence_id": "SA5E6150",
+    "product": "Cursor",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Pricing and plans | Cursor Docs",
+    "extracted_snippet": "Enterprise plans include pooled usage, SCIM provisioning, audit logs, advanced admin controls, and invoice billing. Contact sales to get started. See cursor.com/pricing for the ful"
+  },
+  {
+    "evidence_id": "S6ACED39",
+    "product": "Cursor",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Models & Pricing | Cursor Docs",
+    "extracted_snippet": "All prices are per million tokens, sourced from each provider's API pricing: ... Premium allows Cursor to select the most capable models for you, recommended for the most complex t"
+  },
+  {
+    "evidence_id": "SBC92AAB",
+    "product": "Cursor",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Cursor · Pricing",
+    "extracted_snippet": "Choose the plan that's right for you Can I buy Cursor from a reseller or third party? ↑ No. Cursor subscriptions are only sold directly through cursor.com. We do not authorize any "
+  },
+  {
+    "evidence_id": "SD7CFB03",
+    "product": "Cursor",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Pricing and plans | Cursor Docs",
+    "extracted_snippet": "Compare plans and manage upgrades, downgrades, and billing cycles."
+  },
+  {
+    "evidence_id": "SAEC9816",
+    "product": "Cursor",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Cursor Pricing in 2026: Hobby, Pro, Pro+, Ultra, Teams, and Enterprise ...",
+    "extracted_snippet": "Understanding Cursor Pricing in 2026 Cursor has become one of the most popular AI-native code editors in the world, and its pricing structure in 2026 reflects just how far the prod"
+  },
+  {
+    "evidence_id": "S4734790",
+    "product": "Cursor",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Hobby · $0 / mo.",
+    "extracted_snippet": "Hobby · $0 / mo."
+  },
+  {
+    "evidence_id": "SB22F80F",
+    "product": "Cursor",
+    "claim_type": "pricing",
+    "source_bias": "vendor_claim",
+    "claim": "Pro · $16 / mo.",
+    "extracted_snippet": "Pro · $16 / mo."
+  },
+  {
+    "evidence_id": "S531F883",
+    "product": "Cursor",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "Customer Support : r/cursor",
+    "extracted_snippet": "April 12, 2025 - The answer is that cursor has a lackluster support department. I have been waiting multiple days just to have a bill charged properly to the correct credit card. F"
+  },
+  {
+    "evidence_id": "S16FD350",
+    "product": "Cursor",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "Cursor IDE support hallucinates lockout policy, causes user ...",
+    "extracted_snippet": "Cursor support is garbage, but issues with billing and other things are so much worse. The team I work with it took nearly 3 months to get basic questions answered correctly when i"
+  },
+  {
+    "evidence_id": "S325255D",
+    "product": "Cursor",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "Cursor seems to have the ultimate “free” users waste the most ...",
+    "extracted_snippet": "Cursor seems to have the ultimate “free” users waste the most time problem. Frankly, anyone who’s actually serious about using Cursor has 0 issue with this change. Cursor is a ridi"
+  },
+  {
+    "evidence_id": "SD2F1426",
+    "product": "Cursor",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "Cursor 3 | Hacker News",
+    "extracted_snippet": "We are actively encouraging our devs to NOT use Cursor because of how much more expensive it is compared to other tools we have from our calculations and they even considered dropp"
+  },
+  {
+    "evidence_id": "SF00B1E8",
+    "product": "Cursor",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "Fix Annoying Double Cursor on Windows 10 - YouTube",
+    "extracted_snippet": "Ever had two cursors suddenly appear on your screen? Annoying right? Today we use a simple trick to get rid of it once and for all!!!If you learned or benefi..."
+  },
+  {
+    "evidence_id": "S0486109",
+    "product": "Cursor",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "Agent Persona multiple personalities - Feedback - Cursor | Forum",
+    "extracted_snippet": "Subject: Formal complaint — Cursor Agent session (Strategy Trader, 2026-05-20) To: Cursor Support / Product Feedback From: [Your name] Date: May 20, 2…"
+  },
+  {
+    "evidence_id": "S17AAF37",
+    "product": "Cursor",
+    "claim_type": "user_pain",
+    "source_bias": "user_generated",
+    "claim": "Cursor Read Customer Complaints and Reviews - Xolvie",
+    "extracted_snippet": "Click for Cursor complaints, contact, Cursor comments and customer service complaints! Decide by looking at all complaints and user comments written for Cursor."
+  }
+]
