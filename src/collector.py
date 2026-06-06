@@ -690,18 +690,43 @@ class OfficialPageAdapter(SourceAdapter):
                 seen.add(key)
                 snips.append(t)
 
-        # 路径 1:可见 DOM 卡片
+        # 档位名标题里要排除的非档名短标题(价格切换/导航类),避免误把它当档名
+        _NAME_NOISE = ("pricing", "plans", "compare", "faq", "billing", "save",
+                       "month", "year", "annual", "per user", "vs ")
+
+        # 路径 1:可见 DOM 卡片。价格节点向上(≤6层)同时找两样东西——
+        #   a) 最小「含价容器」(8~220字)→ 价格行文本;
+        #   b) 最近的「含短标题(h1-h4,2~30字)的祖先」→ 该档位名。
+        # 关键:档位名 <h3>(如 Starter/Personal)是价格节点的兄弟、不在最小含价容器内,
+        # 旧版只上溯 4 层 + 卡 220 字 → 够不到档位卡(往往 1000+ 字)→ 价有名丢。
+        # 通用做法:不写死档名,只认「定价卡自带的短标题」,适配任何产品定价页。
         try:
             for node in soup.find_all(string=OfficialPageAdapter._PRICE_RE):
+                price_txt = ""
+                tier_name = ""
                 cur = node.parent
-                for _ in range(4):  # 上溯至多 4 层找到含价的卡片容器
+                for _ in range(6):
                     if cur is None:
                         break
                     txt = cur.get_text(" ", strip=True)
-                    if 8 <= len(txt) <= 220 and OfficialPageAdapter._PRICE_RE.search(txt):
-                        _add(txt)
+                    if not price_txt and 8 <= len(txt) <= 220 and OfficialPageAdapter._PRICE_RE.search(txt):
+                        price_txt = txt
+                    if not tier_name:
+                        for h in cur.find_all(["h1", "h2", "h3", "h4"]):
+                            ht = h.get_text(" ", strip=True)
+                            if 2 <= len(ht) <= 30 and not any(w in ht.lower() for w in _NAME_NOISE):
+                                tier_name = ht
+                                break
+                    if price_txt and tier_name:
                         break
                     cur = cur.parent
+                if not price_txt:
+                    continue
+                if tier_name and tier_name.lower() not in price_txt.lower():
+                    combined = f"{tier_name} · {price_txt}"
+                    _add(combined if len(combined) <= 220 else price_txt)
+                else:
+                    _add(price_txt)
         except Exception:  # noqa: BLE001 — 提取尽力而为,失败不阻断
             pass
 
