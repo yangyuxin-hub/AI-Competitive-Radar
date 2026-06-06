@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import ReactMarkdown from "react-markdown";
+import { Children, useState, type ReactNode } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Report, Completeness, BusinessValue, ResearchMethod } from "@/lib/types";
 import type {
@@ -11,7 +11,32 @@ import type {
   PricingProduct,
   PainPoint,
 } from "@/lib/schema";
-import { EvidenceProvider, Chips } from "./Evidence";
+import { EvidenceProvider, Chips, Chip } from "./Evidence";
+
+// 把正文 markdown 里的 [SXXXXXXX] 字面量替换成可跳转的富证据 chip(悬浮看概要、点击看原文+原网址)。
+// 报告正文(report_draft)由 writer 生成,chip 是纯文本,不解析就只是无意义编号。
+const CHIP_RE = /(\[S[A-Z0-9]{7}\])/g;
+function injectChips(children: ReactNode): ReactNode {
+  return Children.map(children, (child) => {
+    if (typeof child !== "string" || !child.includes("[S")) return child;
+    return child.split(CHIP_RE).map((part, i) => {
+      const m = /^\[(S[A-Z0-9]{7})\]$/.exec(part);
+      return m ? <Chip key={i} id={m[1]} /> : part;
+    });
+  });
+}
+
+// react-markdown 把文本交给各元素渲染;在这些含文本的元素里拦截 chip 文本 → 富 chip。
+const proseComponents: Components = {
+  p: (props) => <p>{injectChips(props.children)}</p>,
+  li: (props) => <li>{injectChips(props.children)}</li>,
+  td: (props) => <td>{injectChips(props.children)}</td>,
+  th: (props) => <th>{injectChips(props.children)}</th>,
+  strong: (props) => <strong>{injectChips(props.children)}</strong>,
+  em: (props) => <em>{injectChips(props.children)}</em>,
+  h2: (props) => <h2>{injectChips(props.children)}</h2>,
+  h3: (props) => <h3>{injectChips(props.children)}</h3>,
+};
 
 const SECTIONS = [
   { id: "overview", label: "概览" },
@@ -398,7 +423,7 @@ export default function ReportView({ report }: { report: Report }) {
             查看原始 Markdown 报告
           </summary>
           <div className="prose-report border-t border-white/10 px-4 py-3 text-sm text-neutral-300">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={proseComponents}>
               {report.report_draft ?? ""}
             </ReactMarkdown>
           </div>
@@ -503,9 +528,51 @@ function ResearchMethodCard({ data }: { data: ResearchMethod }) {
           ))}
         </div>
       )}
+      {data.findings && data.findings.length > 0 && (
+        <details className="group mt-3" open>
+          <summary className="cursor-pointer select-none text-[11px] font-medium text-neutral-400 hover:text-neutral-200">
+            模拟访谈记录 · {data.findings.length} 条回答（点击展开/收起）
+          </summary>
+          <div className="mt-2 space-y-2">
+            {data.findings.map((f, i) => {
+              const q = data.questions.find((qq) => qq.id === f.question_id);
+              return (
+                <div
+                  key={f.evidence_id ?? i}
+                  className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2"
+                >
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <span className="rounded bg-violet-500/15 px-1.5 py-0.5 text-violet-300">
+                      {f.persona}
+                    </span>
+                    {f.product && <span className="text-neutral-500">{f.product}</span>}
+                    {f.claim_type && (
+                      <span className="rounded bg-white/5 px-1.5 py-0.5 text-neutral-500">
+                        {CLAIM_TYPE_LABEL[f.claim_type] ?? f.claim_type}
+                      </span>
+                    )}
+                  </div>
+                  {q && <div className="mt-1 text-[11px] text-neutral-500">Q：{q.text}</div>}
+                  <div className="mt-0.5 text-xs leading-relaxed text-neutral-300">{f.finding}</div>
+                  {f.expectation && (
+                    <div className="mt-0.5 text-[11px] text-amber-300/80">期望：{f.expectation}</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
+
+const CLAIM_TYPE_LABEL: Record<string, string> = {
+  user_pain: "用户痛点",
+  performance_quality: "性能与质量",
+  feature_existence: "功能具备性",
+  pricing: "定价",
+};
 
 function BusinessValueCard({ data }: { data: BusinessValue }) {
   return (
@@ -836,7 +903,14 @@ function PricingCard({ product }: { product: PricingProduct }) {
         {product.tiers.map((t) => (
           <div key={t.tier_name} className="text-sm">
             <div className="flex items-baseline justify-between">
-              <span className="text-neutral-300">{t.tier_name}</span>
+              <span className="text-neutral-300">
+                {t.tier_name}
+                {t.segment && (
+                  <span className="ml-1.5 rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-neutral-400">
+                    {t.segment}
+                  </span>
+                )}
+              </span>
               <span className="font-mono text-sky-300">
                 {t.price?.normalized_usd_month != null
                   ? `$${t.price.normalized_usd_month}/mo`

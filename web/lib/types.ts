@@ -75,12 +75,23 @@ export interface BusinessValue {
   assumptions?: string;
 }
 
+export interface ResearchFinding {
+  product?: string;
+  persona: string;
+  question_id?: string;
+  claim_type?: string;
+  finding: string;
+  expectation?: string;
+  evidence_id?: string;
+}
+
 export interface ResearchMethod {
   method: string;
   synthetic?: boolean;
   questions: { id?: string; text: string }[];
   n_findings: number;
   personas: string[];
+  findings?: ResearchFinding[];
 }
 
 export interface Report {

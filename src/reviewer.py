@@ -25,6 +25,7 @@ REVIEWER_RULES = {
     "R5": "structured_contradiction",
     "R6": "semantic_grounding",
     "R7": "freshness_and_confidence",
+    "R8": "content_coverage",
 }
 
 MODE_CONFIG = {
@@ -53,6 +54,8 @@ ISSUE_TYPE_TO_TARGET = {
     "freshness_stale": "collector",
     "missing_product_evidence": "collector",
     "missing_claim_type_coverage": "collector",
+    "missing_pricing_content": "collector",
+    "missing_feature_content": "collector",
 }
 
 
@@ -254,6 +257,39 @@ def check_collection_coverage(collection_meta: dict, analysis_meta: dict) -> lis
                 f"{product} 缺少 claim_type 覆盖: {missing}",
                 required_claim_types=missing,
             ))
+    return issues
+
+
+def check_content_coverage(schema: dict, analysis_meta: dict) -> list[dict]:
+    """R8: 内容覆盖硬门——光结构合规不够,关键内容空缺也要打回检索。
+    高信号、低误报地查两件事:某产品**定价整缺**(0 档)/ **功能整缺**(矩阵里一个已确认能力都没有)。
+    命中 → reject_target=collector + required_claim_types,触发精准补采。"""
+    issues: list[dict] = []
+    products = [analysis_meta.get("target_product"), *(analysis_meta.get("competitors") or [])]
+    products = [p for p in products if p]
+
+    # 1) 定价整缺:产品在 pricing_model 里没有任何档位(genuinely-free 会有 Free 档,不会触发)
+    pm = (schema.get("pricing_model") or {}).get("products") or []
+    tiers_by = {p.get("name"): (p.get("tiers") or []) for p in pm}
+    for p in products:
+        if not tiers_by.get(p):
+            issues.append(_mk_issue(
+                "R8", "missing_pricing_content", f"pricing_model.{p}",
+                f"{p} 未产出任何定价档位,定价对比缺失,需补采定价证据",
+                required_claim_types=["pricing"]))
+
+    # 2) 功能整缺:产品在功能矩阵里一个 supported 都没有(整列塌)
+    feats = (schema.get("feature_tree") or {}).get("features") or []
+    if feats:
+        for p in products:
+            has_supported = any(
+                ((f.get("products") or {}).get(p) or {}).get("support_status") == "supported"
+                for f in feats)
+            if not has_supported:
+                issues.append(_mk_issue(
+                    "R8", "missing_feature_content", f"feature_tree.{p}",
+                    f"{p} 在功能矩阵中无任何已确认能力,功能对比缺失,需补采功能证据",
+                    required_claim_types=["feature_existence"]))
     return issues
 
 
@@ -715,6 +751,13 @@ def make_reviewer_node(llm=None, mode: Optional[str] = None):
         skipped_rules: set[str] = set()
         for issue in check_collection_coverage(collection_meta, analysis_meta):
             issue["severity"] = "error" if "R0" in cfg["hard_gate"] else "warning"
+            all_issues.append(issue)
+
+        # R8 内容覆盖硬门:定价/功能整缺 → 打回 collector 补采(REVIEWER_CONTENT_GATE=0 可降级为 warning)
+        content_hard = os.environ.get("REVIEWER_CONTENT_GATE", "1").strip() not in ("0", "false", "False")
+        executed_rules.add("R8")
+        for issue in check_content_coverage(schema, analysis_meta):
+            issue["severity"] = "error" if content_hard else "warning"
             all_issues.append(issue)
         for rule_id, runner in RULE_RUNNERS.items():
             executed_rules.add(rule_id)

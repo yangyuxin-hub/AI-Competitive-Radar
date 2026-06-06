@@ -39,6 +39,7 @@ export interface FeatureTree {
 
 export interface PricingTier {
   tier_name: string;
+  segment?: string; // 面向用户: 个人 | 团队 | 企业 | 通用
   billing_cycle?: string;
   price?: { amount?: number; currency?: string; normalized_usd_month?: number };
   limits?: { limit_name: string; limit_value: unknown; unit?: string }[];

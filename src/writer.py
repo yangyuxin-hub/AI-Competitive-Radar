@@ -445,19 +445,20 @@ def _render_pricing(pricing_model: dict, feature_tree: dict, products: list[str]
     if not pricing_model:
         return ""
     lines = ["## 六、定价对比\n"]
-    lines.append("| 产品 | 档位 | 价格(USD/月) | 限制 | 证据 |")
-    lines.append("|------|------|---------------|------|------|")
+    lines.append("| 产品 | 档位 | 面向用户 | 价格(USD/月) | 限制 | 证据 |")
+    lines.append("|------|------|----------|---------------|------|------|")
     for p in pricing_model.get("products", []):
         name = p.get("name", "?")
         for tier in p.get("tiers") or []:
             tname = tier.get("tier_name", "?")
+            seg = tier.get("segment") or "—"
             price = tier.get("price") or {}
             amount = price.get("normalized_usd_month")
             # 0/None 都按「未获取价格」渲染为「—」(Analyzer 抽不到数值时填 0,显示 $0 会误导)
             amount_text = f"${amount}" if isinstance(amount, (int, float)) and amount > 0 else "—"
             limits = tier.get("display_limits", "")
             ev = cite(tier.get("evidence_ids") or [])
-            lines.append(f"| {name} | {tname} | {amount_text} | {limits} | {ev} |")
+            lines.append(f"| {name} | {tname} | {seg} | {amount_text} | {limits} | {ev} |")
     lines.append("")
 
     gap = pricing_model.get("pricing_gap") or {}
