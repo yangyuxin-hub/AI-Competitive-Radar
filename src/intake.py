@@ -358,7 +358,9 @@ def _llm_available() -> bool:
         return False
     if is_mock_mode():
         return False
-    return bool(os.environ.get("ARK_API_KEY"))
+    # 与 llm.py 的 key 解析对齐:默认 LLM 已切 MiMo(LLM_API_KEY),旧版只认 ARK_API_KEY
+    # 会让 MiMo 配置静默退化成纯启发式 → 智能竞品发现(含新锐 AI)整段被跳过。
+    return bool(os.environ.get("LLM_API_KEY") or os.environ.get("ARK_API_KEY"))
 
 
 def _guess_target_for_discovery(user_input: str) -> str:
@@ -411,6 +413,53 @@ def _competitor_web_context(user_input: str, max_results: int = 8) -> list[dict]
     except Exception as e:  # noqa: BLE001
         print(f"[intake] 竞品发现搜索失败,跳过: {type(e).__name__}: {e}")
         return []
+
+
+# 提取产品名时要剔的噪声词(榜单/通用/月份,不是产品)
+_NAME_STOPWORDS = {
+    "free", "new", "the", "and", "for", "with", "of", "in", "to", "your", "our",
+    "why", "how", "what", "when", "where", "this", "that", "it", "its",
+    "tools", "tool", "app", "apps", "software", "ai", "platform",
+    "pricing", "price", "plan", "plans", "features", "feature",
+    "paid", "discover", "learn", "read", "more", "here", "get", "see",
+    "plus", "pro", "team", "all", "best", "top",
+    "january", "february", "march", "april", "may", "june", "july",
+    "august", "september", "october", "november", "december",
+}
+# 纯榜单措辞——真实产品名里绝不会出现,命中任一词即整条丢弃
+_LISTICLE_MARKERS = {
+    "best", "top", "vs", "vs.", "alternative", "alternatives",
+    "competitor", "competitors", "review", "reviews", "compare",
+    "comparison", "guide", "list", "roundup",
+}
+
+
+def _extract_candidate_names_from_signals(signals: list[dict], target: str, limit: int = 6) -> list[str]:
+    """无 LLM 时的轻量竞品名抽取:从「X alternatives 2026」搜来的标题/摘要里,
+    挖出现≥2 次的「品牌名样式 token」(首字母大写/带数字如 v0/驼峰如 GitHub)。
+    频次≥2 压噪;再叠加榜单措辞/含 target 名/月份/通用词三道过滤,挡掉
+    'Best Cursor''Cursor Alternatives''March''Paid' 这类伪产品名。"""
+    import re
+    target_low = (target or "").lower().replace(" ", "")
+    # 品牌 token:首字母大写词(可含内部大写/数字,如 GitHub、v0、GPT-4),或纯数字+字母如 v0
+    tok_re = re.compile(r"\b([A-Z][A-Za-z0-9.]+(?:\s[A-Z][A-Za-z0-9.]+)?|v\d[\w.]*)\b")
+    freq: dict[str, int] = {}
+    disp: dict[str, str] = {}
+    for sig in signals or []:
+        blob = f"{sig.get('title', '')} {sig.get('snippet', '')}"
+        for m in tok_re.finditer(blob):
+            name = m.group(1).strip(" .")
+            low = name.lower().replace(" ", "")
+            words = name.lower().split()
+            if (len(name) < 2 or low in _NAME_STOPWORDS or low == target_low
+                    or (target_low and target_low in low)          # 'Best Cursor'/'Cursor Alternatives'
+                    or any(w in _LISTICLE_MARKERS for w in words)   # 榜单措辞
+                    or all(w in _NAME_STOPWORDS for w in words)):
+                continue
+            freq[low] = freq.get(low, 0) + 1
+            disp.setdefault(low, name)
+    ranked = sorted(freq.items(), key=lambda kv: kv[1], reverse=True)
+    return [disp[k] for k, n in ranked if n >= 2][:limit]
 
 
 def _propose_via_llm(user_input: str) -> Optional[dict]:
@@ -471,6 +520,22 @@ def _propose_heuristic(user_input: str, domain_hint: Optional[str]) -> dict:
     ] + competitors_candidates
     competitors_suggested = _dedupe([c for c in _sug_pool if c in competitors_candidates])[:4]
 
+    comp_hints: dict = {c: "同品类竞品" for c in competitors_candidates}
+    # 无 LLM 才跑启发式竞品发现:从实时搜索里挖配置外玩家,补进候选并标【实时发现】。
+    # 仅在 LLM 不可用时启用——LLM 路径也会把本函数当 base 合并,跑发现会把噪声名泄漏进
+    # 干净的 LLM 草稿(经 _scope_draft_to_domain 拼接)。LLM 在时,发现交给读完整 prompt 的它。
+    if not _llm_available():
+        try:
+            _known_keys = {_norm_key(c) for c in competitors_candidates} | {_norm_key(target)}
+            for name in _extract_candidate_names_from_signals(
+                    _competitor_web_context(user_input), target):
+                if _norm_key(name) not in _known_keys:
+                    competitors_candidates.append(name)
+                    comp_hints[name] = "【实时发现】搜索召回的同品类玩家,可能含新锐 AI"
+                    _known_keys.add(_norm_key(name))
+        except Exception as e:  # noqa: BLE001 — 发现失败不阻断启发式主流程
+            print(f"[intake] 启发式竞品发现跳过: {type(e).__name__}: {e}")
+
     intent = _detect_intent(user_input)
     focus_candidates = _focus_options_for_domain(dom_cfg, user_input) if dom_cfg else _all_focus_options()
     focus_suggested = _suggest_focus(dom_cfg, focus_candidates, user_input)
@@ -497,7 +562,7 @@ def _propose_heuristic(user_input: str, domain_hint: Optional[str]) -> dict:
         "target_candidates": target_candidates,
         "competitors_candidates": competitors_candidates,
         "competitors_suggested": competitors_suggested,
-        "competitor_hints": {c: "同品类竞品" for c in competitors_candidates},
+        "competitor_hints": comp_hints,
         "focus_candidates": focus_candidates,
         "focus_hints": _heuristic_focus_hints(focus_candidates),
         "focus_suggested": focus_suggested,
