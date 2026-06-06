@@ -402,7 +402,7 @@ _PRICE_SIGNAL_WORDS = ("per month", "per user", "per year", "/mo", "/user", "/yr
 
 
 def infer_claim_type(snippet: str, default: str, price_re) -> str:
-    """加权关键词打分推断 claim_type。pricing 须有真实价格信号(币种价/周期价)兜底,
+    """加权关键词打分推断 claim_type(LLM 不可用时的兜底)。pricing 须有真实价格信号兜底,
     避免把含 'plan'/'free' 的功能段误判成定价。无任何信号 → 回退 default。"""
     low = (snippet or "").lower()
     scores = {ct: sum(low.count(kw) for kw in kws) for ct, kws in _CT_KEYWORDS.items()}
@@ -411,6 +411,44 @@ def infer_claim_type(snippet: str, default: str, price_re) -> str:
         scores["pricing"] = 0  # 没有真实价格信号 → 不判为定价
     best = max(scores, key=lambda k: scores[k])
     return best if scores[best] > 0 else default
+
+
+_ALLOWED_CT = {"feature_existence", "pricing", "performance_quality", "user_pain"}
+
+
+def _claim_llm_enabled() -> bool:
+    if os.environ.get("COLLECTOR_LLM_CLAIM", "1").strip() in ("0", "false", "False"):
+        return False
+    try:
+        from .llm import is_mock_mode
+    except Exception:  # noqa: BLE001
+        return False
+    return not is_mock_mode() and bool(os.environ.get("LLM_API_KEY") or os.environ.get("ARK_API_KEY"))
+
+
+def classify_claim_types_llm(snippets: list[str]) -> Optional[list[Optional[str]]]:
+    """批量给证据片段判 claim_type:一次 LLM 调用,任何语言/行业自适应(替代关键词规则)。
+    返回与输入等长的标签列表(某条判不准则 None,由上层回退关键词);整体失败返回 None。"""
+    if not snippets:
+        return []
+    try:
+        from .llm import get_llm
+        payload = {"snippets": [{"id": i, "text": (s or "")[:200]} for i, s in enumerate(snippets)]}
+        sys = (
+            "你是证据分类器。把每段产品资料片段归到唯一 claim_type(语言不限):\n"
+            "- feature_existence:描述产品具备什么功能/能力\n"
+            "- pricing:价格/档位/计费/免费额度/套餐\n"
+            "- performance_quality:性能或质量评价(快慢/准确/稳定/好用)\n"
+            "- user_pain:用户抱怨/缺陷/痛点/不满\n"
+            '只输出 JSON: {"labels":[{"id":0,"claim_type":"feature_existence"}, ...]},每段一条。'
+        )
+        out = get_llm().call_json(sys, payload, label="collector:claim_type",
+                                  max_tokens=1024, timeout=float(os.environ.get("CLAIM_LLM_TIMEOUT", "60")))
+        by_id = {d.get("id"): d.get("claim_type") for d in (out.get("labels") or []) if isinstance(d, dict)}
+        return [by_id.get(i) if by_id.get(i) in _ALLOWED_CT else None for i in range(len(snippets))]
+    except Exception as e:  # noqa: BLE001 — 失败回退关键词,不阻断采集
+        print(f"[collector] LLM claim_type 分类失败,回退关键词: {type(e).__name__}: {e}")
+        return None
 
 
 def patch_by_requirements(
@@ -724,14 +762,16 @@ class OfficialPageAdapter(SourceAdapter):
 
         observed = datetime.now().strftime("%Y-%m-%d")
         out: list[dict] = []
-        # 取前 15 段作为 evidence
-        for idx, snippet in enumerate(chunks[:15]):
+        selected = chunks[:15]
+        # claim_type 分类:优先 LLM 批量分(一页一次调用,任何语言/行业自适应);判不准/无 LLM → 关键词兜底
+        llm_labels = classify_claim_types_llm(selected) if _claim_llm_enabled() else None
+        for idx, snippet in enumerate(selected):
             claim = snippet if len(snippet) <= 120 else snippet[:117] + "..."
             # 加入 idx 避免同一页面内相同文本段产生相同 evidence_id
             eid = generate_evidence_id(product, f"{url}#{idx}", claim)
 
-            # 根据内容推断更精确的 claim_type(加权打分,pricing 须有真实价格信号)
-            claim_type = infer_claim_type(snippet, default_claim_type, OfficialPageAdapter._PRICE_RE)
+            claim_type = (llm_labels[idx] if llm_labels and llm_labels[idx]
+                          else infer_claim_type(snippet, default_claim_type, OfficialPageAdapter._PRICE_RE))
 
             # 根据片段长度和信息量调整置信度
             conf = 0.60
