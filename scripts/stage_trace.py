@@ -125,11 +125,25 @@ def main():
     from src.analyzer import analyzer_node
     from src.writer import writer_node
     state = analyzer_node(state)
+    # analyzer 的 gap-refill 会向 raw_evidence 追加补采证据。④的快照拍在补采前,
+    # 用它校验最终 schema 的 evidence_id 会误判补采证据为「幻觉」。这里 dump 补采后的
+    # 最终证据,供 evidence_id 完整性审核(核心原则#4 抑制幻觉)。
+    final_ev = state.get("raw_evidence") or []
+    dump("07_final_evidence.json", final_ev)
     state = writer_node(state)
     report = state.get("report_draft") or ""
     (OUT / "06_report.md").write_text(report, encoding="utf-8")
     dump("06_schema_draft.json", state.get("schema_draft") or {})
+    # evidence_id 完整性自检:schema 列表引用是否都能在最终证据里找到
+    import re as _re
+    _sd = state.get("schema_draft") or {}
+    _valid = {e.get("evidence_id") for e in final_ev}
+    _refs = set(_re.findall(r'"(S[0-9A-F]{7})"', json.dumps(_sd)))
+    _bad = _refs - _valid
     sec("⑥ 最终报告")
+    line(f"- ④快照证据 {len(evidence)} 条 → 补采后最终证据 {len(final_ev)} 条")
+    line(f"- evidence_id 完整性: schema 引用 {len(_refs)} 个, 幻觉(不在最终证据) {len(_bad)} 个 "
+         + ("✓" if not _bad else f"🚩 {sorted(_bad)}"))
     line(f"- 报告 {len(report)} 字,{report.count(chr(10)+'## ')} 个模块 → `06_report.md`")
     ft = (state.get("schema_draft") or {}).get("feature_tree", {}).get("features", [])
     line(f"- 功能矩阵维度: {[f.get('name') for f in ft]}")
