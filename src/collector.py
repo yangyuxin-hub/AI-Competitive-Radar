@@ -1174,11 +1174,16 @@ def collector_node(state: AgentState) -> AgentState:
     runtime_profile = meta.get("runtime_profile") or "balanced"
     settings = runtime_settings(runtime_profile)
 
-    # Step 0: URL Discovery — 让 LLM 为每个产品找到官网 URL
+    # Step 0: URL Discovery — 让 LLM 自主为每个产品找官网/定价页 URL。
+    # 官网是最权威证据源(功能/定价),不能只靠 products.yaml 硬编码 → LLM 发现**默认开启**,
+    # 任意新产品都让 LLM(带 web 搜索候选)找官网;mock/无 key/显式 URL_DISCOVERY_LLM=0 才退回配置或跳过。
+    from .llm import is_mock_mode as _is_mock
     print(f"[collector] discovering URLs for {products} ...")
+    _url_env = os.environ.get("URL_DISCOVERY_LLM", "").strip()
     allow_url_llm = (
-        bool(settings["url_discovery_llm"])
-        or os.environ.get("URL_DISCOVERY_LLM", "").strip() in ("1", "true", "True")
+        _url_env not in ("0", "false", "False")
+        and not _is_mock()
+        and bool(os.environ.get("LLM_API_KEY") or os.environ.get("ARK_API_KEY"))
     )
     discovered = discover_all_urls(products, allow_llm=allow_url_llm)
     for p, info in discovered.items():
@@ -1255,6 +1260,30 @@ def collector_node(state: AgentState) -> AgentState:
     # 每个产品按 confidence 取 top N；不同运行模式控制 prompt 体积与等待时间
     merged = cap_evidence_per_product(merged, limit=int(settings["max_evidence_per_product"]))
     dump_evidence_debug(merged, run_id=run_id)
+
+    # ── 官网获取 check:官网是最权威源(功能/定价大量靠它),逐产品核对到底抓到没有,没抓到明确报红 ──
+    official_check: dict = {}
+    for product in products:
+        n_off = sum(1 for e in merged
+                    if e.get("product") == product and e.get("source_type") == "official_page")
+        disc = discovered.get(product) or {}
+        had_urls = bool(disc.get("official_pages") or disc.get("pricing_pages"))
+        ok = n_off > 0
+        official_check[product] = {
+            "official_evidence": n_off, "had_urls": had_urls,
+            "url_source": disc.get("source", "?"), "ok": ok,
+        }
+        flag = "✓" if ok else "🚩"
+        print(f"[collector][官网check] {flag} {product}: 官网证据 {n_off} 条 "
+              f"(URL来源={disc.get('source','?')}, 有URL={had_urls})")
+        if not ok and had_urls:
+            print(f"  🚩 {product} 找到了官网 URL 却 0 条官网证据 → 抓取/渲染失败,需排查")
+        elif not ok:
+            print(f"  🚩 {product} 没找到官网 URL → URL 发现失败(LLM/搜索没命中)")
+    collection_meta["official_check"] = official_check
+    n_missing = sum(1 for v in official_check.values() if not v["ok"])
+    if n_missing:
+        print(f"[collector][官网check] ⚠️ {n_missing}/{len(products)} 个产品无官网证据,影响功能/定价权威性")
 
     return {
         **state,
