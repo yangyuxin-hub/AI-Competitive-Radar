@@ -488,6 +488,24 @@ class OfficialPageAdapter(SourceAdapter):
                 print(f"  [OfficialPageAdapter] {product} <- {url}: FAIL {type(e).__name__}: {e}")
         return evidences
 
+    @staticmethod
+    def _is_pricing_url(url: str) -> bool:
+        u = url.lower()
+        return "pric" in u or "plan" in u
+
+    @classmethod
+    def _has_price_evidence(cls, evidences: list[dict]) -> bool:
+        """结果里是否含真实价格信号(价格 token 或显式 Free/联系销售档)。
+        定价页抓到一堆导航/页脚却没价 → 视为"没真抓到",触发 JS 渲染兜底。"""
+        for ev in evidences:
+            txt = ev.get("claim", "") or ev.get("extracted_snippet", "")
+            low = txt.lower()
+            if cls._PRICE_RE.search(txt) or any(
+                w in low for w in ("free", "per month", "per user", "/mo", "/user", "contact sales", "免费")
+            ):
+                return True
+        return False
+
     def _fetch_one(self, product: str, url: str) -> list[dict]:
         print(f"  [OfficialPageAdapter] fetching {url} ...")
         html = self._read(url)
@@ -495,14 +513,24 @@ class OfficialPageAdapter(SourceAdapter):
         result = self._extract(product, url, html)
         print(f"  [OfficialPageAdapter] extracted {len(result)} evidence from {url}")
 
-        # SPA 兜底: httpx 提取 0 条时用 Playwright 渲染 JS 重试
-        if not result and url.startswith("http"):
-            print(f"  [OfficialPageAdapter] 0 evidence from httpx, retrying with Playwright ...")
+        # SPA 兜底: 用 Playwright 渲染 JS 重试。两种触发条件——
+        #   1) httpx 一条都没抓到(普通页空壳);
+        #   2) 定价页抓到了 chunk 但没有任何价格信号(导航/页脚噪声,真实档位价是 JS 渲染的)。
+        # 条件 2 是关键:旧版只判 `not result`,定价页只要有页脚废话就永不触发,价格永远抓不到。
+        needs_render = url.startswith("http") and (
+            not result or (self._is_pricing_url(url) and not self._has_price_evidence(result))
+        )
+        if needs_render:
+            reason = "0 evidence" if not result else "定价页无价格信号"
+            print(f"  [OfficialPageAdapter] {reason}, retrying with Playwright ...")
             try:
                 html_pw = self._read_playwright(url)
                 print(f"  [OfficialPageAdapter] Playwright got {len(html_pw)} chars from {url}")
-                result = self._extract(product, url, html_pw)
-                print(f"  [OfficialPageAdapter] Playwright extracted {len(result)} evidence from {url}")
+                rendered = self._extract(product, url, html_pw)
+                print(f"  [OfficialPageAdapter] Playwright extracted {len(rendered)} evidence from {url}")
+                # 渲染结果更优(有价格信号 / 更多证据)才替换,避免渲染失败反而清空已有证据
+                if rendered and (self._has_price_evidence(rendered) or len(rendered) >= len(result)):
+                    result = rendered
             except Exception as e:
                 print(f"  [OfficialPageAdapter] Playwright fallback FAILED: {type(e).__name__}: {e}")
 
@@ -542,8 +570,14 @@ class OfficialPageAdapter(SourceAdapter):
             finally:
                 browser.close()
 
-    # 价格 token:$/￥/€/£ + 数字(允许 .,),如 $10、$13.49、￥99
-    _PRICE_RE = re.compile(r"[\$￥€£]\s?\d[\d.,]*")
+    # 价格 token:符号价($10/￥99/€13.49)+ 无符号货币码价(10 USD / USD 10)。
+    # 很多定价页(尤其非美区)不带货币符号,旧版只认 $￥€£ 会整页漏价。
+    _PRICE_RE = re.compile(
+        r"[\$￥€£]\s?\d[\d.,]*"
+        r"|\b\d[\d.,]*\s?(?:USD|EUR|GBP|CNY|RMB)\b"
+        r"|\b(?:USD|EUR|GBP|CNY|RMB)\s?\d[\d.,]*",
+        re.IGNORECASE,
+    )
 
     @staticmethod
     def _price_snippets(soup, html: str) -> list[str]:
