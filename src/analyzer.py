@@ -991,8 +991,11 @@ def _feature_spine(system_base: str, evidence: list[dict], meta: dict) -> list[d
         "   - ✅ 对应应改成的能力维度:协作与权限管理(整体能力)/ AI与自动化能力 / 离线与跨端可用性 —— 用「能力」表述,不要用「档位/配额/权益」。\n"
         "4. **维度必须能被现有证据接住**:优先选 raw_evidence 里反复出现、且 **target 和至少一个 competitor 都涉及**的能力;"
         "参考下方 `feature_evidence_count_by_product`——别选只有一个产品有证据的维度。宁可少给两个扎实维度,也不要凑数造细维度。\n"
-        '只输出 JSON: {"features":[{"feature_id":"F001","name":"功能名"}]}。\n'
-        "feature_id 用 F001/F002…;name 用产品能力级短语(≤12字);不要输出 products / gap / quality 等其它字段。"
+        '只输出 JSON: {"features":[{"feature_id":"F001","name":"功能名","name_en":"english capability term"}]}。\n'
+        "feature_id 用 F001/F002…;name 用产品能力级短语(≤12字);"
+        "**name_en 给该能力的通用英文检索词**(如 实时多人协同→real-time collaboration、原型交互→prototyping、"
+        "第三方集成→third-party integrations、跨信息关联→database relations linking)——定向补采会拿它去搜英文官网/文档,"
+        "务必准确、用业界通用说法;不要输出 products / gap / quality 等其它字段。"
     )
     spine = get_llm().call_json(
         f"{system_base}\n\n## 本次任务范围(重要)\n{spine_instruct}",
@@ -1162,7 +1165,7 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
                 pdata = (prev_by_fid.get(fid) or {}).get(product)
             block[product] = pdata if isinstance(pdata, dict) and pdata else _unknown_pdata()
         features_out.append({
-            "feature_id": fid, "name": f["name"], "products": block,
+            "feature_id": fid, "name": f["name"], "name_en": f.get("name_en", ""), "products": block,
             "gap": _compute_gap(f["name"], block, meta),
         })
     # 剪枝:整行所有产品都是 support unknown(矩阵里全"—")= 取不到任何证据的过细/跑偏维度(常是定价细节
@@ -1454,10 +1457,13 @@ def _coverage_gaps(facts: dict, meta: dict, evidence: list[dict]) -> dict:
     """扫描 facts 暴露的缺口:未评分的 (产品×功能) 格子 + 缺失的必需 claim_type。"""
     products = _target_products(meta)
     unknown_cells: list[tuple[str, str]] = []
+    dim_en: dict[str, str] = {}  # 维度中文名 → 英文检索别名(定向补采用英文搜官网/文档,命中更准)
     for feat in (facts.get("feature_tree") or {}).get("features", []):
         name = feat.get("name")
         if not name:
             continue
+        if feat.get("name_en"):
+            dim_en[name] = feat["name_en"]
         for p in products:
             d = (feat.get("products") or {}).get(p) or {}
             if (d.get("support_status") or "").lower() == "unknown":
@@ -1494,6 +1500,7 @@ def _coverage_gaps(facts: dict, meta: dict, evidence: list[dict]) -> dict:
         "unknown_cells": unknown_cells,
         "missing_claim_types": missing_ct,
         "pricing_gap_products": pricing_gap_products,
+        "dim_en": dim_en,
     }
 
 
@@ -1595,9 +1602,12 @@ def _gap_targeted_recollect(meta: dict, gaps: dict, focus: str, round_idx: int =
     # 空白格 (产品×功能,support_status=unknown):缺的是「该产品到底有没有这个能力」=feature_existence,
     # 官网/文档是权威出处(和定价同理)。旧版搜 performance_quality(UGC质量)填不了「—」格,导致矩阵塌陷。
     # 同时补一条质量搜索:若该能力确实存在,顺带捞 UGC 评价(命中则连质量分一起补上)。
+    # **用英文别名检索**:维度名是中文,官网/文档是英文,中文名搜命中低;spine 给的 name_en 命中更准。
+    dim_en = gaps.get("dim_en") or {}
     for product, fname in gaps["unknown_cells"][:max_cells]:
-        _emit(product, "feature_existence", fname or focus)
-        _emit(product, "performance_quality", fname or focus)
+        kw = dim_en.get(fname) or fname or focus
+        _emit(product, "feature_existence", kw)
+        _emit(product, "performance_quality", kw)
     # 整类缺失:每个产品对缺失 claim_type 各补一条(焦点回退到分析焦点)
     for product in _target_products(meta):
         for ct in gaps["missing_claim_types"]:
