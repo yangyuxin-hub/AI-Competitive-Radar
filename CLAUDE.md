@@ -40,7 +40,7 @@ Collector → Analyzer(2步) → Writer → Reviewer ─┬─ passed → END
 | **Collector** | 抓取 raw_evidence；适配器三层降级；按 `reject_requirements` 精准补证据 | 不做语义分析、不生成结论 |
 | **Analyzer** | 填充 feature_tree / pricing_model / user_persona / swot / recommendations；按权重计算 priority_score | 不抓数据；不编 evidence_id；不手写 priority |
 | **Writer** | 渲染 Markdown 报告 | 不改 schema |
-| **Reviewer** | 跑 R1-R7 规则；输出 `quality_report`；写回 `reject_target` 和 `reject_requirements` | 不修数据，只判定 |
+| **Reviewer** | 跑 R0-R10 规则（R9 chip 可溯源 / R10 禁泄分）；输出 `quality_report`；写回 `reject_target` 和 `reject_requirements` | 不修数据，只判定 |
 
 ## 5. 关键代码契约
 
@@ -52,7 +52,7 @@ Collector → Analyzer(2步) → Writer → Reviewer ─┬─ passed → END
 - **Reviewer 模式**：`REVIEWER_MODE=minimal`（Demo 默认，hard_gate=R1/R4/R5，R2/R3/R7 仅 warning，R6 关）/ `full`（答辩，R1-R5 全 hard_gate，R6 终轮单次）
 - **Writer 在 Reviewer 之前**：Markdown 正文**禁止**含 `quality_score`，前端从 `state.quality_report` 单独渲染徽章
 - **Analyzer quick_validate**：`quick_validate_facts(facts, evidence, meta)` 显式接收 meta，target/competitors 从 `analysis_meta` 取
-- **source_reliability / TTL / priority 阈值**：当前硬编码，v2.3 计划下沉 config（跨行业泛化）
+- **source_reliability / TTL / priority / 各权重阈值**：统一在 `config/scoring.yaml`，经 `src/scoring_config.py` 读取（缺失即回退代码默认值，零行为变化）；各采集器/评分器走同一口径，改 yaml 即可跨行业调权
 - **dedupe 只在 `registry.fetch_all` 内做一次**，`collector_node` 仅 patch 兜底
 - **CacheAdapter 用 merge 写入**（按 evidence_id 去重），不要覆盖整个文件
 - **`patch_by_requirements`** 展开所有 `required_claim_types`（不是只取第一个）
@@ -70,23 +70,31 @@ config/
   domains.yaml                # 多行业域配置（DOMAIN env 切换 target/competitors/sample_path）
   sources.yaml                # 采集源配置
   quality_rubric.yaml         # 质量评分维度
+  scoring.yaml                # 统一评分配置(权重/阈值/source_reliability/freshness TTL)；缺失即回退代码默认值
 src/
   state.py                    # AgentState TypedDict + build_initial_state
-  collector.py                # 三层降级采集 + URL discovery；skill.py 提供 registry
-  analyzer.py                 # 两步式(facts/derivations) + quick_validate + 强约束 Prompt(prompts/)
-  writer.py                   # Markdown 渲染(chip 格式 [SXXXXXXX])
-  reviewer.py                 # R0-R7 检查函数 + degraded_writer
+  collector.py                # 三层降级采集 + URL discovery + 验收门补采(acceptance_gate_and_heal)；skill.py 提供 registry
+  analyzer.py                 # 两步式(facts/derivations) + quick_validate + 过度泛化软化 + 强约束 Prompt(prompts/)
+  writer.py                   # Markdown 渲染(chip 格式 [SXXXXXXX]) + 数据可得性渲染
+  reviewer.py                 # R0-R10 检查函数(R9 chip 可溯源 / R10 禁泄分) + degraded_writer
   graph.py                    # LangGraph 编排 + main 入口
   llm.py                      # LLM 客户端封装(默认 MiMo)
+  scoring_config.py           # config/scoring.yaml 加载器(reliability/ttl_days/weights helper，缺失回退默认)
+  quality.py                  # 证据级质量分 + 采集覆盖审计(audit_coverage)
+  source_ledger.py            # 源质量学习台账(按 category 累积 domain hits/q，跨运行复用高质量源)
+  stage_eval.py               # 各环节质量评测聚合(写 logs/stage_quality.jsonl)
+  business_value.py           # 业务价值量化指标
+  encoding.py                 # Windows GBK 控制台 UTF-8 兜底(__init__ 启动即配置)
   intake.py / source_planner.py / search.py / judge.py  # 意图解析 / 源规划 / 搜索 / 评测
-  skill.py / hn_skill.py / v2ex_skill.py                # 采集 skill 注册与社区源适配
+  skill.py / hn_skill.py / v2ex_skill.py / survey_skill.py  # 采集 skill 注册与社区源/合成访谈适配
 prompts/                      # Analyzer 强约束 Prompt（analyzer_facts.md 等）
 data/
   cache/<product>.json        # CacheAdapter 持久化
   sample_sources.json         # Mock 兜底数据（sample_sources_pm.json 为 PM 域）
   sample_report.json          # Mock 报告（拆 facts/derivations）
+  source_ledger.json          # 源质量台账运行产物（gitignore）
   debug/                      # evidence_debug 落盘（gitignore）
-api/main.py                   # FastAPI + SSE 后端
+api/main.py                   # FastAPI + SSE 后端(+ /api/stage_quality 阶段质量聚合)
 web/                          # Next.js 前端（输入 / Agent 状态 / 报告溯源）
 logs/agent_trace.jsonl        # 可观测性日志；llm_calls.jsonl 全量调用日志
 docs/design-v2.2.md           # 设计文档(v2.2) + 附录 A-D(对比/合规/judge/roadmap)
@@ -133,9 +141,12 @@ docs/task-requirements.md     # 赛题需求
 **进行中 / 已超出 v2.2 设计：**
 - [x] runtime profiles 提速 + 阶段耗时/ETA + 档案化 JSON 持久化
 - [x] LLM 默认切 MiMo + 全量调用日志 `logs/llm_calls.jsonl`
+- [x] scoring/TTL/priority/source_reliability 阈值 config 化（`config/scoring.yaml` + `src/scoring_config.py`，各采集器/评分器读同一口径）
+- [x] Reviewer 增 R9（chip 可溯源自检）/ R10（禁泄 quality_score）；源质量学习台账（`source_ledger.py`）；各环节质量评测（`stage_eval.py` + `/api/stage_quality`）
 - [ ] 证据过多时仍偶发 LLM 超时（已靠 _compact_evidence + 并行 section 缓解，待持续观察）
 
 **v2.3 候选：**
-- [ ] 规则瘦身（R2/R3/R5 合并入 R6；scoring/TTL/priority 阈值 config 化）
+- [ ] 规则瘦身（R2/R3/R5 合并入 R6）
 - [ ] `ISSUE_TYPE_TO_TARGET` 13 项收敛到 3 类
-- [ ] 业务价值量化指标（评分维度 3，答辩必备）
+- [ ] 业务价值量化指标（评分维度 3，答辩必备；`business_value.py` 已起步）
+- [ ] 单文件瘦身：analyzer.py(1950) / collector.py(1497) 拆模块；进度回调样板抽 `progress.py`（本次评审 #4/#5）
