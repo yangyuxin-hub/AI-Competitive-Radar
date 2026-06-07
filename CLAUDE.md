@@ -74,7 +74,9 @@ config/
 src/
   state.py                    # AgentState TypedDict + build_initial_state
   collector.py                # 三层降级采集 + URL discovery + 验收门补采(acceptance_gate_and_heal)；skill.py 提供 registry
-  analyzer.py                 # 两步式(facts/derivations) + quick_validate + 过度泛化软化 + 强约束 Prompt(prompts/)
+  analyzer.py                 # 两步式(facts/derivations) + quick_validate + 强约束 Prompt(prompts/)
+  analyzer_sanitize.py        # analyzer 确定性后处理簇(sanitize_*/soften_overgeneralization;零 LLM/进度依赖)
+  progress.py                 # 共享进度回调通道 ProgressChannel(每节点独立实例,防 SSE 串台)
   writer.py                   # Markdown 渲染(chip 格式 [SXXXXXXX]) + 数据可得性渲染
   reviewer.py                 # R0-R10 检查函数(R9 chip 可溯源 / R10 禁泄分) + degraded_writer
   graph.py                    # LangGraph 编排 + main 入口
@@ -149,4 +151,7 @@ docs/task-requirements.md     # 赛题需求
 - [ ] 规则瘦身（R2/R3/R5 合并入 R6）
 - [ ] `ISSUE_TYPE_TO_TARGET` 13 项收敛到 3 类
 - [ ] 业务价值量化指标（评分维度 3，答辩必备；`business_value.py` 已起步）
-- [ ] 单文件瘦身：analyzer.py(1950) / collector.py(1497) 拆模块；进度回调样板抽 `progress.py`（本次评审 #4/#5）
+- [~] 单文件瘦身（#4/#5 进行中）：
+  - [x] 进度回调样板抽 `progress.py`（ProgressChannel，analyzer/collector 复用）
+  - [x] analyzer 确定性后处理簇抽 `analyzer_sanitize.py`（1950→1741 行）
+  - [ ] collector 适配器簇 / analyzer preview·gap·feature 簇：需先建 `*_common.py` 基座解循环依赖（高耦合，单独排期）
