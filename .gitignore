@@ -32,6 +32,8 @@ logs/
 data/cache/
 data/debug/
 data/evidence_debug_*.json
+# 运行时累积的源质量台账(hits/q 每次跑都变),非源码
+data/source_ledger.json
 out/
 *.log
 agent_trace.jsonl
