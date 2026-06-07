@@ -15,6 +15,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Optional
 
+from . import scoring_config
 from .state import AgentState
 from .skill import create_skill_registry
 
@@ -139,6 +140,18 @@ def discover_urls(product: str, products_config: Optional[dict] = None, allow_ll
     if is_mock_mode() or not allow_llm:
         return {"official_pages": [], "pricing_pages": [], "source": "skipped"}
 
+    # 台账复用(§8.6 读取点):历史学过该产品的官网/定价页 → 直接命中,跳过 LLM 发现(省 deep 档每产品一次 LLM)
+    if os.environ.get("LEDGER_REUSE", "1") not in ("0", "false", "False"):
+        try:
+            from . import source_ledger
+            kp = source_ledger.known_pages(product)
+            if kp and (kp["official_pages"] or kp["pricing_pages"]):
+                print(f"[collector] {product} URL 命中台账(跳过 LLM 发现): "
+                      f"official={len(kp['official_pages'])}, pricing={len(kp['pricing_pages'])}")
+                return {**kp, "source": "ledger"}
+        except Exception as _le:  # noqa: BLE001
+            print(f"[collector] 台账查询失败(忽略): {type(_le).__name__}: {_le}")
+
     # 真实模式:调用 LLM 发现 URL
     from .llm import get_llm
 
@@ -239,7 +252,7 @@ RUNTIME_PROFILES = {
 
 
 def runtime_settings(profile: Optional[str]) -> dict:
-    name = (profile or "balanced").strip().lower()
+    name = (profile or "deep").strip().lower()
     return {**RUNTIME_PROFILES["balanced"], **RUNTIME_PROFILES.get(name, {})}
 
 
@@ -263,17 +276,20 @@ def cap_evidence_per_product(evidences: list[dict], limit: int = MAX_EVIDENCE_PE
         by_ct: dict[str, list[dict]] = {}
         for ev in items:
             by_ct.setdefault(ev.get("claim_type", "?"), []).append(ev)
+        # 质量加权:优先按 quality_score(质量门打的分)保留,无则回退 evidence_confidence
+        _q = lambda e: (e.get("quality_score") if e.get("quality_score") is not None
+                        else e.get("evidence_confidence", 0))
         for lst in by_ct.values():
-            lst.sort(key=lambda e: e.get("evidence_confidence", 0), reverse=True)
+            lst.sort(key=_q, reverse=True)
         kept: list[dict] = []
         # 第一轮:每类取 top per_type
         for ct, lst in by_ct.items():
             kept.extend(lst[:per_type])
-        # 第二轮:还有余额则按置信度从各类剩余里回填
+        # 第二轮:还有余额则按质量分从各类剩余里回填
         if len(kept) < limit:
             rest = sorted(
                 (e for ct, lst in by_ct.items() for e in lst[per_type:]),
-                key=lambda e: e.get("evidence_confidence", 0), reverse=True,
+                key=_q, reverse=True,
             )
             kept.extend(rest[: limit - len(kept)])
         print(f"  [cap] {product}: {len(items)} → {len(kept)} (按 claim_type 均衡)")
@@ -842,8 +858,8 @@ class OfficialPageAdapter(SourceAdapter):
                 "source_freshness": "current",
                 "claim": claim,
                 "extracted_snippet": snippet,
-                "source_reliability": 0.85,
-                "claim_relevance": 0.75,
+                "source_reliability": scoring_config.reliability("official_page", 0.85),
+                "claim_relevance": scoring_config.get("claim_relevance_prior", "official_page", 0.75),
                 "evidence_confidence": round(conf, 2),
             })
         return out
@@ -975,7 +991,8 @@ class CacheAdapter(SourceAdapter):
         out = []
         for ev in evidences:
             obs = ev.get("observed_at")
-            ttl = FRESHNESS_TTL_DAYS.get(ev.get("claim_type", ""), 30)
+            ct = ev.get("claim_type", "")
+            ttl = scoring_config.ttl_days(ct, FRESHNESS_TTL_DAYS.get(ct, 30))
             try:
                 age = (today - date.fromisoformat(obs)).days
                 ev = {**ev, "source_freshness": "current" if age < ttl else "stale"}
@@ -993,7 +1010,7 @@ class AdapterRegistry:
     """三层兜底:live → cache → mock"""
 
     def __init__(self, discovered_urls: Optional[dict[str, dict]] = None,
-                 runtime_profile: str = "balanced") -> None:
+                 runtime_profile: str = "deep") -> None:
         """初始化。
 
         Args:
@@ -1192,7 +1209,7 @@ _registry: Optional[AdapterRegistry] = None
 
 
 def get_registry(discovered_urls: Optional[dict[str, dict]] = None,
-                 runtime_profile: str = "balanced") -> AdapterRegistry:
+                 runtime_profile: str = "deep") -> AdapterRegistry:
     global _registry
     if _registry is None:
         _registry = AdapterRegistry(discovered_urls=discovered_urls, runtime_profile=runtime_profile)
@@ -1203,6 +1220,72 @@ def reset_registry() -> None:
     """重置全局 registry。Streamlit 多次运行时需要调用，避免旧配置残留。"""
     global _registry
     _registry = None
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 自愈循环：验收门 Gap → 定向补采（§3.6 D）
+# ────────────────────────────────────────────────────────────────────────────
+
+def _targeted_refill(gaps: list[dict], focus: str, max_per_gap: int = 4) -> list[dict]:
+    """质量/数量 Gap → 定向检索补采。复用 search.search_plan_to_evidence(自带相关性门+缓存)。
+    每个 gap 按其 fix 处方(query_hint/source_hint/bias)定向搜,只补缺口,不全量重抓。"""
+    from . import search
+    if not search.search_available():
+        print("  [self-heal] 无可用搜索供应商,跳过补采")
+        return []
+    patches: list[dict] = []
+    seen: set = set()
+    for g in gaps:
+        p = g.get("product")
+        ct = g.get("claim_type") or "feature_existence"
+        fix = g.get("fix") or {}
+        sites = fix.get("source_hint") or [""]
+        qhint = fix.get("query_hint") or f"{p} {ct}"
+        bias = fix.get("bias") or ("user_generated" if ct in ("user_pain", "performance_quality") else "vendor_claim")
+        plan = []
+        for s in sites:
+            # source_hint 里的 official_page/pricing_page 是「去官网」信号 → site 留空走官网锚定
+            st = "pricing_page" if ct == "pricing" else (
+                "official_page" if g.get("gap_type") == "no_official" else "web_search")
+            site = "" if s in ("official_page", "pricing_page") else s
+            plan.append({"query": qhint, "claim_type": ct, "site": site,
+                         "source_type": st, "bias": bias})
+        try:
+            evs, _ev = search.search_plan_to_evidence(p, plan, results_per_query=max_per_gap)
+        except Exception as e:  # noqa: BLE001
+            print(f"  [self-heal] refill {p}/{ct} 失败: {type(e).__name__}: {e}")
+            continue
+        for e in evs:
+            if e.get("evidence_id") not in seen:
+                seen.add(e.get("evidence_id"))
+                e["collection_source"] = "self_heal"
+                patches.append(e)
+    return patches
+
+
+def acceptance_gate_and_heal(merged: list[dict], meta: dict, focus: str,
+                             cap_limit: int, max_rounds: int = 1) -> tuple[list[dict], dict]:
+    """采集验收门 + 自愈循环：审查(数量+质量门)→有 Gap 则定向补采→再审查，至多 max_rounds 轮。
+    达标或补不到即停；仍未闭合的 Gap 留在 audit['gaps'] 供 Reviewer 安全网/诚实标注。"""
+    from .quality import annotate_and_audit, score_quality
+    audit = annotate_and_audit(merged, meta)
+    for rnd in range(max_rounds):
+        if audit["passed"]:
+            break
+        gaps = audit["gaps"]
+        print(f"  [self-heal] round {rnd+1}: {len(gaps)} 个 Gap → 定向补采 "
+              f"{[g['gap_type']+':'+str(g.get('product')) for g in gaps]}")
+        patch = _targeted_refill(gaps, focus)
+        if not patch:
+            print("  [self-heal] 无新证据补入，停止")
+            break
+        for e in patch:
+            e["quality_score"] = score_quality(e)
+        before = len(gaps)
+        merged = cap_evidence_per_product(dedupe_evidence(merged + patch), limit=cap_limit)
+        audit = annotate_and_audit(merged, meta)
+        print(f"  [self-heal] round {rnd+1} 后: Gap {before} → {len(audit['gaps'])}, +{len(patch)} 证据")
+    return merged, audit
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -1222,7 +1305,7 @@ def collector_node(state: AgentState) -> AgentState:
     meta = state["analysis_meta"]
     products = [meta["target_product"]] + list(meta["competitors"])
     focus = meta["analysis_focus"][0] if meta.get("analysis_focus") else ""
-    runtime_profile = meta.get("runtime_profile") or "balanced"
+    runtime_profile = meta.get("runtime_profile") or "deep"
     settings = runtime_settings(runtime_profile)
 
     # Step 0: URL Discovery — 让 LLM 自主为每个产品找官网/定价页 URL。
@@ -1300,6 +1383,30 @@ def collector_node(state: AgentState) -> AgentState:
 
         print(f"  [collector_node] done={len(done)}, not_done={len(not_done)}, fetched={len(fetched)}")
 
+        # P0 修复:not_done 的 future 往往只差一两秒就完成(fetch_all 内部各自带超时,
+        # 线程不会被 kill,ThreadPoolExecutor 退出时本就会阻塞等它们跑完)。原逻辑直接
+        # cancel 丢弃 = 把每个产品已抓到的 50+ 条证据白白扔掉 → 整轮 0 产出,再靠
+        # analyzer gap-refill 重抓一遍(延迟翻倍)。这里给一个宽限期收割已完成的结果,
+        # 只把真正还卡死的标记为 timeout。grace 由 COLLECTOR_GRACE_SEC 调(默认 20s)。
+        if not_done:
+            grace = int(os.environ.get("COLLECTOR_GRACE_SEC", "20"))
+            print(f"  [collector_node] {len(not_done)} 个产品超时未收割,宽限 {grace}s 收割已完成结果...")
+            harvested, still_running = wait(not_done, timeout=grace)
+            for fut in harvested:
+                product = futures[fut]
+                try:
+                    evs, meta_info = fut.result()
+                    print(f"  [collector_node] {product} 宽限收割 {len(evs)} evidence (超时后完成,免去重抓)")
+                except Exception as e:  # noqa: BLE001
+                    evs, meta_info = [], {
+                        "adapter_events": [{"status": "fatal", "reason": str(e)}],
+                        "coverage": {ct: 0 for ct in REQUIRED_CLAIM_TYPES},
+                    }
+                    print(f"  [collector_node] {product} 宽限收割异常: {type(e).__name__}: {e}")
+                fetched.extend(evs)
+                collection_meta["products"][product] = meta_info
+            not_done = still_running
+
         for fut in not_done:
             product = futures[fut]
             fut.cancel()
@@ -1328,12 +1435,36 @@ def collector_node(state: AgentState) -> AgentState:
     if os.environ.get("DUMP_FULL_EVIDENCE", "").strip() in ("1", "true", "True"):
         dump_evidence_debug(merged, run_id=run_id)
 
-    # 每个产品按 confidence 取 top N；不同运行模式控制 prompt 体积与等待时间
-    merged = cap_evidence_per_product(merged, limit=int(settings["max_evidence_per_product"]))
+    # 质量加权截顶前先给每条打 quality_score(cap 按质量分优先保留高质证据)
+    from .quality import score_quality as _score_quality
+    for _e in merged:
+        _e["quality_score"] = _score_quality(_e)
+    cap_limit = int(settings["max_evidence_per_product"])
+    merged = cap_evidence_per_product(merged, limit=cap_limit)
 
     # 官网证据 claim_type 批量 LLM 精分类(抓取已完成,不影响超时)
     _reclassify_official_claim_types(merged)
     dump_evidence_debug(merged, run_id=run_id)
+
+    # ── 采集验收门 + 自愈循环（§3.5/§3.6）放在 official_check 之前 ──────────────
+    # 数量门(覆盖/官网/总量) + 质量门(定价含金量/偏置平衡) → 有 Gap 则定向补采(≤1 轮),
+    # 达标才把证据交给 Analyzer。Reviewer 退化为安全网。SELF_HEAL_ROUNDS=0 可关。
+    heal_rounds = int(os.environ.get("SELF_HEAL_ROUNDS", "1")) if settings.get("search") else 0
+    merged, quality_audit = acceptance_gate_and_heal(merged, meta, focus, cap_limit, max_rounds=heal_rounds)
+    collection_meta["quality_audit"] = quality_audit
+    print(f"[collector][验收门] avg_quality={quality_audit['avg_quality']}, "
+          f"数量Gap={len(quality_audit['quantity_gaps'])}, 质量Gap={len(quality_audit['quality_gaps'])}, "
+          f"{'✅达标' if quality_audit['passed'] else '⚠️仍有未闭合Gap(交安全网)'}")
+    for g in quality_audit["gaps"]:
+        print(f"  [Gap] {g['gap_type']} · {g['product']}/{g.get('claim_type')}: {g['reason']}")
+
+    # 高质量源台账:把本轮高质量证据的 domain 学进 ledger,供下次同产品/品类复用(§8.6)。失败静默。
+    try:
+        from . import source_ledger
+        _cat = meta.get("domain") or meta.get("domain_key") or os.environ.get("DOMAIN") or "default"
+        source_ledger.record(merged, category=_cat, products=products)
+    except Exception as _le:  # noqa: BLE001
+        print(f"  [ledger] 记录失败(忽略): {type(_le).__name__}: {_le}")
 
     # ── 官网获取 check:官网是最权威源(功能/定价大量靠它),逐产品核对到底抓到没有,没抓到明确报红 ──
     official_check: dict = {}
@@ -1347,17 +1478,17 @@ def collector_node(state: AgentState) -> AgentState:
             "official_evidence": n_off, "had_urls": had_urls,
             "url_source": disc.get("source", "?"), "ok": ok,
         }
-        flag = "✓" if ok else "🚩"
+        flag = "[OK]" if ok else "[WARN]"
         print(f"[collector][官网check] {flag} {product}: 官网证据 {n_off} 条 "
               f"(URL来源={disc.get('source','?')}, 有URL={had_urls})")
         if not ok and had_urls:
-            print(f"  🚩 {product} 找到了官网 URL 却 0 条官网证据 → 抓取/渲染失败,需排查")
+            print(f"  [WARN] {product} 找到了官网 URL 却 0 条官网证据 -> 抓取/渲染失败,需排查")
         elif not ok:
-            print(f"  🚩 {product} 没找到官网 URL → URL 发现失败(LLM/搜索没命中)")
+            print(f"  [WARN] {product} 没找到官网 URL -> URL 发现失败(LLM/搜索没命中)")
     collection_meta["official_check"] = official_check
     n_missing = sum(1 for v in official_check.values() if not v["ok"])
     if n_missing:
-        print(f"[collector][官网check] ⚠️ {n_missing}/{len(products)} 个产品无官网证据,影响功能/定价权威性")
+        print(f"[collector][官网check] [WARN] {n_missing}/{len(products)} 个产品无官网证据,影响功能/定价权威性")
 
     return {
         **state,

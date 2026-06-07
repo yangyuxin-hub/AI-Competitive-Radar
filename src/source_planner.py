@@ -159,7 +159,7 @@ def _product_official_domains(product: str) -> list[str]:
                                *_discovered_domains.get(product, [])]))
 
 
-def _sites_for_claim(product: str, ct: str, by_ct: dict) -> list[tuple]:
+def _sites_for_claim(product: str, ct: str, by_ct: dict, category: Optional[str] = None) -> list[tuple]:
     """该 claim_type 应优先检索的权威源 (site, source_type, bias)。
     修复:旧实现对所有 claim_type 共用 recs[:N](前几条恰是 feature 的无 site 官网页)
     → 所有查询 site 都空 → 全网裸搜捞回学术站/同名页。现按 claim_type 各取对应源。"""
@@ -180,6 +180,16 @@ def _sites_for_claim(product: str, ct: str, by_ct: dict) -> list[tuple]:
     for r in (by_ct.get(ct) or []):
         if r.get("site"):
             add(r["site"], r.get("source_type", "web_search"), r.get("bias", "third_party"))
+    # 台账复用(§8.6 读取点②):perf/pain 优先命中该品类历史高质量社区/测评源,排在静态兜底之前
+    if ct in ("performance_quality", "user_pain") and category:
+        try:
+            from . import source_ledger
+            for d in source_ledger.top_sites(category, "community", k=2):
+                add(d, "web_search", "user_generated")
+            for d in source_ledger.top_sites(category, "review", k=1):
+                add(d, "web_search", "third_party")
+        except Exception:  # noqa: BLE001
+            pass
     # perf/pain 仍没 site → 用默认用户反馈源兜底
     for d in _FALLBACK_SITES.get(ct, []):
         add(d, "web_search", "user_generated")
@@ -196,7 +206,7 @@ def _heuristic_plan(product: str, focus: list[str], missing: list[str], recs: li
     queries: list[dict] = []
     for ct in missing:
         base_q = _build_query(product, focus_kw, ct, cat_en, cat_cn)
-        sites = _sites_for_claim(product, ct, by_ct)[:max_per_claim]
+        sites = _sites_for_claim(product, ct, by_ct, category=domain)[:max_per_claim]
         for site, st, bias in sites:
             queries.append({
                 "claim_type": ct, "query": base_q, "site": site,

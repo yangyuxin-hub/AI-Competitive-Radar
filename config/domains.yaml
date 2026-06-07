@@ -44,3 +44,35 @@ domains:
     competitors: ["Firebase", "Appwrite"]
     analysis_focus: ["后端开发体验与定价"]
     analysis_purpose: "对比 BaaS 平台的开发体验与成本,辅助技术选型"
+
+  ai_image:
+    name: "AI 图像生成"
+    en_name: "AI image generation"
+    target_product: "Midjourney"
+    competitors: ["StableDiffusion", "DALLE"]
+    analysis_focus: ["图像生成质量与创作体验"]
+    analysis_purpose: "对比主流文生图工具的质量与易用性,辅助创作者选型"
+
+  ai_video:
+    name: "AI 视频生成"
+    en_name: "AI video generation"
+    target_product: "Sora"
+    competitors: ["Kling", "Runway"]
+    analysis_focus: ["文生视频效果与可控性"]
+    analysis_purpose: "对比主流文生视频工具的效果与可控性,辅助创作者选型"
+
+  ai_music:
+    name: "AI 音乐生成"
+    en_name: "AI music generation"
+    target_product: "Suno"
+    competitors: ["Udio", "StableAudio"]
+    analysis_focus: ["AI 音乐生成质量与易用性"]
+    analysis_purpose: "对比 AI 作曲工具的质量与易用性,辅助创作者选型"
+
+  ai_search:
+    name: "AI 搜索"
+    en_name: "AI search engine"
+    target_product: "Perplexity"
+    competitors: ["Metaso", "ChatGPTSearch"]
+    analysis_focus: ["AI 搜索准确性与体验"]
+    analysis_purpose: "对比 AI 搜索引擎的准确性与体验,辅助选型"

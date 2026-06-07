@@ -18,6 +18,7 @@ from typing import Optional
 
 import httpx
 
+from . import scoring_config
 from .skill import CollectorSkill
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -77,6 +78,27 @@ def _infer_claim_type(text: str) -> str:
 
 def _strip_html_tags(text: str) -> str:
     return re.sub(r"<[^>]+>", " ", text).strip()
+
+
+def _product_tokens(product: str) -> set[str]:
+    """产品名拆成可匹配 token:全名 + CJK 串 + 拆驼峰的拉丁词。
+    例:'可灵Kling' → {'可灵kling','可灵','kling'};'StableDiffusion' → {..,'stable','diffusion'}。
+    用于社区证据的产品相关性硬门(避免把无关热帖当本产品证据)。"""
+    p = (product or "").strip()
+    toks: set[str] = set()
+    if not p:
+        return toks
+    toks.add(p.lower())
+    for m in re.findall(r"[A-Za-z][a-z]+|[一-鿿]{2,}|[A-Za-z]{2,}", p):
+        if len(m) >= 2:
+            toks.add(m.lower())
+    return toks
+
+
+def _mentions_product(text: str, product: str) -> bool:
+    """文本是否真的提到本产品(任一 token 命中)。社区帖相关性硬门。"""
+    low = (text or "").lower()
+    return any(tok in low for tok in _product_tokens(product))
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -191,9 +213,12 @@ class V2EXSkill(CollectorSkill):
         # 2b: 关键词过滤
         matched = _keyword_filter(all_topics, keywords)
         if not matched:
-            print(f"[V2EX Skill] keyword filter=0, keeping top 10 by replies")
-            all_topics.sort(key=lambda t: t.get("replies", 0), reverse=True)
-            matched = all_topics[:10]
+            # 关键词 0 匹配 = 该批节点近期没有讨论本产品。旧逻辑此处退化为"取回复
+            # 最多的热帖",而 V2EX 永远的热帖是理财/投资 → 把月月宝/年化收益当成竞品
+            # 证据灌进来(可灵视频→理财信息的根因)。正确行为:宁可不出 V2EX 证据也不
+            # 污染溯源链。直接返回空。
+            print(f"[V2EX Skill] keyword filter=0 → 无相关讨论,放弃 top-by-replies 兜底(避免灌入无关热帖)")
+            return self._empty_result(product, keywords, nodes, t_start)
         print(f"[V2EX Skill] after filter: {len(matched)} topics")
 
         # 2c: 抓回复
@@ -292,6 +317,10 @@ class V2EXSkill(CollectorSkill):
                 continue
             title = topic.get("title", "")
             content = _strip_html_tags(topic.get("content") or "")
+            # 相关性硬门:标题/正文都不提产品名的话题一律丢弃(连带其回复一起跳过),
+            # 防止节点里的无关热帖(理财/工具分享)被当成本产品证据。
+            if not _mentions_product(f"{title} {content}", product):
+                continue
             url = f"https://www.v2ex.com/t/{tid}"
             author = topic.get("member", {}).get("username", "") if isinstance(topic.get("member"), dict) else ""
 
@@ -310,7 +339,7 @@ class V2EXSkill(CollectorSkill):
                 "source_freshness": "current",
                 "claim": claim,
                 "extracted_snippet": snippet,
-                "source_reliability": 0.68,
+                "source_reliability": scoring_config.reliability("v2ex_topic", 0.68),
                 "claim_relevance": self._calc_relevance(full_text, product, focus, keywords),
                 "evidence_confidence": 0.60,
                 "metadata": {"v2ex_topic_id": tid, "author": author, "replies": topic.get("replies", 0)},
@@ -320,6 +349,8 @@ class V2EXSkill(CollectorSkill):
                 r_text = _strip_html_tags(reply.get("content") or "")
                 if len(r_text) < 20:
                     continue
+                if not _mentions_product(r_text, product):
+                    continue  # 相关性硬门:离题回复丢弃(即便话题相关,回复也可能跑题)
                 r_author = reply.get("member", {}).get("username", "") if isinstance(reply.get("member"), dict) else ""
                 r_url = f"{url}#reply{reply.get('id', '')}"
                 r_claim = r_text[:200]
@@ -335,7 +366,7 @@ class V2EXSkill(CollectorSkill):
                     "source_freshness": "current",
                     "claim": r_claim,
                     "extracted_snippet": f"[V2EX reply by @{r_author}] {r_text[:500]}",
-                    "source_reliability": 0.60,
+                    "source_reliability": scoring_config.reliability("v2ex_reply", 0.60),
                     "claim_relevance": self._calc_relevance(r_text, product, focus, keywords),
                     "evidence_confidence": 0.50,
                     "metadata": {"v2ex_topic_id": tid, "v2ex_reply_id": reply.get("id"), "author": r_author},
