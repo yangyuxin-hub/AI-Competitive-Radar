@@ -43,11 +43,23 @@ _GOOD_SCHEMA = {
                     "Cursor": {
                         "support_status": "supported",
                         "support_evidence_ids": ["SFEAT001"],
-                    }
+                    },
+                    "Windsurf": {
+                        "support_status": "supported",
+                        "support_evidence_ids": ["SFEAT001"],
+                    },
                 },
                 "gap": {"winner": "Cursor", "evidence_ids": ["SFEAT001"], "confidence": 0.5},
             }
         ]
+    },
+    # R8 内容门要求每产品有定价档位(后加的门,fixture 需补全才能隔离出被测规则)
+    "pricing_model": {
+        "products": [
+            {"name": "Cursor", "tiers": [{"tier_name": "Pro", "price": "$20/mo"}]},
+            {"name": "Windsurf", "tiers": [{"tier_name": "Free", "price": "$0"}]},
+        ],
+        "pricing_gap": {},
     },
     "user_persona": {
         "pain_points": [

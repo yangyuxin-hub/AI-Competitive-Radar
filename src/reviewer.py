@@ -8,6 +8,7 @@ Demo 默认 REVIEWER_MODE=minimal:
 from __future__ import annotations
 
 import os
+import re
 from collections import Counter
 from typing import Optional
 
@@ -26,16 +27,18 @@ REVIEWER_RULES = {
     "R6": "semantic_grounding",
     "R7": "freshness_and_confidence",
     "R8": "content_coverage",
+    "R9": "report_chip_traceability",
+    "R10": "report_no_score_leak",
 }
 
 MODE_CONFIG = {
     "minimal": {
-        "hard_gate": {"R1", "R4", "R5"},
-        "soft": {"R0", "R2", "R3", "R7"},
+        "hard_gate": {"R1", "R4", "R5", "R9"},     # R9 chip 可溯源是核心,minimal 也硬门
+        "soft": {"R0", "R2", "R3", "R7", "R10"},
         "llm": False,
     },
     "full": {
-        "hard_gate": {"R0", "R1", "R2", "R3", "R4", "R5"},
+        "hard_gate": {"R0", "R1", "R2", "R3", "R4", "R5", "R9", "R10"},
         "soft": {"R7"},
         "llm": True,
     },
@@ -56,6 +59,8 @@ ISSUE_TYPE_TO_TARGET = {
     "missing_claim_type_coverage": "collector",
     "missing_pricing_content": "collector",
     "missing_feature_content": "collector",
+    "report_chip_not_found": "writer",
+    "report_score_leak": "writer",
 }
 
 
@@ -291,6 +296,47 @@ def check_content_coverage(schema: dict, analysis_meta: dict) -> list[dict]:
                     f"{p} 在功能矩阵中无任何已确认能力,功能对比缺失,需补采功能证据",
                     required_claim_types=["feature_existence"]))
     return issues
+
+
+_CHIP_RE = re.compile(r"\[(S[0-9A-F]{7})\]")
+# R10 只防「报告级质检分」泄漏(前端单独渲染徽章)。
+# 字段名字面量永不应出现在正文：
+_SCORE_LEAK_WORDS = ("quality_score", "quality score")
+# 报告级徽章形态：质量评分/质检/质量分 + 数字 + /100(或 满分100)。
+# 注意：不能用裸词 '质量评分' —— 各维度证据评分(如「质量评分领先 4/5」)是正文合法内容(§四评分表),
+# 裸词会误杀；只有 /100 这种报告级分数才是真正要拦的泄漏。
+_SCORE_BADGE_RE = re.compile(r"(质量评分|质检|质量分)\s*[:：]?\s*\d+(\.\d+)?\s*/\s*100")
+
+
+def check_report_chip_traceability(report: str, evidence: list[dict]) -> list[dict]:
+    """R9（writer 自检）：正文 chip [SXXXXXXX] 必须都能在 raw_evidence 找到，否则溯源断裂 → 回 writer。"""
+    if not report:
+        return []
+    valid = {e.get("evidence_id") for e in evidence}
+    issues = []
+    for eid in sorted({m for m in _CHIP_RE.findall(report) if m not in valid}):
+        issues.append(_mk_issue(
+            "R9", "report_chip_not_found", "report_draft",
+            f"正文 chip [{eid}] 不在 raw_evidence，溯源断裂"))
+    return issues
+
+
+def check_report_no_score_leak(report: str, evidence: list[dict]) -> list[dict]:
+    """R10（writer 自检）：正文禁泄 quality_score（徽章由前端从 quality_report 单独渲染）→ 回 writer。"""
+    if not report:
+        return []
+    low = report.lower()
+    for kw in _SCORE_LEAK_WORDS:
+        if kw.lower() in low:
+            return [_mk_issue(
+                "R10", "report_score_leak", "report_draft",
+                f"正文出现字段名 '{kw}'，quality_score 应由前端单独渲染，不写进 Markdown")]
+    m = _SCORE_BADGE_RE.search(report)
+    if m:
+        return [_mk_issue(
+            "R10", "report_score_leak", "report_draft",
+            f"正文出现报告级质检徽章 '{m.group(0)}'，应由前端从 quality_report 单独渲染")]
+    return []
 
 
 RULE_RUNNERS = {
@@ -719,16 +765,15 @@ def _quality_dimensions(
             "note": "是否有用户/第三方证据帮助校验厂商叙事",
         },
     }
-    weights = {
-        "evidence_coverage": 0.22,
-        "source_credibility": 0.18,
-        "traceability": 0.22,
-        "freshness": 0.10,
-        "report_completeness": 0.18,
-        "conflict_handling": 0.10,
-    }
-    dimensional_score = _clamp_score(sum(dimensions[k]["score"] * weights[k] for k in weights))
-    rule_score = max(0, 100 - len(errors) * 10 - len(warnings) * 3)
+    from . import scoring_config as _sc
+    weights = _sc.weights("reviewer_quality", {
+        "evidence_coverage": 0.22, "source_credibility": 0.18, "traceability": 0.22,
+        "freshness": 0.10, "report_completeness": 0.18, "conflict_handling": 0.10,
+    })
+    dimensional_score = _clamp_score(sum(dimensions[k]["score"] * weights.get(k, 0) for k in dimensions))
+    pe = _sc.get("reviewer_quality", "penalty_per_error", 10)
+    pw = _sc.get("reviewer_quality", "penalty_per_warning", 3)
+    rule_score = max(0, 100 - len(errors) * pe - len(warnings) * pw)
     return dimensions, min(rule_score, dimensional_score)
 
 
@@ -762,6 +807,19 @@ def make_reviewer_node(llm=None, mode: Optional[str] = None):
         for rule_id, runner in RULE_RUNNERS.items():
             executed_rules.add(rule_id)
             for issue in runner(schema, evidence):
+                if rule_id in cfg["hard_gate"]:
+                    issue["severity"] = "error"
+                    all_issues.append(issue)
+                elif rule_id in cfg["soft"]:
+                    issue["severity"] = "warning"
+                    all_issues.append(issue)
+
+        # R9/R10 writer 自检:作用于已渲染的 report_draft(chip 可溯源 / 禁泄 quality_score)
+        report_draft = state.get("report_draft") or ""
+        for rule_id, runner in (("R9", check_report_chip_traceability),
+                                ("R10", check_report_no_score_leak)):
+            executed_rules.add(rule_id)
+            for issue in runner(report_draft, evidence):
                 if rule_id in cfg["hard_gate"]:
                     issue["severity"] = "error"
                     all_issues.append(issue)

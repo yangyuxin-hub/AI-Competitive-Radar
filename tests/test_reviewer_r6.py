@@ -35,7 +35,11 @@ def _schema():
                                 "basis": "Cursor 在所有大型企业单体仓库里都显著领先",
                                 "evidence_ids": ["SABC002"],
                             },
-                        }
+                        },
+                        "Windsurf": {
+                            "support_status": "supported",
+                            "support_evidence_ids": ["SABC001"],
+                        },
                     },
                     "gap": {
                         "winner": "Cursor",
@@ -47,7 +51,13 @@ def _schema():
                 }
             ]
         },
-        "pricing_model": {"products": [], "pricing_gap": {}},
+        "pricing_model": {
+            "products": [
+                {"name": "Cursor", "tiers": [{"tier_name": "Pro", "price": "$20/mo"}]},
+                {"name": "Windsurf", "tiers": [{"tier_name": "Free", "price": "$0"}]},
+            ],
+            "pricing_gap": {},
+        },
         "user_persona": {
             "user_segments": [],
             "pain_points": [
