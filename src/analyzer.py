@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from .llm import get_llm, is_mock_mode, load_sample_report
+from .progress import ProgressChannel
 from .state import AgentState
 
 
@@ -27,24 +28,18 @@ def _is_demo_loop() -> bool:
 # 进度回调
 # ───────────────────────────────────────────────────────────────────────
 
-_PROGRESS_CALLBACK = None  # type: Optional[callable]
+_PROGRESS = ProgressChannel()
 
 
 def set_progress_callback(cb) -> None:
     """注册 Analyzer 进度事件回调。事件字典:
     {step: 'facts'|'derivations', phase: 'start'|'done'|'repair', issues?, attempt?}
     回调失败不影响主流程。"""
-    global _PROGRESS_CALLBACK
-    _PROGRESS_CALLBACK = cb
+    _PROGRESS.set_callback(cb)
 
 
 def _emit_progress(**evt) -> None:
-    if _PROGRESS_CALLBACK is None:
-        return
-    try:
-        _PROGRESS_CALLBACK(evt)
-    except Exception:
-        pass
+    _PROGRESS.emit(**evt)
 
 
 def _facts_summary(facts: dict) -> str:

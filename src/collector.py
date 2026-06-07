@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import scoring_config
+from .progress import ProgressChannel
 from .state import AgentState
 from .skill import create_skill_registry
 
@@ -24,21 +25,15 @@ from .skill import create_skill_registry
 # 进度回调(供 api SSE 实时展示采集思考/进度)
 # ────────────────────────────────────────────────────────────────────────────
 
-_PROGRESS_CALLBACK: Optional[Callable[[dict], None]] = None
+_PROGRESS = ProgressChannel()
 
 
 def set_progress_callback(cb: Optional[Callable[[dict], None]]) -> None:
-    global _PROGRESS_CALLBACK
-    _PROGRESS_CALLBACK = cb
+    _PROGRESS.set_callback(cb)
 
 
 def _emit_progress(**event) -> None:
-    if _PROGRESS_CALLBACK is None:
-        return
-    try:
-        _PROGRESS_CALLBACK(dict(event))
-    except Exception:
-        pass
+    _PROGRESS.emit(**event)
 
 
 _ROOT = Path(__file__).resolve().parent.parent
