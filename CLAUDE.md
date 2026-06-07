@@ -73,9 +73,16 @@ config/
   scoring.yaml                # 统一评分配置(权重/阈值/source_reliability/freshness TTL)；缺失即回退代码默认值
 src/
   state.py                    # AgentState TypedDict + build_initial_state
-  collector.py                # 三层降级采集 + URL discovery + 验收门补采(acceptance_gate_and_heal)；skill.py 提供 registry
-  analyzer.py                 # 两步式(facts/derivations) + quick_validate + 强约束 Prompt(prompts/)
-  analyzer_sanitize.py        # analyzer 确定性后处理簇(sanitize_*/soften_overgeneralization;零 LLM/进度依赖)
+  # —— collector 三层 DAG(common 基座 ← adapters ← node 编排;collector.py re-export 全公共名)——
+  collector.py                # collector_node + 验收门补采(acceptance_gate_and_heal);re-export common/adapters
+  collector_common.py         # 叶子 helper/常量/URL discovery/进度通道单例(三层共享)
+  collector_adapters.py       # OfficialPage/Search/Mock/Cache 四适配器 + AdapterRegistry(单向依赖 common)
+  # —— analyzer 三层 DAG(common 基座 ← fallback/augment/sanitize ← node;analyzer.py re-export)——
+  analyzer.py                 # 两步式(facts/derivations) + quick_validate + analyzer_node + 强约束 Prompt(prompts/)
+  analyzer_common.py          # 叶子 helper/预览渲染/证据压缩/load_prompt/进度通道/_FACTS_SECTIONS/_REQUIRED_CT
+  analyzer_sanitize.py        # 确定性后处理簇(sanitize_*/soften_overgeneralization;零 LLM/进度依赖)
+  analyzer_fallback.py        # 骨架兜底构建器(_fallback_facts/_derivations + _corrupt_* demo 注入)
+  analyzer_augment.py         # 证据增强侧流(覆盖缺口定向补采 + 真实UGC不足时合成访谈)
   progress.py                 # 共享进度回调通道 ProgressChannel(每节点独立实例,防 SSE 串台)
   writer.py                   # Markdown 渲染(chip 格式 [SXXXXXXX]) + 数据可得性渲染
   reviewer.py                 # R0-R10 检查函数(R9 chip 可溯源 / R10 禁泄分) + degraded_writer
@@ -151,7 +158,9 @@ docs/task-requirements.md     # 赛题需求
 - [ ] 规则瘦身（R2/R3/R5 合并入 R6）
 - [ ] `ISSUE_TYPE_TO_TARGET` 13 项收敛到 3 类
 - [ ] 业务价值量化指标（评分维度 3，答辩必备；`business_value.py` 已起步）
-- [~] 单文件瘦身（#4/#5 进行中）：
-  - [x] 进度回调样板抽 `progress.py`（ProgressChannel，analyzer/collector 复用）
-  - [x] analyzer 确定性后处理簇抽 `analyzer_sanitize.py`（1950→1741 行）
-  - [ ] collector 适配器簇 / analyzer preview·gap·feature 簇：需先建 `*_common.py` 基座解循环依赖（高耦合，单独排期）
+- [x] 单文件瘦身（#4/#5 完成，基座模式解循环依赖，全程 re-export 保 back-compat）：
+  - [x] 进度回调样板抽 `progress.py`（ProgressChannel，每节点独立实例）
+  - [x] collector 拆三层 DAG：`collector.py` 1494→327 + `collector_common`(518) + `collector_adapters`(730)
+  - [x] analyzer 拆三层 DAG：`analyzer.py` 1950→974 + `_common`/`_sanitize`/`_fallback`/`_augment`
+  - 验证基线：pyflakes 零未定义名 + 147 测试全过；callsite/测试/api/graph 接线零变化
+  - 注：analyzer.py 余 974 行为核心分析 pipeline(feature-tree/step1/step2/node),紧耦合,保留不再拆
