@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
@@ -342,12 +343,13 @@ def _fallback_derivations(facts: dict, evidence: list[dict], meta: dict, reason:
         ("user_pain", "performance_quality", "pricing", "feature_existence", "market_signal"),
         limit=6,
     )
-    weights = {
+    from . import scoring_config as _sc
+    weights = _sc.weights("recommendation_priority", {
         "pain_frequency": 0.35,
         "business_impact": 0.30,
         "implementation_feasibility": 0.20,
         "evidence_confidence": 0.15,
-    }
+    })
     score_parts = {
         "pain_frequency": 2,
         "business_impact": 3,
@@ -477,8 +479,13 @@ def _compact_evidence(evidence: list[dict]) -> list[dict]:
     for e in evidence:
         by_key.setdefault((e.get("claim_type", "?"), e.get("product")), []).append(e)
     out: list[dict] = []
+    # 单轨:统一按 quality_score 排序(质量门口径)。evidence_confidence 已退役为决策信号,
+    # 仅在证据缺 quality_score 时作末位兜底(生产链路 collector 已全量打分,实际不会触发)。
+    def _rank_key(e):
+        q = e.get("quality_score")
+        return q if q is not None else (e.get("evidence_confidence", 0) or 0)
     for lst in by_key.values():
-        ranked = sorted(lst, key=lambda e: e.get("evidence_confidence", 0) or 0, reverse=True)
+        ranked = sorted(lst, key=_rank_key, reverse=True)
         kept_tok: list[set] = []
         for e in ranked:
             text = (e.get("extracted_snippet") or e.get("claim") or "").strip()
@@ -769,6 +776,92 @@ def sanitize_facts_evidence_refs(facts: dict, evidence: list[dict]) -> tuple[dic
     return facts, dropped
 
 
+# 扩大化措辞 → 收敛替换(确定性,不赌小模型自觉遵守 prompt 纪律)。
+# R6 语义审计会咬"大量/普遍 + 单条证据"这类过度断言;样本量不足时降级为"部分用户"。
+_OVERGEN_SUBS = [
+    # 量词 + (可夹少量修饰,如"现有Copilot") + 用户/开发者/反馈 → 部分…
+    # {0,10}? 非贪婪且仅匹配中英文(遇标点/空格即止,不跨子句),覆盖"大量现有Copilot用户"这类。
+    (re.compile(r"(?:大量|大批|众多|绝大多数|大多数|多数)([一-鿿A-Za-z]{0,10}?)(用户|开发者|反馈)"),
+     r"部分\1\2"),
+    (re.compile(r"(用户|开发者)普遍"), r"部分\1"),
+    (re.compile(r"普遍(反馈|认为|抱怨|遇到|存在|觉得|表示)"), r"部分用户\1"),
+    (re.compile(r"广泛(反馈|存在|出现|抱怨|使用)"), r"部分场景\1"),
+]
+
+
+def _soften_text(text):
+    """把单条文本里的扩大化量词降级;返回 (新文本, 是否改动)。"""
+    if not isinstance(text, str) or not text:
+        return text, False
+    new = text
+    for re_, repl in _OVERGEN_SUBS:
+        new = re_.sub(repl, new)
+    return new, (new != text)
+
+
+def _freq_is_truly_frequent(freq: dict) -> bool:
+    """高频且 ≥3 独立样本 → 认定真普遍,保留措辞;否则需收敛。"""
+    return str(freq.get("level")) == "high" and (freq.get("sample_size") or 0) >= 3
+
+
+def soften_overgeneralization(schema: dict) -> int:
+    """确定性兜底:样本量不足时,把正文各处"大量/普遍/多数用户"降级成"部分用户"。
+    R6 收敛——prompt 纪律在小模型上不一定咬得住,代码兜底才可靠。就地修改 schema,返回改写条数。
+
+    覆盖(过度泛化真正高发的字段,各带"证据/样本足够则保留"的门):
+      facts        : feature 的 quality_score.basis、user_persona 的 pain_points/praise_points/user_segments
+      derivations  : swot 四象限、competitor_landscape(direct/indirect/alternative + selection_rationale)、recommendations
+    facts / derivations 任传其一都安全:缺的 key 自动跳过。"""
+    changes = 0
+
+    def soft_field(obj: dict, key: str) -> None:
+        nonlocal changes
+        if isinstance(obj, dict) and isinstance(obj.get(key), str):
+            obj[key], c = _soften_text(obj[key])
+            changes += int(c)
+
+    # ① feature 质量 basis:无足够用户体验证据(≤2)时不得用"大量/多数用户"
+    for feat in (schema.get("feature_tree") or {}).get("features", []) or []:
+        for pdata in (feat.get("products") or {}).values():
+            qs = pdata.get("quality_score") or {}
+            if len(qs.get("evidence_ids") or []) <= 2:
+                soft_field(qs, "basis")
+
+    # ② user_persona:痛点 / 表扬点(样本不足才收敛) + 画像(一律收敛)
+    persona = schema.get("user_persona") or {}
+    for item in (persona.get("pain_points") or []) + (persona.get("praise_points") or []):
+        freq = item.get("frequency") or {}
+        if _freq_is_truly_frequent(freq):
+            continue
+        soft_field(item, "description")
+        soft_field(freq, "count")
+    for seg in persona.get("user_segments", []) or []:
+        soft_field(seg, "description")  # 画像难逐属性溯源,量词一律收敛
+
+    # ③ swot 四象限:证据 ≤2 才收敛
+    swot = schema.get("swot") or {}
+    for quad in ("strengths", "weaknesses", "opportunities", "threats"):
+        for item in swot.get(quad, []) or []:
+            if len(item.get("evidence_ids") or []) <= 2:
+                soft_field(item, "point")
+
+    # ④ 竞品格局:每条 reason(证据 ≤2 才收敛)+ 选品总述(无样本信号,一律收敛)
+    landscape = schema.get("competitor_landscape") or {}
+    for key in ("direct", "indirect", "alternative"):
+        for item in landscape.get(key) or []:
+            if len(item.get("evidence_ids") or []) <= 2:
+                soft_field(item, "reason")
+    soft_field(landscape, "selection_rationale")
+
+    # ⑤ 改进建议:证据 ≤2 时 rationale / action 收敛
+    for rec in schema.get("recommendations") or []:
+        if len(rec.get("evidence_ids") or []) <= 2:
+            soft_field(rec, "rationale")
+            soft_field(rec, "action")
+
+    return changes
+
+
 def quick_validate_derivations(
     derivations: dict,
     facts: dict,
@@ -945,9 +1038,11 @@ def _compute_gap(name: str, products_block: dict, meta: dict) -> dict:
 
     if len(rated) == 1:
         # 只有一个产品有证据 → 不与"没数据"的对手强行比;如实标注
+        # 措辞纪律(R6 收敛):不在 prose 里复述精确 X/5 评分(那是合成判断,非测量值,
+        # 易被语义审计判为"无依据的精确结论");精确分仍保留在结构化字段与§四评分表中。
         winner, score, win_data = rated[0]
         return {"winner": winner, "gap_type": "insufficient_evidence",
-                "reason": f"仅 {winner} 在「{name}」上有足够质量证据（{score:.0f}/5），"
+                "reason": f"仅 {winner} 在「{name}」上有较充分的用户体验反馈，"
                           "其余产品证据不足，暂不作强对比",
                 "evidence_ids": _eids(win_data), "confidence": 0.3}
 
@@ -958,10 +1053,14 @@ def _compute_gap(name: str, products_block: dict, meta: dict) -> dict:
     spread = top - second
     any_missing = any((d.get("support_status") == "not_supported") for _, _, d in rated)
     gap_type = "feature_completeness" if any_missing else ("performance" if spread > 0 else "usability")
-    if spread > 0:
-        reason = f"{winner} 在「{name}」上质量评分领先（{top:.0f}/5 vs 次优 {second:.0f}/5）"
+    # 按差距量级分级措辞:1 分(粗判)的差距用"略优/有限",不夸成"领先";
+    # 且不复述精确 X/5 vs Y/5(避免被读作基准测量)——精确分见§四评分表。
+    if spread >= 2:
+        reason = f"{winner} 在「{name}」上用户体验评价明显更优（综合多条反馈，优于次优产品）"
+    elif spread == 1:
+        reason = f"{winner} 在「{name}」上用户体验评价略优，但与次优产品差距有限"
     else:
-        reason = f"已评分产品在「{name}」上质量相近（均 {top:.0f}/5），差距主要在支持范围"
+        reason = f"已评分产品在「{name}」上体验评价相近，差距主要在支持范围"
     conf = round(min(0.85, 0.35 + 0.1 * spread + 0.05 * len(_eids(win_data))), 2)
     return {"winner": winner, "gap_type": gap_type, "reason": reason,
             "evidence_ids": _eids(win_data), "confidence": conf}
@@ -1386,6 +1485,9 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0,
         facts, dropped = sanitize_facts_evidence_refs(facts, evidence)
         if dropped:
             print(f"[analyzer] facts deterministic sanitize dropped {dropped} invalid evidence refs")
+    softened = soften_overgeneralization(facts)
+    if softened:
+        print(f"[analyzer] facts 过度泛化措辞收敛 {softened} 处(大量/普遍→部分用户)")
     return facts
 
 
@@ -1446,6 +1548,9 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
         der, dropped = sanitize_derivations(der, facts, evidence)
         if dropped:
             print(f"[analyzer] derivations deterministic sanitize dropped {dropped} invalid refs")
+    softened = soften_overgeneralization(der)
+    if softened:
+        print(f"[analyzer] swot 过度泛化措辞收敛 {softened} 处(大量/普遍→部分用户)")
     return der
 
 

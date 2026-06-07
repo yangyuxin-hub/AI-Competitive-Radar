@@ -4,7 +4,7 @@
 > 输出:`swot` + `recommendations` 两个顶层字段
 > 输入额外含 Step 1 的 facts(feature_tree / pricing_model / user_persona)
 > 约束依据:design-v2.2 §6.4 硬约束、§4.5-§4.6 schema
-> 版本:v1.1 · 模型:Doubao-Seed-2.0-lite · 最后修订:2026-05-27
+> 版本:v1.2 · 模型:Doubao-Seed-2.0-lite · 最后修订:2026-06-07(加精度纪律,SWOT 不复述精确分对比)
 
 ---
 
@@ -35,6 +35,8 @@ Step 1 已经把 evidence 整理成事实(features / pricing / personas / pains)
 - **Weaknesses(劣势)**:必须对应到具体 pain_point(该 pain 的 affected_products 包含 target)或 competitor-won gap(`gap.winner` 是竞品)。说明该劣势对哪些用户 segment 影响最大。
 - **Opportunities(机会)**:基于竞品的 weakness、市场空白(feature_tree 中所有产品都 weak 的 gap)或 user_persona 中尚未被任何产品满足的 pain。机会不是"市场很大",而是"对手的哪个短板我可以打"。
 - **Threats(威胁)**:基于竞品 winner 的 gap + 竞品高 evidence_confidence 的 evidence。至少 1 条必须来自竞品真实优势,不能只写 target 自身问题。
+
+> **精度纪律(R6 语义审计专盯)**:`quality_score` 的 1-5 是合成粗判,不是基准测量。SWOT/summary 措辞**不要**复述成"质量评分领先(4/5 vs 3/5)"这种精确对比——证据里没有这些数字,会被判为无依据结论。差距只差 1 分时用"略优/各有取舍/差距有限",差距 ≥2 且有多条体验证据才可说"明显更优"。同理,把少量投诉写成"用户普遍/多数"也是过度断言。
 
 ### 你会收到
 

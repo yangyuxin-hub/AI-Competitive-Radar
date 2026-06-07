@@ -4,8 +4,12 @@
 """
 import os
 import unittest
+from unittest import mock
 
-# 强制走启发式(不依赖 LLM key)
+# 强制走启发式(不依赖 LLM key)。注意:仅 pop env 不够 —— 其他测试模块 import src.graph 会
+# load_dotenv(.env) 把 ARK_API_KEY 重新灌回 os.environ,导致本测试在全量套件里 propose() 误打真实 LLM
+# (非确定性输出 → flaky 失败)。所以调 propose() 的用例额外在 setUp 里把 _llm_available pat 成 False,
+# 与 env 状态/测试顺序解耦。
 os.environ.pop("LLM_API_KEY", None)
 os.environ.pop("ARK_API_KEY", None)
 
@@ -30,6 +34,12 @@ class IntentDetectionTest(unittest.TestCase):
 
 
 class IntentFocusAlignmentTest(unittest.TestCase):
+    def setUp(self):
+        # 锁定启发式路径:无论 .env 是否被别的模块重新加载,本类的 propose() 都不打真实 LLM。
+        self._p = mock.patch.object(intake, "_llm_available", return_value=False)
+        self._p.start()
+        self.addCleanup(self._p.stop)
+
     def test_pain_question_leads_with_pain_focus(self):
         out = intake.propose("用户为什么从 Notion 流向 Asana 或 Linear，吐槽什么")
         self.assertEqual(out.get("analysis_intent"), "pain_attribution")

@@ -313,7 +313,7 @@ def _render_score_overview(feature_tree: dict, products: list[str]) -> str:
 
     product_scores: dict[str, list[float]] = {p: [] for p in products}
     lines = ["## 四、多维度评分总览\n"]
-    lines.append("> 评分口径: 基于各维度 `quality_score.score` 计算，满分 5 分；证据不足时不计入均分。\n")
+    lines.append("> 评分口径: 基于各维度证据评分计算，满分 5 分；证据不足时不计入均分。\n")
     lines.append("| 维度 | " + " | ".join(products) + " | 关键差异 | 产品含义 |")
     lines.append("|------|" + "|".join(["------"] * len(products)) + "|----------|----------|")
 
@@ -637,11 +637,39 @@ def _render_swot(swot: dict) -> str:
     return "\n".join(lines)
 
 
+_GAP_LABEL = {
+    "pricing_no_number": "定价数据不可得（疑似积分制 / SPA 动态渲染，未抓到明码月费）",
+    "no_official": "缺官网权威源（功能/定价以第三方为准，审慎）",
+    "bias_all_vendor": "仅厂商口径，缺真实用户/第三方视角，结论需审慎",
+    "coverage_short": "该维度证据偏薄，结论置信有限",
+    "total_too_few": "整体样本过薄，结论置信有限",
+}
+
+
+def _render_data_availability(quality_audit: dict) -> str:
+    """诚实降级:把采集自愈后仍未闭合的 Gap 显式标注「不可得」,不以推测填充(核心原则#4)。"""
+    gaps = (quality_audit or {}).get("gaps") or []
+    if not gaps:
+        return ""
+    lines = [
+        "## 数据可得性说明\n",
+        "> 以下维度经采集自愈后仍未达标，已**诚实标注「不可得」**，未以推测/营销话术填充。\n",
+        "| 产品 | 维度 | 说明 |",
+        "|------|------|------|",
+    ]
+    for g in gaps:
+        label = _GAP_LABEL.get(g.get("gap_type")) or g.get("reason", "")
+        lines.append(f"| {g.get('product', '—')} | {g.get('claim_type') or '—'} | {label} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def writer_node(state: AgentState) -> AgentState:
     schema = state.get("schema_draft") or {}
     meta = state["analysis_meta"]
     products = _products(meta)
     evidence = state.get("raw_evidence") or []
+    quality_audit = (state.get("collection_meta") or {}).get("quality_audit") or {}
 
     # 章节顺序对齐 8 模块框架:概览 → 竞品格局 → 定位地图 → 功能对比(评分+差距) →
     # 定价 → 用户之声 → 竞争洞察(SWOT) → 建议;证据覆盖/不确定性作为支撑章节收尾。
@@ -659,6 +687,7 @@ def writer_node(state: AgentState) -> AgentState:
         _render_score_overview(feature_tree, products),
         _render_feature_gaps(feature_tree),
         _render_pricing(schema.get("pricing_model") or {}, feature_tree, products),
+        _render_data_availability(quality_audit),
         _render_personas(schema.get("user_persona") or {}, evidence),
         _render_swot(schema.get("swot") or {}),
         _render_recommendations(schema.get("recommendations") or []),

@@ -58,6 +58,113 @@ class FallbackFactsTest(unittest.TestCase):
                 self.assertIn(eid, valid, f"{_path} 引用了不存在的 {eid}")
 
 
+class GapReasonPrecisionTest(unittest.TestCase):
+    """R6 收敛:gap.reason(确定性合成)不得把 1-5 粗判复述成精确基准对比,
+    1 分差距不得夸成'领先'。精确分仍保留在结构化字段与§四评分表。"""
+    _META = {"target_product": "Cursor"}
+
+    def _block(self, cur, comp):
+        b = {"Cursor": {"support_status": "supported",
+                        "quality_score": {"score": cur, "scale": 5, "evidence_ids": ["SAAA1111"]},
+                        "support_evidence_ids": ["SBBB2222"]}}
+        if comp is not None:
+            b["Windsurf"] = {"support_status": "supported",
+                             "quality_score": {"score": comp, "scale": 5, "evidence_ids": ["SCCC3333"]}}
+        else:
+            b["Windsurf"] = {"support_status": "unknown"}
+        return b
+
+    def test_one_point_spread_is_hedged_not_lead(self):
+        g = analyzer._compute_gap("基础内联补全", self._block(4, 3), self._META)
+        self.assertNotIn("/5", g["reason"])          # 不复述精确分
+        self.assertNotIn("领先", g["reason"])          # 1 分差距不夸成领先
+        self.assertIn("略优", g["reason"])
+        self.assertIn("有限", g["reason"])
+
+    def test_two_point_spread_allows_clear_lead(self):
+        g = analyzer._compute_gap("跨文件", self._block(5, 3), self._META)
+        self.assertNotIn("/5", g["reason"])
+        self.assertIn("明显更优", g["reason"])
+
+    def test_single_rated_no_precise_score_in_prose(self):
+        g = analyzer._compute_gap("大代码库", self._block(3, None), self._META)
+        self.assertNotIn("/5", g["reason"])
+        self.assertIn("证据不足", g["reason"])
+
+
+class OvergeneralizationSoftenTest(unittest.TestCase):
+    """R6 收敛(确定性兜底):样本不足时把'大量/普遍/多数用户'降级为'部分用户',
+    不赌小模型遵守 prompt 纪律;真高频(high+≥3 样本 / ≥3 证据)保留。"""
+
+    def test_text_level_substitutions(self):
+        from src.analyzer import _soften_text
+        self.assertEqual(_soften_text("大量用户反馈卡顿")[0], "部分用户反馈卡顿")
+        self.assertEqual(_soften_text("用户普遍反馈响应慢")[0], "部分用户反馈响应慢")
+        self.assertEqual(_soften_text("多数用户抱怨贵")[0], "部分用户抱怨贵")
+        self.assertEqual(_soften_text("部分用户反馈")[1], False)  # 已合规不改
+
+    def test_quantifier_with_intervening_modifier(self):
+        from src.analyzer import _soften_text
+        # "大量现有Copilot用户" —— 量词与"用户"间夹了修饰词,仍需收敛
+        self.assertEqual(_soften_text("大量现有Copilot用户存在不满")[0], "部分现有Copilot用户存在不满")
+        self.assertEqual(_soften_text("广泛存在的主流方式")[0], "部分场景存在的主流方式")
+
+    def test_legit_noun_not_touched(self):
+        from src.analyzer import _soften_text
+        # "大量代码/样板"是合法用法(非用户群体),不得误杀
+        self.assertEqual(_soften_text("大量重复样板代码编写")[1], False)
+
+    def test_feature_basis_gated_by_quality_evidence(self):
+        schema = {"feature_tree": {"features": [
+            {"products": {"Cursor": {"quality_score": {
+                "basis": "多数用户反馈对话集成流畅", "evidence_ids": ["S1", "S2"]}}}},      # 2 证据→收敛
+            {"products": {"Copilot": {"quality_score": {
+                "basis": "大量用户反馈补全流畅", "evidence_ids": ["S1", "S2", "S3"]}}}},     # 3 证据→保留
+        ]}}
+        analyzer.soften_overgeneralization(schema)
+        feats = schema["feature_tree"]["features"]
+        self.assertIn("部分用户", feats[0]["products"]["Cursor"]["quality_score"]["basis"])
+        self.assertIn("大量用户", feats[1]["products"]["Copilot"]["quality_score"]["basis"])
+
+    def test_landscape_and_recommendations_covered(self):
+        schema = {
+            "competitor_landscape": {"alternative": [
+                {"reason": "仍广泛存在的主流编码方式", "evidence_ids": ["S1"]}]},
+            "recommendations": [
+                {"action": "抢夺用户", "rationale": "大量现有Copilot用户存在不满",
+                 "evidence_ids": ["S1"]}],
+        }
+        n = analyzer.soften_overgeneralization(schema)
+        self.assertGreaterEqual(n, 2)
+        self.assertIn("部分场景", schema["competitor_landscape"]["alternative"][0]["reason"])
+        self.assertIn("部分现有Copilot用户", schema["recommendations"][0]["rationale"])
+
+    def test_small_sample_pain_softened(self):
+        schema = {"user_persona": {"pain_points": [
+            {"description": "大量用户反馈补全卡顿",
+             "frequency": {"level": "high", "sample_size": 1, "count": "1 条"}}]}}
+        n = analyzer.soften_overgeneralization(schema)
+        self.assertEqual(n, 1)
+        self.assertIn("部分用户", schema["user_persona"]["pain_points"][0]["description"])
+        self.assertNotIn("大量", schema["user_persona"]["pain_points"][0]["description"])
+
+    def test_genuinely_frequent_pain_kept(self):
+        schema = {"user_persona": {"pain_points": [
+            {"description": "用户普遍抱怨索引慢",
+             "frequency": {"level": "high", "sample_size": 5, "count": "5 条中 4 条"}}]}}
+        n = analyzer.soften_overgeneralization(schema)
+        self.assertEqual(n, 0)  # high + ≥3 样本 → 真普遍,保留
+        self.assertIn("普遍", schema["user_persona"]["pain_points"][0]["description"])
+
+    def test_swot_softened_by_evidence_count(self):
+        schema = {"swot": {"weaknesses": [
+            {"point": "大量用户反馈大代码库适配差", "evidence_ids": ["S1"]},
+            {"point": "众多用户称延迟高", "evidence_ids": ["S1", "S2", "S3"]}]}}
+        analyzer.soften_overgeneralization(schema)
+        self.assertIn("部分用户", schema["swot"]["weaknesses"][0]["point"])   # 1 证据 → 收敛
+        self.assertIn("众多用户", schema["swot"]["weaknesses"][1]["point"])   # 3 证据 → 保留
+
+
 class FallbackDerivationsTest(unittest.TestCase):
     def test_fallback_derivations_priority_formula_consistent(self):
         facts = _fallback_facts(EVIDENCE, META, reason="x")
@@ -153,9 +260,12 @@ class EnsurePriorityScoresTest(unittest.TestCase):
 class CompactEvidenceTest(unittest.TestCase):
     def test_caps_per_claim_type(self):
         import os
+        # 内容各不相同,避免被 _compact_evidence 的近似去重塌成 1 条(本测验 cap,非 dedup)
         many = [
             {"evidence_id": f"S{i:07d}", "claim_type": "user_pain", "product": "Cursor",
-             "claim": "c", "extracted_snippet": "x" * 500, "evidence_confidence": i / 100}
+             "claim": f"痛点 {i}: " + " ".join(f"tok{i}_{j}" for j in range(20)),
+             "extracted_snippet": f"用户 {i} 反馈 " + " ".join(f"w{i}d{j}" for j in range(40)),
+             "evidence_confidence": i / 100}
             for i in range(20)
         ]
         os.environ["ANALYZER_MAX_EVIDENCE_PER_TYPE"] = "8"
