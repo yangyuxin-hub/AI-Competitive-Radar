@@ -1,13 +1,16 @@
 # 打分规则说明
 
-> 系统里有**三套独立的打分机制**，目的不同、出现位置不同，别混淆。
-> 代码：`src/reviewer.py`(报告质量门禁) · `src/judge.py` + `config/quality_rubric.yaml`(内容质量) · `src/analyzer.py` + `prompts/analyzer_derivations.md`(建议优先级)。
+> **所有权重/阈值集中在 [`config/scoring.yaml`](../config/scoring.yaml)**（v2.3 下沉 config，跨行业可调，由 `src/scoring_config.py` 加载，缺失回退代码默认）。
+> 评分体系**完整全景 + 互补不重复的设计依据**见 [`docs/reviewer-reject-design.md` §8.8](reviewer-reject-design.md) 与 [评分体系架构图](scoring-architecture.md)。
+> 本文聚焦三套**进报告/可打回**的核心打分；另有证据级 `quality_score`、采集验收门、completeness、stage_eval 等层，见架构图。
 
-| 打分 | 衡量什么 | 性质 | 范围 | 出现在哪 | 是否接入实时流程 |
+| 打分 | 衡量什么 | 性质 | 范围 | 配置 section | 接入实时流程 |
 |------|---------|------|------|---------|----------------|
-| **报告质量分** | 报告内部自洽吗(引用/推理/冲突/时效) | 确定性、可打回 | 0-100 | 报告页「质检 X/100」徽章 | ✅ 是 |
-| **内容质量分** | 报得好不好(准确/洞察/实用/聚焦) | 主观、连续分 | 4 维 × 1-5 | 离线评测(暂未接 UI) | ❌ 否(离线 harness) |
-| **建议优先级分** | 哪条改进建议该先做 | 加权公式 | final_score 1-5 → P0-P3 | 报告「改进建议」每条徽章 | ✅ 是 |
+| **报告质量分** | 报告内部自洽 + 6 维可信度 | 确定性、可打回 | 0-100 | `reviewer_quality` | ✅ 是 |
+| **建议优先级分** | 哪条改进建议先做 | 加权公式 | 1-5 → P0-P3 | `recommendation_priority` | ✅ 是 |
+| **内容质量分** | 报得好不好(准确/洞察/实用/聚焦) | 主观、连续分 | 4 维 × 1-5 | `quality_rubric.yaml` | ❌ 离线 harness |
+| 证据级质量分 | 单条证据好不好 | 确定性 | 0-1 | `evidence_quality` | ✅(采集门/截顶) |
+| 采集验收门 | 采够没/采好没 | pass/fail | — | `collection_gate` | ✅(自愈) |
 
 ---
 
@@ -27,22 +30,27 @@
 | **R5** | structured_contradiction | 结构冲突,如 `priority_score.final_score` 与公式计算值不符(误差 > 0.01) |
 | **R6** | semantic_grounding | (LLM 复核)结论语义是否真被证据 snippet 支撑 |
 | **R7** | freshness_and_confidence | 证据时效与置信度 |
+| **R8** | content_coverage | 内容整缺硬门:某产品定价/功能整列塌 → 回 collector 采补 |
+| **R9** | report_chip_traceability | (writer 自检)正文 chip `[SXXXXXXX]` 都能在 raw_evidence 找到 |
+| **R10** | report_no_score_leak | (writer 自检)正文禁泄 `quality_score`(徽章前端单独渲染) |
 
 ### 1.2 分数公式
 
 ```
-quality_score = max(0, 100 − error 数 × 10 − warning 数 × 3)
+rule_score        = max(0, 100 − error × penalty_per_error − warning × penalty_per_warning)
+dimensional_score = Σ(6 维 score × 权重)        # 见下,权重在 scoring.yaml: reviewer_quality
+quality_score     = min(rule_score, dimensional_score)   # 规则违规会一票压低
 ```
-
-- 同一条规则失败产生一个 issue;issue 的 severity(error / warning)由当前**模式**决定(见下)。
-- 输出在 `state.quality_report`:`{quality_score, passed_rules, failed_rules, warning_rules, errors[], warnings[]}`。
+penalty 默认 error×10 / warning×3（`scoring.yaml: reviewer_quality`）。**6 个可信度维度**(加权)：
+证据覆盖 .22 · 可追溯 .22 · 来源可信 .18 · 报告完整 .18 · 时效 .10 · 冲突处理 .10。
+- 输出在 `state.quality_report`:`{quality_score, quality_dimensions, passed_rules, failed_rules, warning_rules, errors[], warnings[]}`。
 
 ### 1.3 两种模式(`REVIEWER_MODE`)
 
 | 模式 | 硬门禁(error,会打回) | 软规则(warning,仅扣分) | R6 LLM |
 |------|----------------------|------------------------|--------|
-| **minimal**(Demo 默认) | R0 / R1 / R4 / R5 | R2 / R3 / R7 | 关 |
-| **full**(答辩) | R0 / R1 / R2 / R3 / R4 / R5 | R7 | 开(结构通过后单次) |
+| **minimal**(Demo 默认) | R1 / R4 / R5 / **R9** + R8 内容门 | R0 / R2 / R3 / R7 / R10 | 终轮单次(R6_FINAL) |
+| **full**(答辩) | R0 / R1 / R2 / R3 / R4 / R5 / R9 / R10 | R7 | 开(结构通过后单次) |
 
 ### 1.4 打回闭环
 
@@ -50,8 +58,9 @@ quality_score = max(0, 100 − error 数 × 10 − warning 数 × 3)
 
 | issue 类型 | 打回目标 |
 |-----------|---------|
-| evidence_id_not_found / freshness_stale / missing_product_evidence / missing_claim_type_coverage | **collector** |
+| evidence_id_not_found / freshness_stale / missing_product_evidence / missing_claim_type_coverage / missing_pricing_content / missing_feature_content | **collector** |
 | missing_evidence_ids / claim_type_mismatch / aggregation_* / broken_reasoning_chain / structured_contradiction / semantic_grounding_* | **analyzer** |
+| report_chip_not_found / report_score_leak (R9/R10) | **writer** |
 
 - 多个 error 时按 `Counter` + 优先级 `collector > analyzer > writer` 选一个 target。
 - retry 配额按 target 分桶 `{collector:1, analyzer:2, writer:1}`,用完仍不过 → 走 `degraded_writer` 分层降级输出(`status=degraded`)。
@@ -106,10 +115,10 @@ python -m src.judge out/<domain>
 ### 3.1 公式
 
 ```
-final_score = 0.35 × pain_frequency
-            + 0.30 × business_impact
-            + 0.20 × implementation_feasibility
-            + 0.15 × evidence_confidence
+final_score = 0.35 × pain_frequency      ┐
+            + 0.30 × business_impact      │ 权重在 scoring.yaml: recommendation_priority
+            + 0.20 × implementation_feasibility  │ (可跨行业调,缺失回退此默认)
+            + 0.15 × evidence_confidence  ┘
 ```
 
 - 4 个评分项均为 **1-5 整数**;weights 原样输出;final_score 保留两位小数。

@@ -20,6 +20,7 @@ from typing import Optional
 
 import httpx
 
+from . import scoring_config
 from .skill import CollectorSkill
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -374,7 +375,7 @@ class HNSkill(CollectorSkill):
                     "source_freshness": "current",
                     "claim": claim,
                     "extracted_snippet": snippet,
-                    "source_reliability": 0.70,
+                    "source_reliability": scoring_config.reliability("hn_story", 0.70),
                     "claim_relevance": self._calc_relevance(title, product, focus, keywords),
                     "evidence_confidence": min(0.50 + points / 200, 0.85),
                     "metadata": {
@@ -407,7 +408,7 @@ class HNSkill(CollectorSkill):
                     "source_freshness": "current",
                     "claim": claim,
                     "extracted_snippet": snippet,
-                    "source_reliability": 0.65,
+                    "source_reliability": scoring_config.reliability("hn_comment", 0.65),
                     "claim_relevance": self._calc_relevance(ctext, product, focus, keywords),
                     "evidence_confidence": 0.55,
                     "metadata": {

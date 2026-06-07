@@ -28,6 +28,20 @@ _RELIABILITY_BY_BIAS = {
     "third_party": 0.7,
     "user_generated": 0.6,
 }
+# bias → scoring.yaml[source_reliability] key,口径与 collector/hn/v2ex 集中一处
+_BIAS_TO_CFG_KEY = {
+    "vendor_claim": "web_vendor",
+    "third_party": "web_third_party",
+    "user_generated": "web_user",
+}
+
+
+def _reliability_for_bias(bias: str) -> float:
+    """源可信度:优先 scoring.yaml,缺失回退 _RELIABILITY_BY_BIAS(零行为变化)。"""
+    from . import scoring_config
+    default = _RELIABILITY_BY_BIAS.get(bias, 0.6)
+    key = _BIAS_TO_CFG_KEY.get(bias)
+    return scoring_config.reliability(key, default) if key else default
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -412,9 +426,9 @@ def _result_to_evidence(product: str, result: dict, q: dict) -> Optional[dict]:
         "source_freshness": "current",
         "claim": claim,
         "extracted_snippet": snippet,
-        "source_reliability": _RELIABILITY_BY_BIAS.get(bias, 0.6),
+        "source_reliability": _reliability_for_bias(bias),
         "claim_relevance": relevance,
-        "evidence_confidence": _RELIABILITY_BY_BIAS.get(bias, 0.6),
+        "evidence_confidence": _reliability_for_bias(bias),
         "collection_source": "search",
     }
 

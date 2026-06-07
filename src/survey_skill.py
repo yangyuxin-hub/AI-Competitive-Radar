@@ -17,6 +17,7 @@ import hashlib
 import os
 from datetime import date
 
+from . import scoring_config
 from .skill import CollectorSkill
 
 
@@ -100,7 +101,7 @@ class SurveySkill(CollectorSkill):
                 "claim": claim,
                 "extracted_snippet": snippet,
                 # 合成数据可信度低于真实用户/第三方,避免在可信度评分里被高估
-                "source_reliability": 0.40,
+                "source_reliability": scoring_config.reliability("simulated_interview", 0.40),
                 "claim_relevance": 0.7,
                 "evidence_confidence": 0.45,
                 "synthetic": True,

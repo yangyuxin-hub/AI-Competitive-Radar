@@ -1,0 +1,76 @@
+# 统一评分配置 — 集中所有权重/阈值,跨行业可调(v2.3 下沉 config,CLAUDE.md 待办)
+# 加载: src/scoring_config.py。任何 section/字段缺失 → 回退代码内默认值,绝不 break。
+# 设计原则:同一概念(覆盖/质量/优先级)只在此处定义一次,各环节读同一口径,消除重复打分。
+
+# ── 源可信度先验(各采集适配器 source_reliability)────────────────────────────
+# 概念集中:每类源的先验可信度只在此定义一次,采集器(collector/search/hn/v2ex)读同一口径。
+# 任一 key 缺失 → 回退该适配器代码内默认值(与下列数值一致),改这里即可跨行业调权。
+source_reliability:
+  official_page:   0.85   # 官网 vendor_claim 页
+  web_vendor:      0.90   # 检索命中且 bias=vendor_claim
+  web_third_party: 0.70   # 检索命中第三方评测/媒体
+  web_user:        0.60   # 检索命中 UGC
+  hn_story:        0.70   # Hacker News 主帖
+  hn_comment:      0.65   # Hacker News 评论
+  v2ex_topic:      0.68   # V2EX 主题
+  v2ex_reply:      0.60   # V2EX 回复
+  simulated_interview: 0.40   # LLM 合成访谈(可信度最低,防被高估)
+
+# ── claim_relevance 先验 — 仅用于无法动态测算相关性的源 ──────────────────────
+# search/hn/v2ex 的 claim_relevance 由 _calc_relevance 按内容动态算,不在此列。
+# 官网页天然"在讲自己",给固定先验。
+claim_relevance_prior:
+  official_page: 0.75
+
+# ── freshness TTL(天) — collector 按 claim_type 重算 source_freshness ─────────
+# 超过 TTL 的缓存证据标 stale。缺失回退 collector.FRESHNESS_TTL_DAYS(数值同下)。
+freshness_ttl_days:
+  pricing: 7
+  feature_existence: 30
+  performance_quality: 60
+  user_pain: 90
+  market_signal: 30
+
+# ── 证据级质量分(quality.py score_quality)──────────────────────────────────
+evidence_quality:
+  weights:           # 和应为 1
+    specificity: 0.28   # 信息量/具体性(有数字/场景/对比)
+    integrity:   0.16   # 片段完整(非导航/页脚壳)
+    relevance:   0.22   # 相关性(复用 claim_relevance)
+    authority:   0.22   # 来源权威(复用 source_reliability)
+    freshness:   0.12   # 时效
+  q_high:    0.65    # 高质阈值:质量门「桶内≥1条高质」+ 台账学习门槛
+  q_mid:     0.45    # 桶均质量阈值
+  q_low:     0.40    # 低质统计线
+  q_garbage: 0.25    # 垃圾线(可丢弃)
+
+# ── 采集数量门(quality.py audit_coverage)────────────────────────────────────
+collection_gate:
+  coverage_min:      # 每产品逐类最少证据;关键类(功能/定价)要更厚
+    feature_existence: 2
+    performance_quality: 1
+    pricing: 1
+    user_pain: 1
+  total_min:    6    # 每产品总证据下限
+  official_min: 1    # 每产品官网证据下限
+  relevance_ratio_min: 0.7   # 真提产品名证据占比下限
+
+# ── 建议优先级(analyzer priority_score)──────────────────────────────────────
+recommendation_priority:
+  weights:           # 和应为 1
+    pain_frequency: 0.35
+    business_impact: 0.30
+    implementation_feasibility: 0.20
+    evidence_confidence: 0.15
+
+# ── 质检总分(reviewer quality_report.quality_score, 0-100)────────────────────
+reviewer_quality:
+  weights:           # 和应为 1
+    evidence_coverage:   0.22
+    traceability:        0.22
+    source_credibility:  0.18
+    report_completeness: 0.18
+    freshness:           0.10
+    conflict_handling:   0.10
+  penalty_per_error:   10    # rule_score = 100 - 错误×此 - warning×下
+  penalty_per_warning: 3
