@@ -22,53 +22,53 @@ const SCENARIOS = [
     prompt: "分析 Cursor、Windsurf 和 GitHub Copilot 在代码补全体验上的差距",
   },
   {
-    domainHint: "ai_coding",
-    domain: "AI 编程工具",
-    title: "Agent 能力跟进",
-    prompt: "Cursor 刚发了 Agent 大更新，分析 Windsurf 和 GitHub Copilot 要不要跟、怎么跟",
-  },
-  {
-    domainHint: "pm",
-    domain: "项目协作工具",
-    title: "任务管理体验",
-    prompt: "分析 Notion、Asana 和 Linear 在团队任务管理体验上的差距",
-  },
-  {
-    domainHint: "pm",
-    domain: "项目协作工具",
-    title: "协作工具定价",
-    prompt: "比较 Notion、Asana 和 Linear 的定价策略，判断中小团队更容易买谁",
-  },
-  {
-    domainHint: "pm",
-    domain: "项目协作工具",
-    title: "用户流失原因",
-    prompt: "用户为什么从 Notion 流向 Asana 或 Linear，看看大家主要在吐槽什么",
-  },
-  {
     domainHint: "ai_assistant",
     domain: "AI 对话助手",
     title: "大模型助手对比",
     prompt: "分析 ChatGPT、Claude 和 Gemini 在通用对话与推理体验上的差距",
   },
   {
-    domainHint: "design",
-    domain: "设计协作工具",
-    title: "设计工具协作体验",
-    prompt: "分析 Figma、Sketch 和 Canva 在界面设计协作体验上的差距",
+    domainHint: "ai_video",
+    domain: "AI 视频生成",
+    title: "文生视频效果",
+    prompt: "分析 Sora、可灵 Kling 和 Runway 在文生视频效果与可控性上的差距",
   },
   {
-    domainHint: "baas",
-    domain: "后端即服务",
-    title: "BaaS 开发体验与定价",
-    prompt: "比较 Supabase、Firebase 和 Appwrite 的后端开发体验与定价，帮独立开发者选型",
+    domainHint: "ai_image",
+    domain: "AI 图像生成",
+    title: "文生图质量",
+    prompt: "分析 Midjourney、Stable Diffusion 和 DALL·E 在图像生成质量与创作体验上的差距",
+  },
+  {
+    domainHint: "ai_music",
+    domain: "AI 音乐生成",
+    title: "AI 作曲体验",
+    prompt: "分析 Suno、Udio 和 Stable Audio 在 AI 音乐生成质量与易用性上的差距",
+  },
+  {
+    domainHint: "ai_search",
+    domain: "AI 搜索",
+    title: "AI 搜索体验",
+    prompt: "分析 Perplexity、秘塔 AI 搜索 和 ChatGPT Search 在 AI 搜索准确性与体验上的差距",
+  },
+  {
+    domainHint: "pm",
+    domain: "项目协作工具",
+    title: "团队任务管理",
+    prompt: "分析 Notion、Asana 和 Linear 在团队任务管理体验上的差距",
+  },
+  {
+    domainHint: "design",
+    domain: "设计协作工具",
+    title: "设计协作体验",
+    prompt: "分析 Figma、Sketch 和 Canva 在界面设计协作体验上的差距",
   },
 ];
 
 const RUN_PROFILES: { key: RuntimeProfile; label: string; sub: string }[] = [
   { key: "fast", label: "快速", sub: "缓存优先" },
   { key: "balanced", label: "均衡", sub: "实时检索" },
-  { key: "deep", label: "深度", sub: "社区证据" },
+  { key: "deep", label: "深度", sub: "社区证据 · 默认" },
 ];
 
 export default function AnalyzeFlow() {
@@ -84,7 +84,7 @@ export default function AnalyzeFlow() {
   const [report, setReport] = useState<Report | null>(null);
   const [intakeReasoning, setIntakeReasoning] = useState<string>("");
   const [intakeStatus, setIntakeStatus] = useState<string>(""); // 流式阶段进度文案
-  const [runProfile, setRunProfile] = useState<RuntimeProfile>("balanced");
+  const [runProfile, setRunProfile] = useState<RuntimeProfile>("deep");
   const [busy, setBusy] = useState(false);
   const [refining, setRefining] = useState(false); // 渐进式:LLM 在后台精修候选(流式)
   const [error, setError] = useState<string | null>(null);
@@ -246,7 +246,7 @@ export default function AnalyzeFlow() {
     setEvents([]);
     setReport(null);
     setError(null);
-    setRunProfile("balanced");
+    setRunProfile("deep");
     setRefining(false);
     touchedRef.current = new Set();
     intakeReqRef.current++;

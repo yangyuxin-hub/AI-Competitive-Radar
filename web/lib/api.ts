@@ -151,3 +151,17 @@ export async function fetchReport(id: string): Promise<Report> {
   if (!res.ok) throw new Error(`report failed: ${res.status}`);
   return res.json();
 }
+
+export interface StageStat {
+  stage: string;
+  runs: number;
+  avg_elapsed: number | null;
+  verdicts: Record<string, number>;
+  last_metrics: Record<string, number | string | null> | null;
+}
+
+export async function fetchStageQuality(): Promise<{ stages: StageStat[]; recent: unknown[] }> {
+  const res = await fetch(`${BASE}/api/stage_quality`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`stage_quality failed: ${res.status}`);
+  return res.json();
+}

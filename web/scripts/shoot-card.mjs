@@ -1,0 +1,14 @@
+import { chromium } from "playwright";
+import { mkdirSync } from "fs";
+mkdirSync("shots", { recursive: true });
+const id = process.argv[2];
+const b = await chromium.launch();
+const p = await b.newPage({ viewport: { width: 1000, height: 860 } });
+await p.goto(`http://localhost:3000/report/${id}`, { waitUntil: "networkidle" });
+await p.getByText("功能对比矩阵").first().waitFor({ timeout: 20000 });
+const card = p.getByText("调研方法").first();
+await card.scrollIntoViewIfNeeded();
+await p.waitForTimeout(600);
+await p.screenshot({ path: "shots/research-method.png" });
+console.log("shot done");
+await b.close();
