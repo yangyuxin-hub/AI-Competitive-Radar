@@ -57,12 +57,28 @@ def build_app(llm: Optional[object] = None, reviewer_mode: Optional[str] = None)
 
     reviewer_node = make_reviewer_node(llm=llm, mode=mode)
 
+    # 各环节质量评估埋点(§8.7):包一层计时+落 logs/stage_quality.jsonl。invoke/stream 两条路径都覆盖。
+    def _instrument(name, fn):
+        import time as _t
+        from .stage_eval import log_stage_quality
+
+        def _wrapped(state):
+            _t0 = _t.time()
+            out = fn(state)
+            try:
+                rid = (out.get("analysis_meta") or {}).get("agent_trace_id")
+                log_stage_quality(name, out, elapsed_sec=_t.time() - _t0, run_id=rid)
+            except Exception:  # noqa: BLE001
+                pass
+            return out
+        return _wrapped
+
     graph = StateGraph(AgentState)
-    graph.add_node("collector", collector_node)
-    graph.add_node("analyzer", analyzer_node)
-    graph.add_node("writer", writer_node)
-    graph.add_node("reviewer", reviewer_node)
-    graph.add_node("degraded_writer", degraded_writer_node)
+    graph.add_node("collector", _instrument("collector", collector_node))
+    graph.add_node("analyzer", _instrument("analyzer", analyzer_node))
+    graph.add_node("writer", _instrument("writer", writer_node))
+    graph.add_node("reviewer", _instrument("reviewer", reviewer_node))
+    graph.add_node("degraded_writer", _instrument("degraded_writer", degraded_writer_node))
 
     graph.set_entry_point("collector")
     graph.add_edge("collector", "analyzer")
@@ -154,7 +170,7 @@ def run_demo_streaming(
     analysis_focus: Optional[list[str]] = None,
     analysis_purpose: Optional[str] = None,
     user_input: Optional[str] = None,
-    runtime_profile: str = "balanced",
+    runtime_profile: str = "deep",
     analysis_intent: Optional[str] = None,
 ):
     """生成器: 每完成一个节点 yield (node_name, state_after_node)。
@@ -186,7 +202,7 @@ def run_demo(
     analysis_focus: Optional[list[str]] = None,
     analysis_purpose: Optional[str] = None,
     user_input: Optional[str] = None,
-    runtime_profile: str = "balanced",
+    runtime_profile: str = "deep",
     analysis_intent: Optional[str] = None,
 ) -> AgentState:
     from .collector import reset_debug_file

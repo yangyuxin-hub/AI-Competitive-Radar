@@ -32,7 +32,7 @@ def build_initial_state(
     competitors: list[str],
     analysis_focus: list[str],
     analysis_purpose: str = "学习竞品优点,优化自身产品",
-    runtime_profile: str = "balanced",
+    runtime_profile: str = "deep",
     analysis_intent: str = "feature_compare",
 ) -> AgentState:
     from datetime import datetime, timezone

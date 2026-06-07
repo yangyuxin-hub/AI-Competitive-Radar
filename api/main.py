@@ -122,7 +122,7 @@ class RunReq(BaseModel):
     analysis_focus: list[str] = []
     analysis_purpose: Optional[str] = None
     user_input: Optional[str] = None
-    runtime_profile: str = "balanced"
+    runtime_profile: str = "deep"
     analysis_intent: Optional[str] = None  # 前端从 intake 带回;留空则后端按 user_input 推断
 
 
@@ -785,3 +785,46 @@ def api_report(report_id: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="report not found")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/stage_quality")
+def api_stage_quality(limit: int = 300):
+    """各环节质量评估聚合(§8.7):读 logs/stage_quality.jsonl,按 stage 聚合耗时/verdict/最近指标。
+    供前端「瓶颈看板」渲染。"""
+    p = _ROOT / "logs" / "stage_quality.jsonl"
+    if not p.exists():
+        return {"stages": [], "recent": []}
+    rows = []
+    for line in p.read_text(encoding="utf-8").splitlines()[-limit:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except Exception:  # noqa: BLE001
+            pass
+    order = ["collector", "analyzer", "writer", "degraded_writer", "reviewer"]
+    agg: dict = {}
+    for r in rows:
+        s = r.get("stage") or "?"
+        a = agg.setdefault(s, {"runs": 0, "elapsed_sum": 0.0, "elapsed_n": 0,
+                               "verdicts": {}, "last_metrics": None})
+        a["runs"] += 1
+        e = r.get("elapsed_sec")
+        if isinstance(e, (int, float)):
+            a["elapsed_sum"] += e
+            a["elapsed_n"] += 1
+        v = r.get("verdict") or "?"
+        a["verdicts"][v] = a["verdicts"].get(v, 0) + 1
+        a["last_metrics"] = r.get("metrics")
+    stages = []
+    for s in [*order, *[k for k in agg if k not in order]]:
+        if s not in agg:
+            continue
+        a = agg[s]
+        stages.append({
+            "stage": s, "runs": a["runs"],
+            "avg_elapsed": round(a["elapsed_sum"] / a["elapsed_n"], 1) if a["elapsed_n"] else None,
+            "verdicts": a["verdicts"], "last_metrics": a["last_metrics"],
+        })
+    return {"stages": stages, "recent": rows[-20:]}
