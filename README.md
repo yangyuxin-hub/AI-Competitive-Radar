@@ -1,46 +1,121 @@
-# 竞品分析 Agent 协作系统
+# 🛰️ AI Competitive Radar · 竞品分析 Agent 协作系统
 
 > 字节跳动 AI 全栈挑战赛 · Topic 3
-> 多 Agent · LangGraph · 豆包 Lite · 设计 v2.2.1
+> 多 Agent 协作 · LangGraph 编排 · 结论级证据溯源 · 设计 v2.2.1
 
-输入「分析 X 和 Y 在 Z 维度的差距」→ 自动产出结构化竞品报告:功能对比 / 用户痛点 / 定价 / SWOT / 优先级建议,**每条结论可溯源到原始 evidence**。
+**输入一句话「分析 X 和 Y 在 Z 维度的差距」→ 自动产出结构化竞品报告**：功能对比矩阵 / 用户痛点 / 定价策略 / SWOT / 优先级建议——**每一条结论都可一键溯源到原始 evidence**。
+
+<p align="center">
+  <img src="docs/assets/screenshot-home.png" alt="竞品情报工作台首页" width="85%">
+</p>
 
 ---
 
-## 快速开始
+## ✨ 核心特性
+
+| 能力 | 说明 |
+|------|------|
+| 🤝 **四 Agent 流水线协作** | 采集 → 分析（两步式）→ 撰写 → 质检，LangGraph 编排为有向图，单一 `AgentState` 全局共享 |
+| 🧬 **结构化 Schema 抽取** | 字段冻结的知识 Schema（功能树 / 定价模型 / 用户画像 / SWOT / 建议），跨产品跨行业输出一致 |
+| 🔁 **质检反馈闭环** | Reviewer 跑 R0–R10 规则，不合格按 `reject_target` 精准打回，最多 2 轮，超限分层降级，杜绝死循环 |
+| 🔗 **结论级证据溯源** | 每条结论带确定性 hash `evidence_id`，正文以 `[SXXXXXXX]` chip 标注，前端一键跳转原文 |
+| 🪂 **三层采集降级** | 抓取 live → cache → mock；搜索 Brave → Tavily → DuckDuckGo；断网 / 无 key 也能跑通闭环 |
+| 🧩 **配置驱动跨行业** | 换行业只改 `config/*.yaml` + `prompts/*.md`，**代码零改动** |
+| 🔍 **全链路可观测** | LangSmith + `logs/{agent_trace,llm_calls,stage_quality}.jsonl`，每个节点决策可追溯 |
+
+---
+
+## 📸 界面预览
+
+| 报告页 · 质检徽章 + 业务价值量化 | 证据溯源 · 点 chip 看原文 |
+|:---:|:---:|
+| ![报告页](docs/assets/screenshot-report.png) | ![证据溯源](docs/assets/screenshot-evidence.png) |
+| 综合评级 + 「vs 传统人工」对比表（约快 75×、103 条可溯源证据） | 抽屉展示原文片段、来源 URL、可信度评级 |
+
+| SWOT + 用户痛点 + 调研方法 |
+|:---:|
+| ![分析深度](docs/assets/screenshot-analysis.png) |
+| SWOT 四象限每条带来源 chip；用户痛点附「问卷 + 模拟访谈」调研方法与受访画像 |
+
+---
+
+## 🏗️ 系统架构
+
+### 数据流（四 Agent + 降级闭环）
+
+```mermaid
+flowchart TD
+    U([用户输入<br/>目标产品 / 竞品 / 维度]) --> S[AgentState 初始化]
+    S --> C[📥 Collector<br/>三层降级 live→cache→mock]
+    C -->|raw_evidence| A[🧠 Analyzer 两步式<br/>Step1 facts · Step2 derivations<br/>每步 quick_validate]
+    A -->|schema_draft| W[✍️ Writer<br/>Markdown + SXXXXXXX 溯源 chip]
+    W -->|report_draft| R{🧪 Reviewer<br/>R0–R10 规则}
+    R -->|passed| E([✅ 输出报告 + 质检报告])
+    R -->|degraded| D[⚠️ degraded_writer<br/>分层降级输出] --> E
+    R -.->|running · 按 target 回流<br/>collector:1 / analyzer:2 / writer:1| C
+    R -.-> A
+    R -.-> W
+```
+
+### 分层调用关系
+
+```mermaid
+flowchart LR
+    subgraph FE[前端 · Next.js]
+        P1[输入页] --> P2[Agent 状态页 · SSE] --> P3[报告溯源页]
+    end
+    subgraph BE[后端 · FastAPI + sse-starlette]
+        API["/api/intake · /api/run(SSE) · /api/reports"]
+    end
+    subgraph ORC[编排层 · LangGraph]
+        G[StateGraph<br/>collector→analyzer→writer→reviewer]
+    end
+    subgraph EXT[外部服务 / 数据]
+        LLM[LLM: MiMo / Doubao]
+        SE[搜索: Brave→Tavily→DDG]
+        FS[(文件存储<br/>cache / logs / reports)]
+    end
+    FE -->|HTTP/SSE| BE --> ORC --> LLM & SE & FS
+```
+
+详细设计见 [`docs/design-v2.2.md`](docs/design-v2.2.md)（v2.2.1 已冻结，含答辩 / 合规 / 质量评测附录）。
+
+---
+
+## 🚀 快速开始
 
 ```powershell
-# 1. 创建虚拟环境(用任意 Python 3.10+)
+# 1. 创建虚拟环境（Python 3.10+）
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
 # 2. 安装依赖
 pip install -r requirements.txt
 
-# 3a. CLI 跑一次(Mock 模式,无需 API key)
+# 3a. CLI 跑一次（Mock 模式，无需任何 API key）
 $env:ANALYZER_MOCK="1"
 python -m src.graph
-# 产物: out/ai_coding/{report.md, schema_draft.json, quality_report.json}
+#   产物：out/ai_coding/{report.md, schema_draft.json, quality_report.json}
 
-# 3b. CLI 跑真豆包
+# 3b. CLI 跑真实 LLM（默认小米 MiMo）
 $env:ANALYZER_MOCK=""
-$env:ARK_API_KEY="ark-xxx"
-$env:ARK_EP="ep-xxx"
+$env:LLM_API_KEY="你的 key"
 python -m src.graph
+#   切回豆包：额外设 $env:LLM_MODEL="ep-xxx" 和 $env:LLM_BASE_URL="<方舟地址>"
 
-# 3c. 启前端工作台(推荐演示用) — React + FastAPI
-#   终端1: 后端 API
-./.venv/Scripts/python.exe -m uvicorn api.main:app --port 8000
-#   终端2: 前端
-cd web && npm install && npm run dev
-# 浏览器打开 http://localhost:3000
+# 3c. 启动前端工作台（推荐演示用）— Next.js + FastAPI
+#   终端 1：后端 API
+.\.venv\Scripts\python.exe -m uvicorn api.main:app --port 8000
+#   终端 2：前端
+cd web ; npm install ; npm run dev
+#   浏览器打开 http://localhost:3000
 ```
 
 ---
 
-## 切换行业
+## 🔀 切换行业（零代码）
 
-零代码,改一个环境变量即可。`config/domains.yaml` 已配两个域:
+`config/domains.yaml` 已内置两个域，改一个环境变量即可：
 
 ```powershell
 $env:DOMAIN="ai_coding"   # Cursor vs Windsurf vs GitHubCopilot
@@ -50,128 +125,166 @@ $env:DOMAIN="pm"          # Notion vs Asana vs Linear
 python -m src.graph
 ```
 
-新增行业 = 在 `config/domains.yaml` 加 entry + 写一份 `data/sample_sources_<domain>.json`,代码 0 改动。
+新增行业 = 在 `config/domains.yaml` 加一个 entry + 写一份 `data/sample_sources_<domain>.json`，**代码 0 改动**。
 
 ---
 
-## 架构
+## 🌐 部署到服务器
 
-```
-用户输入 → AgentState 初始化
-    ↓
-Collector (3 层兜底: live → cache → mock)
-    ↓ raw_evidence
-Analyzer (两步式)
-  ├ Step 1 facts:        feature_tree + pricing_model + user_persona
-  └ Step 2 derivations:  swot + recommendations
-    ↓ schema_draft
-Writer (Markdown + [SXXXXXXX] 溯源 chip)
-    ↓ report_draft
-Reviewer (R1-R7 规则; minimal 模式默认 hard_gate=R1/R4/R5)
-    ↓
-  passed   → 输出报告
-  running  → 按 reject_target 配额回到 Collector/Analyzer/Writer
-             (collector:1, analyzer:2, writer:1; 用完即降级)
-  degraded → degraded_writer 分层输出
+后端是标准 FastAPI ASGI 应用，可直接部署：
+
+```bash
+# 生产启动（绑 0.0.0.0，去掉 --reload）
+uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-详细设计见 [`docs/design-v2.2.md`](docs/design-v2.2.md)(v2.2.1 已冻结)。
+**部署要点（务必注意）**：
+
+1. **不要上 Serverless**。主流程 `/api/run` 是 SSE 长连接、整轮约 3 分钟（analyzer ~130s），需长驻进程环境（云 VM / Render / Railway / Fly / Docker）。
+2. **反向代理关 SSE 缓冲**。Nginx 需 `proxy_buffering off;` + `proxy_read_timeout 300s;`，否则进度流被攒着不下发。
+3. **挂可写持久卷**。报告 / 缓存 / 日志存本地文件（`out/`、`data/cache/`、`logs/`），容器部署需持久卷，否则重启丢数据。
+4. **公网前加鉴权**。当前无内置鉴权，公开前建议加 API Key / 网关。
+5. **CORS**：生产设 `API_CORS_ORIGINS=https://你的前端域名`（不设则放行 localhost）。
 
 ---
 
-## 主要文件
+## 🔌 后端 API 端点
+
+| 端点 | 方法 | 用途 |
+|------|------|------|
+| `/api/intake/propose` | POST | 意图解析 → 分析配置草稿（`fast=true` 跳 LLM 秒回） |
+| `/api/intake/questions` | POST | 生成澄清追问 |
+| `/api/intake/stream` | POST | SSE 流式意图解析 |
+| `/api/run` | POST | **主流程**，SSE 流式推送四节点进度与最终报告 |
+| `/api/reports` · `/api/reports/{id}` | GET | 报告列表 / 详情 |
+| `/api/stage_quality` | GET | 各环节质量评测聚合 |
+
+---
+
+## 🧠 大模型 / AI 能力
+
+- **主模型**：小米 MiMo `mimo-v2.5-pro`（OpenAI 兼容协议，TTFT ~2–5s）；可显式切换火山方舟 Doubao EP。
+- **调用封装**：`src/llm.py` —— `trust_env=False` 关系统代理、timeout 200s、`max_retries=1`、JSON fence 兜底、Mock 模式。
+- **Prompt 工程**：强约束模板放 `prompts/*.md`，与代码解耦（`analyzer_facts.md` / `analyzer_derivations.md` / `intake.md` / `url_discovery.md` / `source_discovery.md`）。
+- **AI 在系统中的位置**：Collector（URL 发现 / 意图解析）、Analyzer（两步式事实抽取 + 推导）、Reviewer（R6 语义审查，闭包注入 LLM，不入全局状态）。
+- **证据链 vs RAG**：当前用确定性 hash 证据链 + Schema 抽取实现溯源（比向量召回更可复现、零幻觉编号）；向量召回为 roadmap 候选，设计见 [`docs/rag-recall-design.md`](docs/rag-recall-design.md)。
+
+---
+
+## 📂 目录结构
 
 ```
 config/
-  products.yaml          # 产品入口 + URL
-  domains.yaml           # 行业域映射 (DOMAIN env → 默认参数 + sample 路径)
+  products.yaml          # 产品别名 + official_pages + pricing_pages
+  domains.yaml           # 行业域映射（DOMAIN env → 默认参数 + sample 路径）
+  scoring.yaml           # 统一评分配置（权重 / 阈值 / 可靠度 / TTL）
+  sources.yaml / quality_rubric.yaml / business_value.yaml
 data/
-  sample_sources.json       # AI 编程域 34 条 evidence
-  sample_sources_pm.json    # PM 工具域 30 条 evidence
-  sample_report.json        # Analyzer 期望输出 baseline (Mock 模式与单测共用)
-prompts/
-  analyzer_facts.md         # Step 1 system prompt
-  analyzer_derivations.md   # Step 2 system prompt
+  sample_sources.json       # AI 编程域 evidence（Mock 兜底）
+  sample_sources_pm.json    # PM 工具域 evidence
+  sample_report.json        # Analyzer baseline（Mock 与单测共用）
+prompts/                    # Analyzer / intake / discovery 强约束 Prompt
 src/
-  state.py        AgentState + per-target retry buckets
-  llm.py          ARK/Doubao 客户端 + JSON fence 兜底 + Mock 模式
-  collector.py    SourceAdapter + MockAdapter + Registry + 并发 node
-  analyzer.py     两步式 LLM 调用 + quick_validate 自修复
-  writer.py       Markdown 渲染 + [SXXXXXXX] chip
-  reviewer.py     R1-R7 规则 + minimal/full 模式 + degraded_writer
-  graph.py        LangGraph 编排 + main 入口 + 流式生成器
+  state.py                # AgentState + per-target retry buckets
+  llm.py                  # MiMo/Doubao 客户端 + JSON fence 兜底 + Mock
+  # —— Collector 三层 DAG ——
+  collector.py            # collector_node + 验收门补采（re-export 公共名）
+  collector_common.py     # 叶子 helper / 常量 / URL discovery / 进度通道
+  collector_adapters.py   # OfficialPage/Search/Mock/Cache 四适配器 + Registry
+  # —— Analyzer 三层 DAG ——
+  analyzer.py             # 两步式 pipeline + quick_validate + analyzer_node
+  analyzer_common.py / _sanitize.py / _fallback.py / _augment.py
+  writer.py               # Markdown 渲染 + [SXXXXXXX] chip
+  reviewer.py             # R0–R10 规则 + minimal/full 模式 + degraded_writer
+  graph.py                # LangGraph 编排 + main 入口 + 流式生成器
+  search.py               # 多供应商搜索降级 + 磁盘缓存
+  scoring_config.py       # scoring.yaml 加载器
+  progress.py             # 每节点独立 ProgressChannel（防 SSE 串台）
+  intake.py / source_planner.py / judge.py / quality.py / stage_eval.py
+  source_ledger.py / business_value.py / skill 族（hn/v2ex/survey）
 api/
-  main.py         FastAPI: intake/run(SSE)/reports 端点,包装 src/
-web/              React(Next.js) 前端工作台
-  app/ components/ lib/   意图澄清 + Agent剧场 + 结构化报告 + 引用溯源 + 档案diff
+  main.py                 # FastAPI: intake / run(SSE) / reports 端点，包装 src/
+web/                      # Next.js 前端工作台
+  app/ components/ lib/   # 意图澄清 + Agent 状态 + 结构化报告 + 引用溯源
 docs/
-  design-v2.2.md  当前设计 (v2.2.1 frozen, 含答辩/合规/质量附录)
+  design-v2.2.md          # 完整架构设计（v2.2.1 frozen）
+  assets/                 # README 截图素材
+tests/                    # 22 个测试文件，覆盖各 Agent / scoring / search
 ```
 
 ---
 
-## 关键设计选择
+## 🎛️ 关键设计选择
 
-1. **Analyzer 拆两步**:单次调用超 token,facts(事实层)→ derivations(推导层)分别发,防 LLM"为了结论倒推事实"
-2. **按 target 分桶 retry**:`{collector:1, analyzer:2, writer:1}`,Collector 重试不补数据所以只给 1 次
-3. **Reviewer minimal/full 模式**:Demo 默认 minimal(R1/R4/R5 hard gate),答辩可切 full;R6 LLM 校验仅在结构通过后跑一次
-4. **Writer 在 Reviewer 之前**:Markdown 正文**禁止**含 `quality_score`,前端从 `state.quality_report` 单独渲染
-5. **`[SXXXXXXX]` chip 格式**:每条 claim 句末追加 evidence_id 标记,前端识别此模式触发溯源跳转(本 demo 用静态 expander 展示)
+1. **Analyzer 拆两步**：单次调用易超 token，facts（事实层）→ derivations（推导层）分发，防 LLM「为结论倒推事实」。
+2. **按 target 分桶 retry**：`{collector:1, analyzer:2, writer:1}`，用完即降级，**不切换 target**，工程上杜绝死循环。
+3. **Reviewer minimal/full 双模式**：Demo 默认 minimal（R1/R4/R5 hard gate），答辩可切 full；R6 LLM 校验仅在结构通过后跑一次。
+4. **Writer 在 Reviewer 之前**：Markdown 正文**禁止**含 `quality_score`，前端从 `state.quality_report` 单独渲染徽章（R10 自检）。
+5. **`[SXXXXXXX]` chip + 确定性 evidence_id**：`"S"+sha1(...)[:7].upper()`（不用 uuid），同输入可复现；R9 自检 chip 是否引用真实 ID。
 
 ---
 
-## 环境变量
+## ⚙️ 环境变量
 
 | 变量 | 用途 | 默认 |
 |------|------|------|
-| `ANALYZER_MOCK` | =1 跳过真实 LLM,直接返回 sample_report.json | unset |
-| `ARK_API_KEY` | 豆包 / ARK API key | unset(非 Mock 必填) |
-| `ARK_EP` | 模型 endpoint id | `doubao-seed-2-0-lite` |
+| `ANALYZER_MOCK` | =1 跳过真实 LLM，返回 sample_report.json | unset |
+| `LLM_API_KEY` | LLM API key（回退 `ARK_API_KEY`） | unset（非 Mock 必填） |
+| `LLM_MODEL` | 模型 id | `mimo-v2.5-pro` |
+| `LLM_BASE_URL` | API 地址 | 小米 MiMo 端点 |
 | `DOMAIN` | 选行业域 | `ai_coding` |
 | `REVIEWER_MODE` | `minimal` / `full` | `minimal` |
-| `SAMPLE_SOURCES_PATH` | 直接指定 evidence 文件路径(覆盖 DOMAIN) | unset |
-| `ENABLE_LIVE_FETCH` | =1 启用 OfficialPageAdapter 真实抓取 | unset(默认关) |
-| `DEMO_LOOP` | =1 配合 Mock 模式,演示 Reviewer 打回闭环 | unset |
+| `API_CORS_ORIGINS` | 生产前端域名（逗号分隔） | unset（放行 localhost） |
+| `BRAVE_API_KEY` / `TAVILY_API_KEY` | 搜索 key（不给走 DDG 免费兜底） | unset |
+| `ENABLE_LIVE_FETCH` | =1 启用 OfficialPageAdapter 真实抓取 | unset |
 
 ---
 
-## 答辩与演示材料
+## 🧪 测试
 
-- 📋 [`presentation/demo_script.md`](presentation/demo_script.md) — 5 分钟现场演示脚本(含台词)
-- 💬 [`presentation/talking_points.md`](presentation/talking_points.md) — 评委 12 个 Q&A 应答模板
-- 📊 [`docs/comparison.md`](docs/comparison.md) — 人工 vs 系统量化对比(38× 效率 + 质变)
-- 🛡️ [`docs/compliance.md`](docs/compliance.md) — 数据采集合规 / robots / 隐私
-- 🏗️ [`docs/design-v2.2.md`](docs/design-v2.2.md) — 完整架构设计(v2.2.1 frozen)
-
----
-
-## TRAE 协作开发引导
-
-本项目设计上**预留了多个适合用 TRAE 协作开发**的扩展点。如果你要继续推进:
-
-| 模块 | 推荐用 TRAE 干什么 | 标注方式 |
-|------|------------------|---------|
-| `src/analyzer.py` | 让 TRAE 帮你迭代 prompt 结构、调整 quick_validate 规则边界 | commit message 加 `[TRAE]` 前缀,如 `[TRAE] tighten facts prompt for pricing extraction` |
-| `prompts/analyzer_*.md` | TRAE 配合实测样本调 prompt few-shot | 同上;同时在 prompt 文件头加 `> 最后调整:via TRAE 2026-05-XX` |
-| `src/reviewer.py` 规则函数 | TRAE 帮你为新规则写实现 + 单元测试 | 单测放在 `tests/test_reviewer.py`,文件头注释标 `# TRAE-assisted` |
-| `web/` (Next.js) | TRAE 改前端布局、加 chart 可视化、打磨 Agent 剧场动效 | commit `[TRAE-UI]` 前缀 |
-| `data/sample_sources_*.json` | TRAE 帮造新行业 evidence | data 文件 `_meta.generated_by: "TRAE-assisted"` |
-
-**为什么这样做**:评分维度 4 明确要求"TRAE 等 AI 编程工具的使用痕迹清晰",commit message + 文件头注释能让评委 5 秒看到协作证据,不需要现场演示 TRAE 操作。
-
----
-
-## 当前完成度
-
-```
-[██████████] 阶段 A 数据 + Prompt
-[██████████] 阶段 B 骨架代码 + 真豆包跑通
-[██████████] 跨行业演示(PM 域 30 条 evidence)
-[██████████] 阶段 C 前端 Demo(Streamlit + 4 tabs)
-[██████████] 阶段 D CacheAdapter + OfficialPageAdapter(fixture 验证)
-[██████████] 阶段 E 打回闭环演示(DEMO_LOOP=1)
-[██████████] 阶段 F 答辩材料(脚本 + Q&A + 量化对比)
-[██████████] 合规说明(robots / UA / 隐私)
+```powershell
+pytest -q          # 22 个测试文件，覆盖 collector / analyzer / reviewer / scoring / search / writer
 ```
 
-GitHub: https://github.com/yangyuxin-hub/AI-Competitive-Radar
+---
+
+## 📊 当前完成度
+
+```
+[██████████] 数据 + Prompt（Schema v2.1 冻结 + 双行业 evidence）
+[██████████] 四 Agent 骨架 + 真实 LLM 跑通
+[██████████] 跨行业演示（AI 编程域 + PM 工具域）
+[██████████] 前端工作台（Next.js：意图澄清 + Agent 状态 + 报告溯源）
+[██████████] 三层采集降级 + 缓存兜底 + 多供应商搜索
+[██████████] 质检打回闭环 + 分层降级
+[██████████] scoring 配置化 + 源质量台账 + 阶段质量评测
+[██████████] 答辩材料 + 合规说明
+```
+
+**完成度定位**：可用 Demo（端到端闭环跑通，147 项测试全过）。
+
+---
+
+## 📋 答辩与演示材料
+
+- 📋 [`presentation/demo_script.md`](presentation/demo_script.md) — 现场演示脚本（含台词）
+- 💬 [`presentation/talking_points.md`](presentation/talking_points.md) — 评委 Q&A 应答模板
+- 🏗️ [`docs/design-v2.2.md`](docs/design-v2.2.md) — 完整架构设计（v2.2.1 frozen）
+- 📖 [`docs/competitive-analysis-playbook.md`](docs/competitive-analysis-playbook.md) — 竞品分析方法论
+
+---
+
+## 🛡️ 合规声明
+
+- 信息采集遵守目标站点 robots.txt 与服务条款，数据来源均为公开信息，并标注 source_bias。
+- 用户访谈 / 问卷数据已脱敏（含合成访谈兜底，不含真实个人敏感信息）。
+- LLM API key 等密钥运行时注入、不 commit；工具与资源使用符合挑战赛规范。
+- 未使用任何受版权保护的非授权内容。
+
+---
+
+## 👤 作者
+
+**杨雨欣**（GitHub [@yangyuxin-hub](https://github.com/yangyuxin-hub)）— 独立完成全栈开发（架构设计 / 多 Agent 编排 / 采集与分析 Agent / 质检规则 / Next.js 前端 / FastAPI 后端 / Prompt 工程）。
+
+🔗 GitHub: https://github.com/yangyuxin-hub/AI-Competitive-Radar
