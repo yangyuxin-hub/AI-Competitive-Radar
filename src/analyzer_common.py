@@ -298,3 +298,43 @@ def load_prompt(name: str) -> str:
 # ────────────────────────────────────────────────────────────────────────────
 # evidence 引用遍历(Analyzer 自校验 + Reviewer R1 共用)
 # ────────────────────────────────────────────────────────────────────────────
+
+
+# Analyzer facts 三 section 的 claim_types + 分段指令(facts step / 缺口补采共用)
+# facts 三个顶层 section 各自独立 → 拆成并行子问答,每个只喂相关 claim_type、只输出该 section,
+# 输出量天然减半/三分,既躲开"顶满 max_tokens 被截断 → 残缺 JSON"悬崖,又并行更快。
+# 注意:feature_tree 是跨产品对比(gap.winner),所以按 section 拆而不是按产品拆,保对比结构完整。
+_FACTS_SECTIONS = {
+    "feature_tree": {
+        "claim_types": ("feature_existence", "performance_quality", "user_pain"),
+        "instruct": "本次任务只输出 `feature_tree` 这一个顶层字段(覆盖所有有证据的功能,每个 feature 必须覆盖 "
+                    "target + ≥1 competitor)。不要输出 pricing_model / user_persona。",
+    },
+    "pricing_model": {
+        "claim_types": ("pricing", "user_pain", "market_signal"),
+        "instruct": "本次任务只输出 `pricing_model` 这一个顶层字段(覆盖所有有定价证据的产品 + pricing_gap)。"
+                    "不要输出 feature_tree / user_persona。\n"
+                    "定价提取要求:\n"
+                    "- **逐档列全**:从免费档到最高付费档,证据里出现的每个**命名套餐**都要单列一条 tier"
+                    "(如 Free / Plus / Business / Enterprise),不要只取一档、不要合并。\n"
+                    "- **同一套餐的年付/月付算同一档**:price 用**月度归一**值(normalized_usd_month);"
+                    "年付价请换算成每月(年付总额/12 或证据直接给的「per month billed annually」数),"
+                    "可在 billing_cycle / note 注明另一计费周期价。\n"
+                    "- 每档:{tier_name, segment, price:{amount,currency,normalized_usd_month}, evidence_ids}。"
+                    "价格只能来自 pricing 证据,拿不准的档宁可不列,**不要编价**。\n"
+                    "- **segment(面向哪类用户)**:据定价页的档位定位归类——`个人`(Free/Personal/Individual/Pro 个人版)、"
+                    "`团队`(Team/按人计费的中间档)、`企业`(Enterprise/Business/联系销售档)、`通用`(无法判断时)。"
+                    "这样定价表能直接回答「不同规模用户各该选哪档」。\n"
+                    "- 免费档只列一条(amount=0);不要重复输出同价档位。",
+    },
+    "user_persona": {
+        "claim_types": ("user_pain", "market_signal", "performance_quality"),
+        "instruct": "本次任务只输出 `user_persona` 这一个顶层字段"
+                    "(user_segments + pain_points + praise_points)。不要输出 feature_tree / pricing_model。\n"
+                    "- pain_points:高频负向反馈/痛点(保持原结构);\n"
+                    "- praise_points:高频正向反馈/被用户反复称赞的亮点。每条 {praise_id:PR001..,"
+                    "description, frequency:{level,count,sample_size,evidence_ids}, affected_products, confidence}。\n"
+                    "- praise_points.frequency.evidence_ids 优先用 performance_quality 的正面证据;"
+                    "**无正向证据就给空数组,严禁为凑数把痛点/负面证据塞进来**。",
+    },
+}
