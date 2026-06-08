@@ -66,6 +66,7 @@ _CLAIM_KEYWORDS = {
     "pricing": "pricing plans",
     "performance_quality": "review",
     "user_pain": "complaints problems",
+    "market_signal": "users revenue funding valuation employees",
 }
 # 中文产品/中文源:用中文关键词,保持 query 语言一致
 _CLAIM_KEYWORDS_CN = {
@@ -73,6 +74,7 @@ _CLAIM_KEYWORDS_CN = {
     "pricing": "价格 定价",
     "performance_quality": "评测 体验",
     "user_pain": "吐槽 问题 缺点",
+    "market_signal": "用户量 融资 估值 收入 公司状况",
 }
 
 _DOMAINS_YAML = _ROOT / "config" / "domains.yaml"
@@ -119,6 +121,7 @@ def _build_query(product: str, focus_kw: str, ct: str, cat_en: str, cat_cn: str)
 _FALLBACK_SITES = {
     "performance_quality": ["reddit.com", "g2.com"],
     "user_pain": ["reddit.com", "news.ycombinator.com", "g2.com"],
+    "market_signal": ["techcrunch.com", "forbes.com", "musicbusinessworldwide.com"],
 }
 
 _PRODUCTS_YAML = _ROOT / "config" / "products.yaml"
@@ -176,6 +179,9 @@ def _sites_for_claim(product: str, ct: str, by_ct: dict, category: Optional[str]
         st = "official_page" if ct == "feature_existence" else "pricing_page"
         for d in _product_official_domains(product):
             add(d, st, "vendor_claim")
+    if ct == "market_signal":
+        for d in _product_official_domains(product):
+            add(d, "official_page", "vendor_claim")
     # config 里该 claim_type 配置的带 site 源(reddit/hn/g2 等)
     for r in (by_ct.get(ct) or []):
         if r.get("site"):
@@ -228,9 +234,18 @@ def plan_sources(
     analysis_focus: list[str],
     missing_claim_types: Optional[list[str]] = None,
     domain: Optional[str] = None,
+    evidence_plan: Optional[dict] = None,
 ) -> list[dict]:
-    """产出搜索计划。默认覆盖全部 4 类证据(Tavily 主力，不依赖官网抓取)。"""
-    missing = missing_claim_types or REQUIRED_CLAIM_TYPES
+    """产出搜索计划。默认覆盖全部 4 类证据;有 EvidencePlan 时按计划覆盖。"""
+    if missing_claim_types:
+        missing = missing_claim_types
+    elif evidence_plan:
+        missing = list(dict.fromkeys([
+            *(evidence_plan.get("required_claim_types") or []),
+            *(evidence_plan.get("optional_claim_types") or []),
+        ]))
+    else:
+        missing = REQUIRED_CLAIM_TYPES
     cfg = load_sources_config()
     max_per_claim = int((cfg.get("defaults") or {}).get("max_queries_per_claim", 2))
     recs = recommended_for(domain, missing)

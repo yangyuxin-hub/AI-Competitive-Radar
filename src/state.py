@@ -8,6 +8,7 @@ class AgentState(TypedDict):
     analysis_meta: dict
 
     # 中间产物
+    evidence_plan: Optional[dict]
     raw_evidence: Optional[list[dict]]
     schema_draft: Optional[dict]
     report_draft: Optional[str]
@@ -55,6 +56,7 @@ def build_initial_state(
             "data_cutoff": now.strftime("%Y-%m-%d"),
             "agent_trace_id": f"trace_{now.strftime('%Y%m%d%H%M%S')}",
         },
+        "evidence_plan": None,
         "raw_evidence": None,
         "schema_draft": None,
         "report_draft": None,

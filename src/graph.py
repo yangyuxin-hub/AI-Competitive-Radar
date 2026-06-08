@@ -27,6 +27,7 @@ except ImportError:
 
 from .analyzer import analyzer_node  # noqa: E402
 from .collector import collector_node  # noqa: E402
+from .evidence_plan import evidence_planner_node  # noqa: E402
 from .reviewer import degraded_writer_node, make_reviewer_node  # noqa: E402
 from .state import AgentState, build_initial_state  # noqa: E402
 from .writer import writer_node  # noqa: E402
@@ -74,13 +75,15 @@ def build_app(llm: Optional[object] = None, reviewer_mode: Optional[str] = None)
         return _wrapped
 
     graph = StateGraph(AgentState)
+    graph.add_node("evidence_planner", _instrument("evidence_planner", evidence_planner_node))
     graph.add_node("collector", _instrument("collector", collector_node))
     graph.add_node("analyzer", _instrument("analyzer", analyzer_node))
     graph.add_node("writer", _instrument("writer", writer_node))
     graph.add_node("reviewer", _instrument("reviewer", reviewer_node))
     graph.add_node("degraded_writer", _instrument("degraded_writer", degraded_writer_node))
 
-    graph.set_entry_point("collector")
+    graph.set_entry_point("evidence_planner")
+    graph.add_edge("evidence_planner", "collector")
     graph.add_edge("collector", "analyzer")
     graph.add_edge("analyzer", "writer")
     graph.add_edge("writer", "reviewer")
@@ -175,8 +178,9 @@ def run_demo_streaming(
 ):
     """生成器: 每完成一个节点 yield (node_name, state_after_node)。
     供 Streamlit / 任何 stream UI 实时展示节点进度用。"""
-    from .collector import reset_debug_file
+    from .collector import reset_debug_file, reset_registry
     reset_debug_file()
+    reset_registry()
     tp, comp, focus, purpose, ui, intent = _resolve_run_args(
         target_product, competitors, analysis_focus, analysis_purpose, user_input, analysis_intent
     )
@@ -205,8 +209,9 @@ def run_demo(
     runtime_profile: str = "deep",
     analysis_intent: Optional[str] = None,
 ) -> AgentState:
-    from .collector import reset_debug_file
+    from .collector import reset_debug_file, reset_registry
     reset_debug_file()
+    reset_registry()
     tp, comp, focus, purpose, ui, intent = _resolve_run_args(
         target_product, competitors, analysis_focus, analysis_purpose, user_input, analysis_intent
     )

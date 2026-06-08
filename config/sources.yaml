@@ -30,6 +30,10 @@ by_claim_type:
     - { source_type: reddit, site: reddit.com, bias: user_generated }
     - { source_type: hn, site: news.ycombinator.com, bias: user_generated }
     - { source_type: review, site: g2.com, bias: third_party, note: 企业软件点评站 }
+  market_signal:
+    - { source_type: news, site: techcrunch.com, bias: third_party, note: 融资/收入/增长新闻 }
+    - { source_type: news, site: forbes.com, bias: third_party, note: 用户量/估值/AI 50 等市场信号 }
+    - { source_type: web_search, bias: third_party, note: 官方博客、媒体与数据库画像 }
 
 # ─── 按行业细化的优质来源（domain key 对齐 config/domains.yaml）──────
 by_domain:
