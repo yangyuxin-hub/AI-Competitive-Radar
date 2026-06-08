@@ -209,7 +209,7 @@ web/                      # Next.js 前端工作台
 docs/
   design-v2.2.md          # 完整架构设计（v2.2.1 frozen）
   assets/                 # README 截图素材
-tests/                    # 22 个测试文件，覆盖各 Agent / scoring / search
+tests/                    # 26 个测试文件，覆盖各 Agent / scoring / search
 ```
 
 ---
@@ -243,7 +243,7 @@ tests/                    # 22 个测试文件，覆盖各 Agent / scoring / sea
 ## 🧪 测试
 
 ```powershell
-pytest -q          # 22 个测试文件，覆盖 collector / analyzer / reviewer / scoring / search / writer
+pytest -q          # 26 个测试文件 / 201 用例，覆盖 collector / analyzer / reviewer / scoring / search / writer
 ```
 
 ---
@@ -261,7 +261,7 @@ pytest -q          # 22 个测试文件，覆盖 collector / analyzer / reviewer
 [██████████] 答辩材料 + 合规说明
 ```
 
-**完成度定位**：可用 Demo（端到端闭环跑通，147 项测试全过）。
+**完成度定位**：可用 Demo（端到端闭环跑通，201 项测试全过）。
 
 ---
 
