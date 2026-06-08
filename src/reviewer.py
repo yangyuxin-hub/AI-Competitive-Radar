@@ -59,6 +59,7 @@ ISSUE_TYPE_TO_TARGET = {
     "missing_claim_type_coverage": "collector",
     "missing_pricing_content": "collector",
     "missing_feature_content": "collector",
+    "report_chip_missing": "writer",
     "report_chip_not_found": "writer",
     "report_score_leak": "writer",
 }
@@ -167,7 +168,8 @@ def check_reasoning_chain(schema: dict, evidence: list[dict]) -> list[dict]:
         rid = r.get("rec_id", "?")
         fids = set(r.get("source_feature_ids") or [])
         pids = set(r.get("source_pain_ids") or [])
-        if not (fids & valid_fids) and not (pids & valid_pids):
+        # 合法锚三选一:feature_id / pain_id / source_pricing(定价建议源自 pricing_model)
+        if not (fids & valid_fids) and not (pids & valid_pids) and not r.get("source_pricing"):
             issues.append(_mk_issue(
                 "R4", "broken_reasoning_chain", f"recommendations.{rid}",
                 "未引用任何有效 feature_id / pain_id",
@@ -233,8 +235,11 @@ def check_freshness_and_confidence(schema: dict, evidence: list[dict]) -> list[d
 def check_collection_coverage(collection_meta: dict, analysis_meta: dict) -> list[dict]:
     """R0: every requested product needs all required claim types before analysis is trusted."""
     issues: list[dict] = []
+    from .evidence_plan import required_claim_types_for_meta
+
     products = [analysis_meta.get("target_product")] + list(analysis_meta.get("competitors") or [])
     products = [p for p in products if p]
+    required = required_claim_types_for_meta(analysis_meta)
     by_product = collection_meta.get("products") or {}
     if not by_product:
         return []
@@ -243,10 +248,10 @@ def check_collection_coverage(collection_meta: dict, analysis_meta: dict) -> lis
         info = by_product.get(product) or {}
         coverage = info.get("coverage") or {}
         missing = [
-            ct for ct in ("feature_existence", "performance_quality", "pricing", "user_pain")
+            ct for ct in required
             if int(coverage.get(ct) or 0) <= 0
         ]
-        if len(missing) == 4:
+        if len(missing) == len(required):
             issues.append(_mk_issue(
                 "R0",
                 "missing_product_evidence",
@@ -314,7 +319,13 @@ def check_report_chip_traceability(report: str, evidence: list[dict]) -> list[di
         return []
     valid = {e.get("evidence_id") for e in evidence}
     issues = []
-    for eid in sorted({m for m in _CHIP_RE.findall(report) if m not in valid}):
+    chips = set(_CHIP_RE.findall(report))
+    if evidence and not chips:
+        issues.append(_mk_issue(
+            "R9", "report_chip_missing", "report_draft",
+            "正文没有任何合法 [SXXXXXXX] evidence chip，无法从报告跳转到证据源"))
+        return issues
+    for eid in sorted({m for m in chips if m not in valid}):
         issues.append(_mk_issue(
             "R9", "report_chip_not_found", "report_draft",
             f"正文 chip [{eid}] 不在 raw_evidence，溯源断裂"))
@@ -665,12 +676,9 @@ def _quality_dimensions(
     """
     products = [analysis_meta.get("target_product"), *list(analysis_meta.get("competitors") or [])]
     products = [p for p in products if p]
-    # 评分口径按意图调整:痛点/流失归因类问题看「痛点+体验」证据是否覆盖,
-    # 不强求逐功能/定价齐全(那本就不是这类问题的重点,否则会无谓拉低分)。
-    if analysis_meta.get("analysis_intent") == "pain_attribution":
-        required = ("user_pain", "performance_quality")
-    else:
-        required = ("feature_existence", "performance_quality", "pricing", "user_pain")
+    # 评分口径与 EvidencePlan 对齐:不同问题需要不同证据,不能固定四类拉低非功能类报告。
+    from .evidence_plan import required_claim_types_for_meta
+    required = tuple(required_claim_types_for_meta(analysis_meta))
 
     coverage_scores: list[float] = []
     by_product = (collection_meta.get("products") or {}) if collection_meta else {}

@@ -19,6 +19,12 @@ class R9ChipTraceTest(unittest.TestCase):
         report = "结论一 [S1234ABC]。结论二 [SABCDEF1]。"
         self.assertEqual(check_report_chip_traceability(report, _EV), [])
 
+    def test_missing_chip_fires_when_evidence_exists(self):
+        issues = check_report_chip_traceability("Cursor 补全更快。", _EV)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["issue_type"], "report_chip_missing")
+        self.assertEqual(issues[0]["reject_target"], "writer")
+
     def test_empty_report_no_issue(self):
         self.assertEqual(check_report_chip_traceability("", _EV), [])
 
