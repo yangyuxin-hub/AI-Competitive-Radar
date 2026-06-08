@@ -151,6 +151,43 @@ export interface AnalysisPreview {
   };
 }
 
+export type StageStatus = "ok" | "degraded" | "failed";
+export type StageVerdict = "pass" | "warn" | "fail";
+export type StageSeverity = "error" | "warning" | "info";
+
+export interface StageCheck {
+  check_id: string;
+  verdict: StageVerdict;
+  severity: StageSeverity;
+  location: string;
+  detail: string;
+}
+
+export interface StageGap {
+  owner_node: string;
+  product?: string | null;
+  claim_type?: string | null;
+  gap_type: string;
+  fix: Record<string, unknown>;
+  fixable: boolean;
+  task_key: string;
+}
+
+export interface StageReport {
+  stage: string;
+  node: string;
+  run_id?: string | null;
+  attempt: number;
+  status: StageStatus;
+  produced: Record<string, number | string | boolean | string[] | null | undefined>;
+  checks: StageCheck[];
+  gaps: StageGap[];
+  cost: {
+    elapsed_sec?: number | null;
+    tokens?: number | null;
+  };
+}
+
 export type ProgressEvent =
   | {
       type: "status";
@@ -206,6 +243,7 @@ export type ProgressEvent =
   | { type: "done"; report_id: string; report: Report }
   | { type: "judge"; report_id: string; scorecard: JudgeScorecard }
   | { type: "judge_error"; message: string }
+  | { type: "stage_report"; report: StageReport }
   | { type: "error"; message: string };
 
 export interface JudgeScorecard {

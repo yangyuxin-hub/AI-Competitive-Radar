@@ -1,11 +1,10 @@
 import Link from "next/link";
-import AnalyzeFlow from "@/components/AnalyzeFlow";
-import RecentReports from "@/components/RecentReports";
+import Workbench from "@/components/Workbench";
 
 export default function Home() {
   return (
     <div className="min-h-screen bg-neutral-950 font-sans text-neutral-100">
-      <main className="mx-auto max-w-4xl px-6 py-12">
+      <main className="mx-auto max-w-6xl px-6 py-12">
         <header className="mb-10 flex items-start justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold">竞品情报工作台</h1>
@@ -17,15 +16,11 @@ export default function Home() {
             href="/stages"
             className="shrink-0 rounded-lg border border-white/10 px-3 py-1.5 text-sm text-neutral-300 transition hover:border-sky-500/40 hover:text-sky-300"
           >
-            质量看板 →
+            运行细节 →
           </Link>
         </header>
 
-        <section className="mb-12 rounded-2xl border border-white/10 bg-white/[0.02] p-6">
-          <AnalyzeFlow />
-        </section>
-
-        <RecentReports />
+        <Workbench />
       </main>
     </div>
   );

@@ -413,23 +413,135 @@ export default function ReportView({ report }: { report: Report }) {
           </div>
         </section>
 
-        {/* Raw markdown fallback */}
-        <details
+        {/* Raw markdown export */}
+        <MarkdownExportPanel
+          report={report}
           open={showRaw}
-          onToggle={(e) => setShowRaw((e.target as HTMLDetailsElement).open)}
-          className="rounded-xl border border-white/10 bg-white/[0.02]"
-        >
-          <summary className="cursor-pointer px-4 py-3 text-sm text-neutral-400">
-            查看原始 Markdown 报告
-          </summary>
+          onToggle={setShowRaw}
+        />
+      </div>
+    </EvidenceProvider>
+  );
+}
+
+function markdownFilename(report: Report) {
+  const target = report.meta.target_product || "report";
+  const focus = report.meta.analysis_focus?.[0] || "analysis";
+  const id = report.report_id || report.meta.report_id || "competitive-report";
+  const raw = `${id}-${target}-${focus}.md`;
+  return raw.replace(/[\\/:*?"<>|\s]+/g, "-").replace(/-+/g, "-");
+}
+
+function markdownSource(report: Report) {
+  const md = report.report_draft?.trim();
+  if (md) return md;
+  return [
+    `# ${report.meta.target_product} vs ${report.meta.competitors.join(" / ")}`,
+    "",
+    `- 焦点：${report.meta.analysis_focus.join(" / ")}`,
+    `- 报告 ID：${report.report_id}`,
+    "",
+    "暂无原始 Markdown 正文。",
+  ].join("\n");
+}
+
+async function copyText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
+}
+
+function MarkdownExportPanel({
+  report,
+  open,
+  onToggle,
+}: {
+  report: Report;
+  open: boolean;
+  onToggle: (open: boolean) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const text = markdownSource(report);
+  const filename = markdownFilename(report);
+
+  async function onCopy() {
+    await copyText(text);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  }
+
+  function onDownload() {
+    const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <details
+      open={open}
+      onToggle={(e) => onToggle((e.target as HTMLDetailsElement).open)}
+      className="rounded-xl border border-white/10 bg-white/[0.02]"
+    >
+      <summary className="cursor-pointer px-4 py-3 text-sm text-neutral-400">
+        查看与导出原始 Markdown 报告
+      </summary>
+      <div className="space-y-4 border-t border-white/10 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-medium text-neutral-200">Markdown 源码</div>
+            <div className="mt-0.5 text-xs text-neutral-500">{filename}</div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={onCopy}
+              className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-neutral-300 transition hover:border-sky-500/40 hover:text-sky-300"
+            >
+              {copied ? "已复制" : "复制 Markdown"}
+            </button>
+            <button
+              type="button"
+              onClick={onDownload}
+              className="rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-sky-400"
+            >
+              下载 .md
+            </button>
+          </div>
+        </div>
+
+        <textarea
+          readOnly
+          value={text}
+          className="min-h-72 w-full resize-y rounded-xl border border-white/10 bg-neutral-950/70 p-3 font-mono text-xs leading-relaxed text-neutral-200 outline-none selection:bg-sky-500/30"
+          spellCheck={false}
+        />
+
+        <details className="rounded-xl border border-white/10 bg-white/[0.02]">
+          <summary className="cursor-pointer px-3 py-2 text-xs text-neutral-500">渲染预览</summary>
           <div className="prose-report border-t border-white/10 px-4 py-3 text-sm text-neutral-300">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={proseComponents}>
-              {report.report_draft ?? ""}
+              {text}
             </ReactMarkdown>
           </div>
         </details>
       </div>
-    </EvidenceProvider>
+    </details>
   );
 }
 

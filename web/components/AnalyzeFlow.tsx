@@ -6,8 +6,9 @@ import {
   streamIntake,
   answersToRunArgs,
   runAnalysis,
+  type RunArgs,
 } from "@/lib/api";
-import type { Question, Answers, ProgressEvent, Report, NodeDetail, AnalysisPreview } from "@/lib/types";
+import type { Question, Answers, ProgressEvent, Report, NodeDetail, AnalysisPreview, StageReport } from "@/lib/types";
 import { domainOf } from "@/lib/source";
 import ReportView from "./ReportView";
 
@@ -71,7 +72,27 @@ const RUN_PROFILES: { key: RuntimeProfile; label: string; sub: string }[] = [
   { key: "deep", label: "深度", sub: "社区证据 · 默认" },
 ];
 
-export default function AnalyzeFlow() {
+interface AnalyzeFlowProps {
+  onRunStart?: (payload: { clientRunId: string; args: RunArgs }) => void;
+  onStageReport?: (payload: { clientRunId: string; report: StageReport }) => void;
+  onRunDone?: (payload: { clientRunId: string; reportId: string; report: Report }) => void;
+  onRunError?: (payload: { clientRunId: string | null; message: string }) => void;
+  onRunCancel?: (payload: { clientRunId: string | null }) => void;
+  onReset?: () => void;
+}
+
+function makeClientRunId() {
+  return `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export default function AnalyzeFlow({
+  onRunStart,
+  onStageReport,
+  onRunDone,
+  onRunError,
+  onRunCancel,
+  onReset,
+}: AnalyzeFlowProps = {}) {
   const [stage, setStage] = useState<Stage>("input");
   const [userInput, setUserInput] = useState("");
   const [domainHint, setDomainHint] = useState<string | undefined>();
@@ -92,6 +113,7 @@ export default function AnalyzeFlow() {
   const cancelIntakeRef = useRef<(() => void) | null>(null); // 中止上一次流式精修
   const touchedRef = useRef<Set<string>>(new Set()); // 用户手动改过的问题,LLM 刷新时不覆盖
   const intakeReqRef = useRef(0); // 防止过期的 LLM 响应覆盖新一次提交
+  const activeRunRef = useRef<string | null>(null); // 防止旧 run 的 SSE 回调污染当前 UI
 
   function defaultAnswers(qs: Question[]): Answers {
     const init: Answers = {};
@@ -207,19 +229,30 @@ export default function AnalyzeFlow() {
       setError("请先选择目标产品");
       return;
     }
+    const clientRunId = makeClientRunId();
     cancelRunRef.current?.();
+    activeRunRef.current = clientRunId;
     setEvents([]);
     setReport(null);
     setError(null);
     setStage("running");
+    onRunStart?.({ clientRunId, args });
     cancelRunRef.current = runAnalysis(args, (e) => {
+      if (activeRunRef.current !== clientRunId) return;
       if (e.type === "done") {
         cancelRunRef.current = null;
+        activeRunRef.current = null;
         setReport(e.report);
         setStage("report");
+        onRunDone?.({ clientRunId, reportId: e.report_id, report: e.report });
+      } else if (e.type === "stage_report") {
+        onStageReport?.({ clientRunId, report: e.report });
       } else if (e.type === "error") {
         cancelRunRef.current = null;
+        activeRunRef.current = null;
         setError(e.message);
+        setStage("clarify");
+        onRunError?.({ clientRunId, message: e.message });
       } else {
         setEvents((prev) => [...prev, e]);
       }
@@ -227,10 +260,13 @@ export default function AnalyzeFlow() {
   }
 
   function cancelRun() {
+    const clientRunId = activeRunRef.current;
     cancelRunRef.current?.();
     cancelRunRef.current = null;
+    activeRunRef.current = null;
     setError("已取消本次分析");
     setStage("clarify");
+    onRunCancel?.({ clientRunId });
   }
 
   function reset() {
@@ -252,8 +288,10 @@ export default function AnalyzeFlow() {
     intakeReqRef.current++;
     cancelRunRef.current?.();
     cancelRunRef.current = null;
+    activeRunRef.current = null;
     cancelIntakeRef.current?.();
     cancelIntakeRef.current = null;
+    onReset?.();
   }
 
   return (
@@ -499,15 +537,16 @@ function useElapsed(running: boolean) {
   return sec;
 }
 
-// LangGraph DAG 可视化:前向边 collector→analyzer→writer→reviewer→END,
+// LangGraph DAG 可视化:planner→collector→analyzer→writer→reviewer→END,
 // 加质检打回的回边(reviewer→采集/分析/撰写),实时按状态着色 + 标注重试次数。
 const _DAG = [
-  { id: "collector", icon: "📥", label: "采集", cx: 78 },
-  { id: "analyzer", icon: "🧠", label: "分析", cx: 246 },
-  { id: "writer", icon: "✍️", label: "撰写", cx: 414 },
-  { id: "reviewer", icon: "🧪", label: "质检", cx: 582 },
+  { id: "evidence_planner", icon: "🧭", label: "规划", cx: 70 },
+  { id: "collector", icon: "📥", label: "采集", cx: 220 },
+  { id: "analyzer", icon: "🧠", label: "分析", cx: 370 },
+  { id: "writer", icon: "✍️", label: "撰写", cx: 520 },
+  { id: "reviewer", icon: "🧪", label: "质检", cx: 670 },
 ];
-const _END_CX = 672;
+const _END_CX = 790;
 const _ROW_Y = 150;
 const _NODE_W = 96;
 const _NODE_H = 56;
@@ -561,7 +600,7 @@ function DagFlow({
   };
 
   return (
-    <svg viewBox="0 0 712 200" className="w-full" role="img" aria-label="Agent DAG 任务流转">
+    <svg viewBox="0 0 830 200" className="w-full" role="img" aria-label="Agent DAG 任务流转">
       <defs>
         <marker id="fwd-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
           <path d="M0,0 L6,3 L0,6 Z" fill="rgba(255,255,255,0.4)" />
@@ -716,15 +755,15 @@ function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel
   const collectionHealth =
     progress.findLast((e) => e.collection_health)?.collection_health ?? [];
 
-  const order = ["collector", "analyzer", "writer", "reviewer", "degraded_writer"];
+  const order = ["evidence_planner", "collector", "analyzer", "writer", "reviewer", "degraded_writer"];
 
   // ── 进度条 + ETA(自校准:用已耗时与当前进度反推总时长,适配不同 runtime profile)──
   const STAGE_SPAN: Record<string, [number, number]> = {
-    collector: [3, 25], analyzer: [25, 90], writer: [90, 94],
+    evidence_planner: [2, 5], collector: [5, 25], analyzer: [25, 90], writer: [90, 94],
     reviewer: [94, 99], degraded_writer: [94, 99],
   };
   const STAGE_TYP: Record<string, number> = {
-    collector: 55, analyzer: 180, writer: 3, reviewer: 6, degraded_writer: 6,
+    evidence_planner: 1, collector: 55, analyzer: 180, writer: 3, reviewer: 6, degraded_writer: 6,
   };
   const nodeMaxElapsed: Record<string, number> = {};
   for (const e of stream) {

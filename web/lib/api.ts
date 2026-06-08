@@ -6,7 +6,7 @@ import type {
   Answers,
 } from "./types";
 
-const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000";
 
 export async function fetchQuestions(
   userInput: string,
@@ -163,5 +163,90 @@ export interface StageStat {
 export async function fetchStageQuality(): Promise<{ stages: StageStat[]; recent: unknown[] }> {
   const res = await fetch(`${BASE}/api/stage_quality`, { cache: "no-store" });
   if (!res.ok) throw new Error(`stage_quality failed: ${res.status}`);
+  return res.json();
+}
+
+// ── design-v3 M1：单次 run 的逐节点时间线（/api/timeline） ──────────────────
+export interface TimelineGap {
+  task_key: string | null;
+  owner_node: string | null;
+  gap_type: string | null;
+  product: string | null;
+  claim_type: string | null;
+  fixable: boolean;
+}
+
+export interface TimelineEntry {
+  seq: number;
+  stage: string;
+  node: string;
+  status: "ok" | "degraded" | "failed";
+  verdict?: string | null;
+  attempt?: number | null;
+  elapsed_sec: number | null;
+  ts?: string | null;
+  produced: Record<string, number | string | null>;
+  checks_summary: { pass: number; warn: number; fail: number };
+  gaps: TimelineGap[];
+}
+
+export interface Timeline {
+  run_id: string | null;
+  entries: TimelineEntry[];
+  summary: {
+    nodes: number;
+    total_elapsed_sec: number;
+    worst_status: "ok" | "degraded" | "failed" | null;
+    open_gaps: number;
+  };
+}
+
+export async function fetchTimeline(runId?: string): Promise<Timeline> {
+  const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : "";
+  const res = await fetch(`${BASE}/api/timeline${qs}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`timeline failed: ${res.status}`);
+  return res.json();
+}
+
+// ── design-v3 M1：一次分析的交付验收清单（/api/checklist） ──────────────────
+export type ChecklistStatus = "ok" | "missing" | "unfixable" | "warn";
+
+export interface ChecklistItem {
+  label: string;
+  status: ChecklistStatus;
+  detail?: string | null;
+  owner?: string | null;
+  fix?: string | null;
+  fixable: boolean;
+  product?: string | null;
+  claim_type?: string | null;
+}
+
+export interface ChecklistGroup {
+  layer: string;
+  done: number;
+  total: number;
+  items: ChecklistItem[];
+}
+
+export interface Checklist {
+  report_id: string | null;
+  target: string | null;
+  competitors: string[];
+  status: string | null;
+  groups: ChecklistGroup[];
+  summary: {
+    done: number;
+    total: number;
+    open_repairs: number;
+    blocked: number;
+    repairs_by_owner: Record<string, number>;
+  };
+}
+
+export async function fetchChecklist(reportId?: string): Promise<Checklist> {
+  const qs = reportId ? `?report_id=${encodeURIComponent(reportId)}` : "";
+  const res = await fetch(`${BASE}/api/checklist${qs}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`checklist failed: ${res.status}`);
   return res.json();
 }

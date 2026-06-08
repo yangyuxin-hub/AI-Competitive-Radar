@@ -39,6 +39,7 @@ _REPORTS_DIR = _ROOT / "out" / "reports"
 _INDEX = _REPORTS_DIR / "index.json"
 
 _NODE_META = {
+    "evidence_planner": ("🧭", "规划证据"),
     "collector": ("📥", "收集证据"),
     "analyzer": ("🧠", "分析结论"),
     "writer": ("✍️", "生成报告"),
@@ -46,8 +47,12 @@ _NODE_META = {
     "degraded_writer": ("⚠️", "降级输出"),
 }
 
-_PIPELINE = ["collector", "analyzer", "writer", "reviewer"]
+_PIPELINE = ["evidence_planner", "collector", "analyzer", "writer", "reviewer"]
 _STATUS_COPY = {
+    "evidence_planner": [
+        "识别分析意图，生成本轮证据计划",
+        "确定必需证据、增强信号与验收标准",
+    ],
     "collector": [
         "解析产品与竞品，准备采集证据",
         "检查官网、缓存与兜底数据",
@@ -73,6 +78,7 @@ _STATUS_COPY = {
 
 # 长间隙(LLM 调用中)的稳定等待文案 — 单句不轮播，配合计时表明仍在工作
 _WAIT_MESSAGE = {
+    "evidence_planner": "正在规划本轮需要采集的证据",
     "collector": "正在联网检索并整理证据",
     "analyzer": "正在深度分析：梳理功能/定价/痛点并推导建议，这一步最慢",
     "writer": "正在把结构化结论整理成报告",
@@ -83,6 +89,7 @@ _WAIT_MESSAGE = {
 # 各节点典型耗时(秒)— 用于给前端算 ETA(预计剩余),让长等待可预期。
 # 数值取自 logs/llm_calls.jsonl 实测 + Tier1/2 并行化后的估计;偏保守。
 _NODE_TYPICAL_SEC = {
+    "evidence_planner": 1,
     "collector": 55,
     "analyzer": 130,
     "writer": 2,
@@ -373,7 +380,7 @@ def _next_node_after(node_name: Optional[str], state: dict) -> str:
         idx = _PIPELINE.index(node_name)
         if idx + 1 < len(_PIPELINE):
             return _PIPELINE[idx + 1]
-    return "collector"
+    return "evidence_planner"
 
 
 def _status_event(node_name: str, message: str, elapsed: int, state: Optional[dict] = None,
@@ -582,12 +589,12 @@ def _run_stream(args: dict):
 
     last_state: dict = {}
     last_completed: Optional[str] = None
-    current_node = "collector"
+    current_node = "evidence_planner"
     last_hb = 0.0
     stage_timings: list[dict] = []  # 各环节耗时 + 成果(持久化进报告供档案复盘)
     prev_end = 0
     try:
-        yield _sse(_status_event("collector", "开始运行，多 Agent 流程已启动", elapsed()))
+        yield _sse(_status_event("evidence_planner", "开始运行，多 Agent 流程已启动", elapsed()))
 
         while True:
             try:
@@ -628,6 +635,19 @@ def _run_stream(args: dict):
                 current_node = _next_node_after(last_completed, state)
                 last_hb = elapsed()  # 进入新节点，重置心跳计时
                 yield _sse(_progress_event(node_name, state))
+                # design-v3 M1:每节点完成推一条统一 StageReport,供时间线 UX 实时点亮。
+                # 加法事件,前端未知 type 自动忽略;失败静默不阻断主流。
+                try:
+                    from src.stage_report import to_stage_report  # noqa: WPS433
+                    _rid = (state.get("analysis_meta") or {}).get("agent_trace_id")
+                    _rep = to_stage_report(
+                        node_name, state,
+                        elapsed_sec=stage_timings[-1]["duration_sec"] if stage_timings else None,
+                        run_id=_rid)
+                    if _rep:
+                        yield _sse({"type": "stage_report", "report": _rep})
+                except Exception:  # noqa: BLE001
+                    pass
                 if node_name != "reviewer" or state.get("status") != "passed":
                     nxt = _WAIT_MESSAGE.get(current_node, "继续处理下一步")
                     yield _sse(_status_event(current_node, nxt, elapsed(), last_state))
@@ -803,7 +823,7 @@ def api_stage_quality(limit: int = 300):
             rows.append(json.loads(line))
         except Exception:  # noqa: BLE001
             pass
-    order = ["collector", "analyzer", "writer", "degraded_writer", "reviewer"]
+    order = ["evidence_planner", "collector", "analyzer", "writer", "degraded_writer", "reviewer"]
     agg: dict = {}
     for r in rows:
         s = r.get("stage") or "?"
@@ -828,3 +848,45 @@ def api_stage_quality(limit: int = 300):
             "verdicts": a["verdicts"], "last_metrics": a["last_metrics"],
         })
     return {"stages": stages, "recent": rows[-20:]}
+
+
+def _read_stage_rows(limit: int = 800) -> list[dict]:
+    p = _ROOT / "logs" / "stage_quality.jsonl"
+    if not p.exists():
+        return []
+    rows: list[dict] = []
+    for line in p.read_text(encoding="utf-8").splitlines()[-limit:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except Exception:  # noqa: BLE001
+            pass
+    return rows
+
+
+@app.get("/api/timeline")
+def api_timeline(run_id: Optional[str] = None, limit: int = 800):
+    """单次 run 的逐节点时间线(design-v3 §6 / M1):按 run_id 聚合 stage_quality.jsonl,
+    保留时序(重试=同 stage 多次出现)。run_id 缺省取最近一次 run。"""
+    from src.stage_report import aggregate_timeline  # noqa: WPS433
+    return aggregate_timeline(_read_stage_rows(limit), run_id=run_id)
+
+
+@app.get("/api/checklist")
+def api_checklist(report_id: Optional[str] = None):
+    """一次分析的交付验收清单(design-v3 M1 决策视角):采集/分析/质检三层,
+    每项 ✓ 达标 / ✗ 打回补充(owner_node + 修复提示)。report_id 缺省取最近一份报告。"""
+    from src.checklist import build_checklist  # noqa: WPS433
+    if not report_id:
+        idx = _load_index()
+        if not idx:
+            return {"report_id": None, "target": None, "competitors": [], "status": None,
+                    "groups": [], "summary": {"done": 0, "total": 0, "open_repairs": 0,
+                                              "blocked": 0, "repairs_by_owner": {}}}
+        report_id = idx[0]["report_id"]
+    path = _REPORTS_DIR / f"{report_id}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="report not found")
+    return build_checklist(json.loads(path.read_text(encoding="utf-8")))
