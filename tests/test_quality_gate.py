@@ -3,7 +3,8 @@ import unittest
 
 from src.quality import (
     score_quality, has_real_price,
-    audit_pricing_substance, audit_bias_balance, annotate_and_audit,
+    audit_pricing_substance, audit_bias_balance, audit_community_feedback,
+    is_community_evidence, is_high_quality_community, annotate_and_audit,
 )
 
 
@@ -55,6 +56,43 @@ class HardGateTest(unittest.TestCase):
     def test_bias_with_ugc_passes(self):
         ev = [{"product": "Kling", "claim_type": "user_pain", "claim": "reddit 用户吐槽", "source_bias": "user_generated"}]
         self.assertEqual(audit_bias_balance(ev, ["Kling"]), [])
+
+    def test_community_missing_fires(self):
+        ev = [{
+            "product": "Kling", "claim_type": "user_pain",
+            "claim": "第三方评测提到用户遇到生成失败",
+            "source_type": "web_search", "source_bias": "third_party",
+            "source_url": "https://example.com/review",
+        }]
+        gaps = audit_community_feedback(ev, ["Kling"])
+        self.assertEqual(len(gaps), 1)
+        self.assertEqual(gaps[0]["gap_type"], "community_missing")
+
+    def test_community_low_quality_fires(self):
+        ev = [{
+            "product": "Kling", "claim_type": "user_pain",
+            "claim": "bad", "extracted_snippet": "bad",
+            "source_type": "reddit", "source_bias": "user_generated",
+            "source_url": "https://www.reddit.com/r/test/comments/1",
+        }]
+        self.assertTrue(is_community_evidence(ev[0]))
+        self.assertFalse(is_high_quality_community(ev[0]))
+        gaps = audit_community_feedback(ev, ["Kling"])
+        self.assertEqual(len(gaps), 1)
+        self.assertEqual(gaps[0]["gap_type"], "community_low_quality")
+
+    def test_high_quality_community_passes(self):
+        ev = [{
+            "product": "Kling", "claim_type": "performance_quality",
+            "claim": "用户实测 500k 行项目补全延迟约 1.5 秒,相比竞品慢",
+            "extracted_snippet": "Reddit 用户实测 500k 行项目补全延迟约 1.5 秒,相比竞品慢,并提到大文件切换时偶发卡顿。",
+            "source_type": "web_search", "source_bias": "user_generated",
+            "source_url": "https://www.reddit.com/r/test/comments/1",
+            "claim_relevance": 0.9, "source_reliability": 0.8,
+        }]
+        ev[0]["quality_score"] = score_quality(ev[0])
+        self.assertTrue(is_high_quality_community(ev[0]))
+        self.assertEqual(audit_community_feedback(ev, ["Kling"]), [])
 
     def test_no_pricing_evidence_no_gap(self):
         # 0 条定价 = 数量门的事，质量门不报
