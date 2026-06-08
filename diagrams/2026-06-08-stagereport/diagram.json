@@ -1,0 +1,268 @@
+{
+  "version": 2,
+  "nodes": [
+    {
+      "type": "frame",
+      "id": "root",
+      "x": 0,
+      "y": 0,
+      "width": 1260,
+      "height": "fit-content",
+      "layout": "vertical",
+      "gap": 20,
+      "padding": 28,
+      "fillColor": "#FFFFFF",
+      "children": [
+        {
+          "type": "text",
+          "id": "title",
+          "width": "fill-container",
+          "height": "fit-content",
+          "text": "StageReport 契约设计 · 关键路径（design-v3 M0）",
+          "fontSize": 26,
+          "textColor": "#1F2329",
+          "textAlign": "center",
+          "verticalAlign": "middle"
+        },
+        {
+          "type": "text",
+          "id": "subtitle",
+          "width": "fill-container",
+          "height": "fit-content",
+          "text": "三方言 → 统一适配 → 旁路契约 → 多 sink 消费　|　实线=M0 已落地，虚线=后续里程碑接入",
+          "fontSize": 14,
+          "textColor": "#646A73",
+          "textAlign": "center",
+          "verticalAlign": "middle"
+        },
+        {
+          "type": "frame",
+          "id": "layers",
+          "width": "fill-container",
+          "height": "fit-content",
+          "layout": "vertical",
+          "alignItems": "stretch",
+          "gap": 48,
+          "padding": 0,
+          "children": [
+            {
+              "type": "frame",
+              "id": "row-1",
+              "width": "fill-container",
+              "height": "fit-content",
+              "layout": "horizontal",
+              "gap": 20,
+              "padding": 0,
+              "alignItems": "center",
+              "children": [
+                { "type": "text", "id": "lbl-1", "width": 92, "height": "fit-content", "text": "① 源", "fontSize": 18, "textColor": "#1F2329", "textAlign": "right" },
+                {
+                  "type": "frame",
+                  "id": "band-sources",
+                  "width": "fill-container",
+                  "height": "fit-content",
+                  "layout": "vertical",
+                  "gap": 12,
+                  "padding": 20,
+                  "fillColor": "#F0F4FC",
+                  "borderColor": "#5178C6",
+                  "borderWidth": 2,
+                  "borderRadius": 8,
+                  "children": [
+                    { "type": "text", "id": "band-sources-t", "width": "fill-container", "height": "fit-content", "text": "三方言源（既有产物 · 本次零改动）", "fontSize": 14, "textColor": "#1F2329", "textAlign": "left" },
+                    {
+                      "type": "frame",
+                      "id": "sources-row",
+                      "width": "fill-container",
+                      "height": "fit-content",
+                      "layout": "horizontal",
+                      "gap": 12,
+                      "padding": 0,
+                      "alignItems": "stretch",
+                      "children": [
+                        { "type": "rect", "id": "src-collector", "width": "fill-container", "height": "fit-content", "text": "collector\ncollection_meta\n.quality_audit.gaps[]", "fillColor": "#FFFFFF", "borderColor": "#5178C6", "borderWidth": 2, "borderRadius": 8, "fontSize": 13, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
+                        { "type": "rect", "id": "src-analyzer", "width": "fill-container", "height": "fit-content", "text": "analyzer\nschema_draft\n引用完整性", "fillColor": "#FFFFFF", "borderColor": "#5178C6", "borderWidth": 2, "borderRadius": 8, "fontSize": 13, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
+                        { "type": "rect", "id": "src-writer", "width": "fill-container", "height": "fit-content", "text": "writer\nreport_draft\nchip / 泄分", "fillColor": "#FFFFFF", "borderColor": "#5178C6", "borderWidth": 2, "borderRadius": 8, "fontSize": 13, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
+                        { "type": "rect", "id": "src-reviewer", "width": "fill-container", "height": "fit-content", "text": "reviewer\nquality_report.errors\nreject_target", "fillColor": "#FFFFFF", "borderColor": "#5178C6", "borderWidth": 2, "borderRadius": 8, "fontSize": 13, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "row-2",
+              "width": "fill-container",
+              "height": "fit-content",
+              "layout": "horizontal",
+              "gap": 20,
+              "padding": 0,
+              "alignItems": "center",
+              "children": [
+                { "type": "text", "id": "lbl-2", "width": 92, "height": "fit-content", "text": "② 适配\n[M0✅]", "fontSize": 18, "textColor": "#1F2329", "textAlign": "right" },
+                {
+                  "type": "frame",
+                  "id": "band-adapter",
+                  "width": "fill-container",
+                  "height": "fit-content",
+                  "layout": "vertical",
+                  "gap": 12,
+                  "padding": 20,
+                  "fillColor": "#EAE2FE",
+                  "borderColor": "#8569CB",
+                  "borderWidth": 2,
+                  "borderRadius": 8,
+                  "children": [
+                    { "type": "text", "id": "band-adapter-t", "width": "fill-container", "height": "fit-content", "text": "to_stage_report(stage, state)　只读适配层 · 零副作用 · 失败静默", "fontSize": 15, "textColor": "#1F2329", "textAlign": "left" },
+                    {
+                      "type": "frame",
+                      "id": "adapter-row",
+                      "width": "fill-container",
+                      "height": "fit-content",
+                      "layout": "horizontal",
+                      "gap": 12,
+                      "padding": 0,
+                      "alignItems": "stretch",
+                      "children": [
+                        { "type": "rect", "id": "ad-parts", "width": "fill-container", "height": "fit-content", "text": "_xxx_parts ×4\n抽 checks / gaps / produced\n（三方言→同构）", "fillColor": "#FFFFFF", "borderColor": "#8569CB", "borderWidth": 2, "borderRadius": 8, "fontSize": 13, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
+                        { "type": "rect", "id": "ad-owner", "width": "fill-container", "height": "fit-content", "text": "gap_owner(gap)\n确定性查表 → owner_node\n+ task_key()  owner:product:ct", "fillColor": "#FFFFFF", "borderColor": "#8569CB", "borderWidth": 2, "borderRadius": 8, "fontSize": 13, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
+                        { "type": "rect", "id": "ad-status", "width": "fill-container", "height": "fit-content", "text": "derive_status()\nerror → failed\ngap / warn → degraded\nelse → ok", "fillColor": "#FFFFFF", "borderColor": "#8569CB", "borderWidth": 2, "borderRadius": 8, "fontSize": 13, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "row-3",
+              "width": "fill-container",
+              "height": "fit-content",
+              "layout": "horizontal",
+              "gap": 20,
+              "padding": 0,
+              "alignItems": "center",
+              "children": [
+                { "type": "text", "id": "lbl-3", "width": 92, "height": "fit-content", "text": "③ 契约", "fontSize": 18, "textColor": "#1F2329", "textAlign": "right" },
+                {
+                  "type": "frame",
+                  "id": "band-report",
+                  "width": "fill-container",
+                  "height": "fit-content",
+                  "layout": "vertical",
+                  "gap": 8,
+                  "padding": 20,
+                  "fillColor": "#FEF1CE",
+                  "borderColor": "#D4B45B",
+                  "borderWidth": 2,
+                  "borderRadius": 8,
+                  "children": [
+                    { "type": "text", "id": "band-report-t", "width": "fill-container", "height": "fit-content", "text": "StageReport　统一旁路对象 · 不入 schema_draft / 报告正文 / API 报告返回", "fontSize": 15, "textColor": "#1F2329", "textAlign": "center" },
+                    { "type": "rect", "id": "report-body", "width": "fill-container", "height": "fit-content", "text": "{ status,  produced,  checks[],  gaps[]{ owner_node, task_key, fixable },  cost }", "fillColor": "#FFFFFF", "borderColor": "#D4B45B", "borderWidth": 2, "borderRadius": 8, "fontSize": 14, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "row-4",
+              "width": "fill-container",
+              "height": "fit-content",
+              "layout": "horizontal",
+              "gap": 20,
+              "padding": 0,
+              "alignItems": "stretch",
+              "children": [
+                { "type": "text", "id": "lbl-4", "width": 92, "height": "fit-content", "text": "④ 消费", "fontSize": 18, "textColor": "#1F2329", "textAlign": "right" },
+                {
+                  "type": "frame",
+                  "id": "sinks-row",
+                  "width": "fill-container",
+                  "height": "fit-content",
+                  "layout": "horizontal",
+                  "gap": 20,
+                  "padding": 0,
+                  "alignItems": "stretch",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "sink-obs",
+                      "width": "fill-container",
+                      "height": "fit-content",
+                      "layout": "vertical",
+                      "gap": 10,
+                      "padding": 18,
+                      "fillColor": "#DFF5E5",
+                      "borderColor": "#509863",
+                      "borderWidth": 2,
+                      "borderRadius": 8,
+                      "children": [
+                        { "type": "text", "id": "sink-obs-t", "width": "fill-container", "height": "fit-content", "text": "④a 观测 sink　[M0✅ 已接]", "fontSize": 15, "textColor": "#1F2329", "textAlign": "center" },
+                        { "type": "rect", "id": "sink-obs-body", "width": "fill-container", "height": "fit-content", "text": "stage_eval → stage_quality.jsonl\n叠加 status / checks / gaps / produced / cost\n旧 verdict / metrics 保留 → /api/stage_quality 零影响", "fillColor": "#FFFFFF", "borderColor": "#509863", "borderWidth": 2, "borderRadius": 8, "fontSize": 13, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "sink-control",
+                      "width": "fill-container",
+                      "height": "fit-content",
+                      "layout": "vertical",
+                      "gap": 10,
+                      "padding": 18,
+                      "fillColor": "#FEE3E2",
+                      "borderColor": "#D25D5A",
+                      "borderWidth": 2,
+                      "borderDash": "dashed",
+                      "borderRadius": 8,
+                      "children": [
+                        { "type": "text", "id": "sink-control-t", "width": "fill-container", "height": "fit-content", "text": "④b 控制 sink　[M2 待接]", "fontSize": 15, "textColor": "#1F2329", "textAlign": "center" },
+                        { "type": "rect", "id": "sink-control-body", "width": "fill-container", "height": "fit-content", "text": "control_loop(report, budget)\nok → advance\ngap & 预算够 → repair owner_node\n预算尽 / !fixable → degrade", "fillColor": "#FFFFFF", "borderColor": "#D25D5A", "borderWidth": 2, "borderDash": "dashed", "borderRadius": 8, "fontSize": 13, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "row-5",
+              "width": "fill-container",
+              "height": "fit-content",
+              "layout": "horizontal",
+              "gap": 20,
+              "padding": 0,
+              "alignItems": "center",
+              "children": [
+                { "type": "text", "id": "lbl-5", "width": 92, "height": "fit-content", "text": "⑤ 展示", "fontSize": 18, "textColor": "#1F2329", "textAlign": "right" },
+                {
+                  "type": "frame",
+                  "id": "band-ux",
+                  "width": "fill-container",
+                  "height": "fit-content",
+                  "layout": "vertical",
+                  "gap": 8,
+                  "padding": 18,
+                  "fillColor": "#F0F4FC",
+                  "borderColor": "#8C9196",
+                  "borderWidth": 2,
+                  "borderDash": "dashed",
+                  "borderRadius": 8,
+                  "children": [
+                    { "type": "text", "id": "band-ux-t", "width": "fill-container", "height": "fit-content", "text": "时间线 UX　[M1 待接]", "fontSize": 15, "textColor": "#1F2329", "textAlign": "center" },
+                    { "type": "rect", "id": "band-ux-body", "width": "fill-container", "height": "fit-content", "text": "/api/timeline 聚合  +  SSE 推 StageReport 摘要  +  web/ 时间线：逐段状态徽章 → 下钻 StageReport → chip → 证据", "fillColor": "#FFFFFF", "borderColor": "#8C9196", "borderWidth": 2, "borderRadius": 8, "fontSize": 13, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    { "type": "connector", "connector": { "from": "band-sources", "to": "band-adapter", "fromAnchor": "bottom", "toAnchor": "top", "lineShape": "polyline", "lineColor": "#BBBFC4", "lineWidth": 2, "endArrow": "arrow", "label": "收编" } },
+    { "type": "connector", "connector": { "from": "band-adapter", "to": "band-report", "fromAnchor": "bottom", "toAnchor": "top", "lineShape": "polyline", "lineColor": "#BBBFC4", "lineWidth": 2, "endArrow": "arrow", "label": "产出" } },
+    { "type": "connector", "connector": { "from": "band-report", "to": "sink-obs", "fromAnchor": "bottom", "toAnchor": "top", "lineShape": "polyline", "lineColor": "#509863", "lineWidth": 2, "endArrow": "arrow" } },
+    { "type": "connector", "connector": { "from": "band-report", "to": "sink-control", "fromAnchor": "bottom", "toAnchor": "top", "lineShape": "polyline", "lineColor": "#D25D5A", "lineWidth": 2, "lineStyle": "dashed", "endArrow": "arrow" } },
+    { "type": "connector", "connector": { "from": "sink-obs", "to": "band-ux", "fromAnchor": "bottom", "toAnchor": "top", "lineShape": "polyline", "lineColor": "#BBBFC4", "lineWidth": 2, "lineStyle": "dashed", "endArrow": "arrow" } }
+  ]
+}
