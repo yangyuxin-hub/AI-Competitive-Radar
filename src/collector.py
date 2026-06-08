@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import date, datetime
@@ -123,6 +124,32 @@ def acceptance_gate_and_heal(merged: list[dict], meta: dict, focus: str,
 _collector_run_count = 0
 
 
+def _collector_failure_meta(status: str, reason: str) -> dict:
+    return {
+        "adapter_events": [{"status": status, "reason": reason}],
+        "coverage": {ct: 0 for ct in REQUIRED_CLAIM_TYPES},
+    }
+
+
+def _harvest_fetch_result(fut, product: str, label: str = "") -> tuple[list[dict], dict]:
+    prefix = f"{product} {label}".strip()
+    try:
+        evs, meta_info = fut.result()
+        evs = evs or []
+        meta_info = meta_info or {}
+        print(f"  [collector_node] {prefix} returned {len(evs)} evidence")
+        return evs, meta_info
+    except Exception as e:  # noqa: BLE001
+        print(f"  [collector_node] {prefix} EXCEPTION: {type(e).__name__}: {e}")
+        return [], _collector_failure_meta("fatal", f"{type(e).__name__}: {e}")
+
+
+def _collector_harvest_rounds() -> tuple[int, int]:
+    grace = int(os.environ.get("COLLECTOR_GRACE_SEC", "60"))
+    rounds = int(os.environ.get("COLLECTOR_HARVEST_ROUNDS", "3"))
+    return max(0, grace), max(0, rounds)
+
+
 def collector_node(state: AgentState) -> AgentState:
     """v2.2.1: 多产品并发 + wall-clock timeout 兜底 + URL Discovery"""
     global _collector_run_count
@@ -135,6 +162,12 @@ def collector_node(state: AgentState) -> AgentState:
     focus = meta["analysis_focus"][0] if meta.get("analysis_focus") else ""
     runtime_profile = meta.get("runtime_profile") or "deep"
     settings = runtime_settings(runtime_profile)
+    evidence_plan = state.get("evidence_plan") or meta.get("evidence_plan") or {}
+    if evidence_plan:
+        print(
+            "[collector] evidence_plan: required="
+            f"{evidence_plan.get('required_claim_types')}, optional={evidence_plan.get('optional_claim_types')}"
+        )
 
     # Step 0: URL Discovery — 让 LLM 自主为每个产品找官网/定价页 URL。
     # 官网是最权威证据源(功能/定价),不能只靠 products.yaml 硬编码 → LLM 发现**默认开启**,
@@ -187,63 +220,80 @@ def collector_node(state: AgentState) -> AgentState:
         "runtime_profile": runtime_profile,
     }
     reset_registry()  # 每次运行重新创建，避免旧 discovered_urls 残留
-    registry = get_registry(discovered_urls=discovered, runtime_profile=runtime_profile)
+    registry = get_registry(
+        discovered_urls=discovered,
+        runtime_profile=runtime_profile,
+        evidence_plan=evidence_plan,
+    )
     print(f"[collector_node] registry.live_adapters={len(registry.live_adapters)}, products={products}")
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    pool = ThreadPoolExecutor(max_workers=6)
+    pending = set()
+    try:
         futures = {pool.submit(registry.fetch_all, p, focus): p for p in products}
+        pending = set(futures.keys())
         timeout_sec = int(settings["timeout_sec"])
-        done, not_done = wait(futures.keys(), timeout=timeout_sec)
+        grace_sec, harvest_rounds = _collector_harvest_rounds()
+        started = time.monotonic()
 
+        done, pending = wait(pending, timeout=timeout_sec)
         for fut in done:
             product = futures[fut]
-            try:
-                evs, meta_info = fut.result()
-                print(f"  [collector_node] {product} future returned {len(evs)} evidence")
-            except Exception as e:
-                evs, meta_info = [], {
-                    "adapter_events": [{"status": "fatal", "reason": str(e)}],
-                    "coverage": {ct: 0 for ct in REQUIRED_CLAIM_TYPES},
-                }
-                print(f"  [collector_node] {product} future EXCEPTION: {type(e).__name__}: {e}")
+            evs, meta_info = _harvest_fetch_result(fut, product, "initial")
             fetched.extend(evs)
             collection_meta["products"][product] = meta_info
 
-        print(f"  [collector_node] done={len(done)}, not_done={len(not_done)}, fetched={len(fetched)}")
+        print(f"  [collector_node] initial done={len(done)}, pending={len(pending)}, fetched={len(fetched)}")
 
-        # P0 修复:not_done 的 future 往往只差一两秒就完成(fetch_all 内部各自带超时,
-        # 线程不会被 kill,ThreadPoolExecutor 退出时本就会阻塞等它们跑完)。原逻辑直接
-        # cancel 丢弃 = 把每个产品已抓到的 50+ 条证据白白扔掉 → 整轮 0 产出,再靠
-        # analyzer gap-refill 重抓一遍(延迟翻倍)。这里给一个宽限期收割已完成的结果,
-        # 只把真正还卡死的标记为 timeout。grace 由 COLLECTOR_GRACE_SEC 调(默认 20s)。
-        if not_done:
-            grace = int(os.environ.get("COLLECTOR_GRACE_SEC", "20"))
-            print(f"  [collector_node] {len(not_done)} 个产品超时未收割,宽限 {grace}s 收割已完成结果...")
-            harvested, still_running = wait(not_done, timeout=grace)
-            for fut in harvested:
+        for round_idx in range(1, harvest_rounds + 1):
+            if not pending:
+                break
+            print(
+                f"  [collector_node] harvest round {round_idx}/{harvest_rounds}: "
+                f"{len(pending)} product(s) still running, wait {grace_sec}s"
+            )
+            done, pending = wait(pending, timeout=grace_sec)
+            for fut in done:
                 product = futures[fut]
-                try:
-                    evs, meta_info = fut.result()
-                    print(f"  [collector_node] {product} 宽限收割 {len(evs)} evidence (超时后完成,免去重抓)")
-                except Exception as e:  # noqa: BLE001
-                    evs, meta_info = [], {
-                        "adapter_events": [{"status": "fatal", "reason": str(e)}],
-                        "coverage": {ct: 0 for ct in REQUIRED_CLAIM_TYPES},
-                    }
-                    print(f"  [collector_node] {product} 宽限收割异常: {type(e).__name__}: {e}")
+                evs, meta_info = _harvest_fetch_result(fut, product, f"harvest#{round_idx}")
                 fetched.extend(evs)
                 collection_meta["products"][product] = meta_info
-            not_done = still_running
+            print(
+                f"  [collector_node] harvest round {round_idx} done={len(done)}, "
+                f"pending={len(pending)}, fetched={len(fetched)}"
+            )
 
-        for fut in not_done:
-            product = futures[fut]
-            fut.cancel()
-            collection_meta["products"][product] = {
-                "adapter_events": [
-                    {"status": "timeout", "reason": f"wall-clock {timeout_sec}s exceeded"}
-                ],
-                "coverage": {ct: 0 for ct in REQUIRED_CLAIM_TYPES},
-            }
+        if pending:
+            # Race guard: catch futures that finished between the last wait return and timeout marking.
+            done, pending = wait(pending, timeout=0)
+            for fut in done:
+                product = futures[fut]
+                evs, meta_info = _harvest_fetch_result(fut, product, "final")
+                fetched.extend(evs)
+                collection_meta["products"][product] = meta_info
+
+        if pending:
+            elapsed = round(time.monotonic() - started, 1)
+            total_budget = timeout_sec + grace_sec * harvest_rounds
+            still_pending = set()
+            for fut in pending:
+                product = futures[fut]
+                if fut.done():
+                    evs, meta_info = _harvest_fetch_result(fut, product, "late-final")
+                    fetched.extend(evs)
+                    collection_meta["products"][product] = meta_info
+                    continue
+                fut.cancel()
+                still_pending.add(fut)
+                collection_meta["products"][product] = _collector_failure_meta(
+                    "timeout",
+                    f"wall-clock {total_budget}s budget exceeded after {harvest_rounds} harvest rounds "
+                    f"(elapsed={elapsed}s)",
+                )
+                print(f"  [collector_node] {product} timed out after {elapsed}s; no completed result to harvest")
+            pending = still_pending
+    finally:
+        pool.shutdown(wait=not pending, cancel_futures=bool(pending))
 
     # 打回时:按 requirements 精准追加
     print(f"\n[collector_node] fetched={len(fetched)}, reject_requirements={state.get('reject_requirements')}")

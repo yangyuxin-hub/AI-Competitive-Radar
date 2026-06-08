@@ -381,8 +381,9 @@ class SearchAdapter(SourceAdapter):
     仅在 TAVILY_API_KEY 存在时激活。规划见 source_planner，抓取见 search。
     """
 
-    def __init__(self, domain: Optional[str] = None) -> None:
+    def __init__(self, domain: Optional[str] = None, evidence_plan: Optional[dict] = None) -> None:
         self.domain = domain or os.environ.get("DOMAIN")
+        self.evidence_plan = evidence_plan or {}
         # 按产品存检索事件，避免多产品并发共享一个 adapter 时互相覆盖
         self.events_by_product: dict[str, list[dict]] = {}
 
@@ -397,6 +398,7 @@ class SearchAdapter(SourceAdapter):
             competitors=[],
             analysis_focus=[focus] if focus else [],
             domain=self.domain,
+            evidence_plan=self.evidence_plan,
         )
         # 实时吐出「该去搜什么」——每个产品一行人话,只说产品+证据类型,
         # 不堆原始 query 串和内部规划术语(详细 query/URL 在完成卡的「本步产出」里看)。
@@ -518,7 +520,8 @@ class AdapterRegistry:
     """三层兜底:live → cache → mock"""
 
     def __init__(self, discovered_urls: Optional[dict[str, dict]] = None,
-                 runtime_profile: str = "deep") -> None:
+                 runtime_profile: str = "deep",
+                 evidence_plan: Optional[dict] = None) -> None:
         """初始化。
 
         Args:
@@ -526,6 +529,14 @@ class AdapterRegistry:
                              {product: {official_pages: [...], pricing_pages: [...]}}
         """
         settings = runtime_settings(runtime_profile)
+        self.evidence_plan = evidence_plan or {}
+        try:
+            from .evidence_plan import planned_claim_types_from_plan, required_claim_types_from_plan
+            self.required_claim_types = set(required_claim_types_from_plan(self.evidence_plan, REQUIRED_CLAIM_TYPES))
+            self.planned_claim_types = set(planned_claim_types_from_plan(self.evidence_plan, REQUIRED_CLAIM_TYPES))
+        except Exception:  # noqa: BLE001
+            self.required_claim_types = set(REQUIRED_CLAIM_TYPES)
+            self.planned_claim_types = set(REQUIRED_CLAIM_TYPES)
         self.live_adapters: list[SourceAdapter] = []
         # 真实抓取默认开启;DISABLE_LIVE_FETCH=1 关闭
         live_disabled = (
@@ -544,7 +555,7 @@ class AdapterRegistry:
         # Tavily 网络检索:有 TAVILY_API_KEY 即启用(广度补全,与 skills 互补)
         from . import search as _search
         if not live_disabled and settings["search"] and _search.tavily_available():
-            self.live_adapters.append(SearchAdapter())
+            self.live_adapters.append(SearchAdapter(evidence_plan=self.evidence_plan))
             print("  [Registry] SearchAdapter 已启用 (TAVILY_API_KEY 存在)")
         # Skills（HN/V2EX 等高价值源,各自环境变量控制）
         skills_enabled = (
@@ -632,7 +643,7 @@ class AdapterRegistry:
                         })
 
         # 第二层:缓存
-        missing = REQUIRED_CLAIM_TYPES - {e["claim_type"] for e in all_evidences}
+        missing = self.required_claim_types - {e["claim_type"] for e in all_evidences}
         print(f"  missing claim_types after live: {sorted(missing)}")
         if missing and self.cache.can_fetch(product):
             cached = self.cache.fetch(product, focus)
@@ -645,7 +656,7 @@ class AdapterRegistry:
             adapter_events.append({"adapter": "CacheAdapter", "status": "patched"})
 
         # 第三层:Mock
-        still_missing = REQUIRED_CLAIM_TYPES - {e["claim_type"] for e in all_evidences}
+        still_missing = self.required_claim_types - {e["claim_type"] for e in all_evidences}
         print(f"  missing claim_types after cache: {sorted(still_missing)}")
         if still_missing and self.mock.can_fetch(product):
             mock_evs = self.mock.fetch(product, focus)
@@ -666,13 +677,13 @@ class AdapterRegistry:
                 ev["collection_source"] = "unknown"
         coverage = {
             ct: sum(1 for e in all_evidences if e["claim_type"] == ct)
-            for ct in REQUIRED_CLAIM_TYPES
+            for ct in self.planned_claim_types
         }
         source_summary = {}
         for ev in all_evidences:
             s = ev.get("collection_source", "unknown")
             source_summary[s] = source_summary.get(s, 0) + 1
-        missing_claim_types = sorted(REQUIRED_CLAIM_TYPES - {e["claim_type"] for e in all_evidences})
+        missing_claim_types = sorted(self.required_claim_types - {e["claim_type"] for e in all_evidences})
         health = "ok" if not missing_claim_types else ("empty" if not all_evidences else "partial")
         # 收集本产品的 Tavily 检索事件(哪些查询命中哪些 URL)
         search_events: list[dict] = []
@@ -717,10 +728,15 @@ _registry: Optional[AdapterRegistry] = None
 
 
 def get_registry(discovered_urls: Optional[dict[str, dict]] = None,
-                 runtime_profile: str = "deep") -> AdapterRegistry:
+                 runtime_profile: str = "deep",
+                 evidence_plan: Optional[dict] = None) -> AdapterRegistry:
     global _registry
     if _registry is None:
-        _registry = AdapterRegistry(discovered_urls=discovered_urls, runtime_profile=runtime_profile)
+        _registry = AdapterRegistry(
+            discovered_urls=discovered_urls,
+            runtime_profile=runtime_profile,
+            evidence_plan=evidence_plan,
+        )
     return _registry
 
 

@@ -406,6 +406,8 @@ _CT_KEYWORDS = {
                   "annoying", "lacks", "missing", "cannot", "can't", "fails", "broken", "buggy"),
     "feature_existence": ("support", "feature", "enable", "allow", "provide", "offer",
                           "integrate", "build", "create", "generate", "automate", "collaborate"),
+    "market_signal": ("users", "subscribers", "revenue", "arr", "mrr", "funding", "valuation",
+                      "employees", "traffic", "downloads", "lawsuit", "settlement", "partnership"),
 }
 # pricing 的真实价格信号词(光出现 plan/free 不算定价,得有币种价或周期价)
 _PRICE_SIGNAL_WORDS = ("per month", "per user", "per year", "/mo", "/user", "/yr")
@@ -423,7 +425,7 @@ def infer_claim_type(snippet: str, default: str, price_re) -> str:
     return best if scores[best] > 0 else default
 
 
-_ALLOWED_CT = {"feature_existence", "pricing", "performance_quality", "user_pain"}
+_ALLOWED_CT = {"feature_existence", "pricing", "performance_quality", "user_pain", "market_signal"}
 
 
 def _claim_llm_enabled() -> bool:
@@ -450,6 +452,7 @@ def classify_claim_types_llm(snippets: list[str]) -> Optional[list[Optional[str]
             "- pricing:价格/档位/计费/免费额度/套餐\n"
             "- performance_quality:性能或质量评价(快慢/准确/稳定/好用)\n"
             "- user_pain:用户抱怨/缺陷/痛点/不满\n"
+            "- market_signal:用户量/付费用户/收入/融资/估值/员工/法律风险/合作等市场或公司信号\n"
             '只输出 JSON: {"labels":[{"id":0,"claim_type":"feature_existence"}, ...]},每段一条。'
         )
         out = get_llm().call_json(sys, payload, label="collector:claim_type",
