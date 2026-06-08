@@ -31,6 +31,21 @@ def _collector_metrics(state: dict):
     return metrics, verdict
 
 
+def _evidence_planner_metrics(state: dict):
+    plan = state.get("evidence_plan") or (state.get("analysis_meta") or {}).get("evidence_plan") or {}
+    required = plan.get("required_claim_types") or []
+    optional = plan.get("optional_claim_types") or []
+    tasks = plan.get("evidence_tasks") or []
+    metrics = {
+        "required_claim_types": len(required),
+        "optional_claim_types": len(optional),
+        "evidence_tasks": len(tasks),
+        "intent": plan.get("analysis_intent"),
+    }
+    verdict = "pass" if required and tasks else "fail"
+    return metrics, verdict
+
+
 def _analyzer_metrics(state: dict):
     sd = state.get("schema_draft") or {}
     ev_ids = {e.get("evidence_id") for e in (state.get("raw_evidence") or [])}
@@ -73,6 +88,7 @@ def _reviewer_metrics(state: dict):
 
 
 _DISPATCH = {
+    "evidence_planner": _evidence_planner_metrics,
     "collector": _collector_metrics,
     "analyzer": _analyzer_metrics,
     "writer": _writer_metrics,
@@ -95,6 +111,22 @@ def log_stage_quality(stage: str, state: dict, elapsed_sec: Optional[float] = No
             "elapsed_sec": round(elapsed_sec, 1) if elapsed_sec is not None else None,
             "metrics": metrics,
         }
+        # v3 M0:叠加统一 StageReport 契约(加法,旧字段 verdict/metrics 保留供 /api/stage_quality)。
+        # 失败静默,绝不影响既有埋点。
+        try:
+            from .stage_report import to_stage_report
+            report = to_stage_report(stage, state, elapsed_sec=elapsed_sec, run_id=run_id)
+            if report:
+                rec.update({
+                    "status": report["status"],
+                    "attempt": report["attempt"],
+                    "produced": report["produced"],
+                    "checks": report["checks"],
+                    "gaps": report["gaps"],
+                    "cost": report["cost"],
+                })
+        except Exception:  # noqa: BLE001
+            pass
         p = Path(path) if path else _LOG
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a", encoding="utf-8") as f:
