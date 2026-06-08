@@ -33,7 +33,12 @@ def _coverage_gaps(facts: dict, meta: dict, evidence: list[dict]) -> dict:
             if (d.get("support_status") or "").lower() == "unknown":
                 unknown_cells.append((p, name))
     present_ct = {e.get("claim_type") for e in evidence}
-    missing_ct = [ct for ct in _REQUIRED_CT if ct not in present_ct]
+    try:
+        from .evidence_plan import required_claim_types_for_meta
+        required_ct = required_claim_types_for_meta(meta)
+    except Exception:  # noqa: BLE001
+        required_ct = list(_REQUIRED_CT)
+    missing_ct = [ct for ct in required_ct if ct not in present_ct]
 
     # 定价抽到了但整张表没有任何可用价格数值(全 $0/None)→ 抽取失败,当作缺口触发定向重搜定价。
     # 只在「全表无正价」时触发(强信号),避免把某个真免费档误判成缺口。
@@ -80,6 +85,8 @@ def _gap_affected_sections(gaps: dict) -> list[str]:
             secs.add("pricing_model")
         elif ct == "user_pain":
             secs.add("user_persona")
+        elif ct == "market_signal":
+            secs.update(("pricing_model", "user_persona"))
         else:  # feature_existence / performance_quality 都在 feature_tree 里
             secs.add("feature_tree")
     return [s for s in _FACTS_SECTIONS if s in secs]

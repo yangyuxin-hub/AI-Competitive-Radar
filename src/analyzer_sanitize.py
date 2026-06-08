@@ -94,6 +94,92 @@ def sanitize_derivations(derivations: dict, facts: dict, evidence: list[dict]) -
     return derivations, dropped
 
 
+# 定价类建议的意图关键词:命中即可锚到 pricing_model(feature/pain 体系无定价维度)。
+# 注意:"free" 太泛(free trial / feature-free 都会误命中),故意不收。
+_PRICING_KW = (
+    "定价", "订价", "价格", "价位", "档位", "套餐", "订阅", "年付", "月付",
+    "折扣", "付费", "收费", "降价", "涨价", "性价比",
+    "pricing", "price", "subscription", "tier", "discount", "paid",
+)
+
+# feature 关键词重锚的命中阈值:full-name 子串=3,3-gram/英文 token 各计若干。
+# 2 = 至少 2 个 3-gram 命中(如"长上下文窗口"↔feature"长上下文处理"),够具体、噪声低。
+_FT_MIN_SCORE = 2
+
+
+def _rec_text(rec: dict) -> str:
+    """拼接一条 recommendation 的全部可读文本(小写),供关键词重锚。"""
+    parts = []
+    for k in ("title", "action", "rationale", "description",
+              "expected_impact", "success_metric", "object", "segment"):
+        v = rec.get(k)
+        if isinstance(v, str) and v:
+            parts.append(v)
+    return " ".join(parts).lower()
+
+
+def _feature_match_score(feat: dict, text: str) -> int:
+    """feature 维度与 rec 文本的关键词重合度(0=不相关,越大越相关)。
+    中文 name 按 3-gram 子串命中累计;英文 name_en 按 ≥4 字母 token 命中累计。"""
+    score = 0
+    name = str(feat.get("name") or "").lower()
+    if name:
+        if name in text:
+            score += 3
+        for i in range(len(name) - 2):
+            if name[i:i + 3] in text:
+                score += 1
+    for tok in str(feat.get("name_en") or "").lower().split():
+        if len(tok) >= 4 and tok in text:
+            score += 2
+    return score
+
+
+def repair_rec_anchors(derivations: dict, facts: dict) -> tuple[dict, dict]:
+    """R4 推理链锚点确定性兜底(零 LLM):对**断链** rec(无任何有效
+    source_feature_ids/source_pain_ids 且未打 source_pricing)按序补救——
+
+    1. **关键词重锚**:匹配最相关的现有 feature(治 LLM 漏填/错填——锚点本就存在只是没引)。
+    2. **定价锚**:命中定价关键词且 pricing_model 有数据 → 打 `source_pricing`
+       (定价建议合法源自定价分析,但 feature/pain 体系里没有定价维度可锚——这是 R4 模型盲点)。
+
+    幂等:已锚的 rec 跳过,重复调用安全。补不到的 rec_id 收进 still_broken,留给调用方
+    (定向补采那一条 / 丢弃保底)。返回 (derivations, stats)。
+    在 sanitize_derivations 之后调用(无效 ID 已删,只剩真正空缺需要补)。"""
+    features = (facts.get("feature_tree") or {}).get("features") or []
+    pains = (facts.get("user_persona") or {}).get("pain_points") or []
+    valid_fids = {f.get("feature_id") for f in features if f.get("feature_id")}
+    valid_pids = {p.get("pain_id") for p in pains if p.get("pain_id")}
+    has_pricing = bool((facts.get("pricing_model") or {}).get("products"))
+
+    stats = {"reanchored": 0, "pricing_anchored": 0, "still_broken": []}
+    for rec in derivations.get("recommendations") or []:
+        fids = set(rec.get("source_feature_ids") or []) & valid_fids
+        pids = set(rec.get("source_pain_ids") or []) & valid_pids
+        if fids or pids or rec.get("source_pricing"):
+            continue  # 已有有效锚
+        text = _rec_text(rec)
+        # 1) 关键词重锚到最相关 feature
+        best_fid, best_score = None, 0
+        for f in features:
+            sc = _feature_match_score(f, text)
+            if sc > best_score:
+                best_fid, best_score = f.get("feature_id"), sc
+        if best_fid and best_score >= _FT_MIN_SCORE:
+            rec["source_feature_ids"] = list(
+                dict.fromkeys((rec.get("source_feature_ids") or []) + [best_fid])
+            )
+            stats["reanchored"] += 1
+            continue
+        # 2) 定价类建议 → 锚到 pricing_model
+        if has_pricing and any(kw in text for kw in _PRICING_KW):
+            rec["source_pricing"] = True
+            stats["pricing_anchored"] += 1
+            continue
+        stats["still_broken"].append(rec.get("rec_id", "?"))
+    return derivations, stats
+
+
 def sanitize_facts_evidence_refs(facts: dict, evidence: list[dict]) -> tuple[dict, int]:
     """Drop evidence refs whose claim_type cannot satisfy the target schema field.
 

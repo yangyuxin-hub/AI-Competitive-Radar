@@ -19,6 +19,7 @@ from .analyzer_sanitize import (  # noqa: F401 — 确定性后处理簇,re-expo
     _filter_evidence_ids,
     _freq_is_truly_frequent,
     _soften_text,
+    repair_rec_anchors,
     sanitize_derivations,
     sanitize_facts_evidence_refs,
     sanitize_schema_evidence_refs,
@@ -218,8 +219,8 @@ def quick_validate_derivations(
         fids = set(rec.get("source_feature_ids") or [])
         pids = set(rec.get("source_pain_ids") or [])
 
-        # (c) 至少 1 个有效引用
-        if not (fids & valid_fids) and not (pids & valid_pids):
+        # (c) 至少 1 个有效引用(feature_id / pain_id / 定价锚 source_pricing 三选一)
+        if not (fids & valid_fids) and not (pids & valid_pids) and not rec.get("source_pricing"):
             issues.append(f"{rid}: 未引用任何有效 feature_id / pain_id")
 
         # (d) priority_score 公式自洽
@@ -832,10 +833,36 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
         der, dropped = sanitize_derivations(der, facts, evidence)
         if dropped:
             print(f"[analyzer] derivations deterministic sanitize dropped {dropped} invalid refs")
+    # R4 锚点确定性兜底:sanitize 删完无效 ID 后,断链 rec 先重锚现有 feature、定价类打 source_pricing。
+    # 仍断链的(still_broken)由 analyzer_node 决定是否定向补采那一条 / 丢弃保底。
+    der, anchor_stats = repair_rec_anchors(der, facts)
+    if anchor_stats["reanchored"] or anchor_stats["pricing_anchored"]:
+        print(f"[analyzer] rec 锚点修复: 重锚 {anchor_stats['reanchored']} 条, "
+              f"定价锚 {anchor_stats['pricing_anchored']} 条")
     softened = soften_overgeneralization(der)
     if softened:
         print(f"[analyzer] swot 过度泛化措辞收敛 {softened} 处(大量/普遍→部分用户)")
     return der
+
+
+def _rec_refill_enabled() -> bool:
+    """rec 锚不到时是否定向补采那一条的证据(默认开;ANALYZER_REC_REFILL=0 关)。"""
+    return os.environ.get("ANALYZER_REC_REFILL", "1").strip() not in ("0", "false", "False")
+
+
+def _unanchored_recs(derivations: dict, facts: dict) -> list[dict]:
+    """返回推理链断链的 recommendation(无任何有效 feature/pain 锚且非定价锚)。"""
+    valid_fids = {f.get("feature_id")
+                  for f in (facts.get("feature_tree") or {}).get("features") or []}
+    valid_pids = {p.get("pain_id")
+                  for p in (facts.get("user_persona") or {}).get("pain_points") or []}
+    out: list[dict] = []
+    for rec in derivations.get("recommendations") or []:
+        fids = set(rec.get("source_feature_ids") or []) & valid_fids
+        pids = set(rec.get("source_pain_ids") or []) & valid_pids
+        if not fids and not pids and not rec.get("source_pricing"):
+            out.append(rec)
+    return out
 
 
 def analyzer_node(state: AgentState) -> AgentState:
@@ -956,6 +983,48 @@ def analyzer_node(state: AgentState) -> AgentState:
             facts.update(partial)
 
     derivations = _step2_derivations(facts, evidence, meta, analyzer_retry=analyzer_retry)
+
+    # R4 锚点收口(治本):_step2 已做确定性重锚 + 定价锚;仍断链的非定价 rec 在这里
+    # **定向补采那一条的证据**(只搜该建议的主题,不泛补整张 feature_tree)→ 重出 feature_tree
+    # → 再重锚。补不到则丢弃(保 ≥2 条),避免一条无依据建议把整张报告拖进 degraded。
+    if _rec_refill_enabled() and not is_mock_mode():
+        broken = _unanchored_recs(derivations, facts)
+        if broken:
+            target = (_target_products(meta) or [""])[0]
+            topics = [(target, t) for t in (
+                (rec.get("title") or rec.get("action") or "").strip()[:24] for rec in broken[:3]
+            ) if t]
+            if topics:
+                print(f"[analyzer] {len(broken)} 条建议锚不到 feature/pain → 定向补采: "
+                      f"{[t for _, t in topics]}")
+                _emit_progress(step="derivations", phase="rec_refill",
+                               summary=f"{len(broken)} 条建议缺依据，定向补采证据")
+                gaps = {"unknown_cells": topics, "missing_claim_types": [],
+                        "pricing_gap_products": [], "dim_en": {}}
+                try:
+                    new_ev = _gap_targeted_recollect(meta, gaps, focus, round_idx=1)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[analyzer] rec 定向补采失败(忽略): {type(e).__name__}: {e}")
+                    new_ev = []
+                existing_ids = {e.get("evidence_id") for e in evidence}
+                new_ev = [e for e in new_ev if e.get("evidence_id") not in existing_ids]
+                if new_ev:
+                    evidence = evidence + new_ev
+                    partial = _step1_facts(evidence, meta, analyzer_retry=analyzer_retry,
+                                           spine=spine, only_sections=["feature_tree"],
+                                           only_products=[target], prev_facts=facts)
+                    facts.update(partial)
+                    derivations, st = repair_rec_anchors(derivations, facts)
+                    if st["reanchored"] or st["pricing_anchored"]:
+                        print(f"[analyzer] 补采后重锚: 重锚 {st['reanchored']} 条, "
+                              f"定价锚 {st['pricing_anchored']} 条")
+        # 最终仍断链 → 丢弃(只在丢完仍 ≥2 条时执行,守住 R4 的"建议数量"底线)
+        broken = _unanchored_recs(derivations, facts)
+        recs = derivations.get("recommendations") or []
+        if broken and (len(recs) - len(broken)) >= 2:
+            keep = [r for r in recs if r not in broken]
+            print(f"[analyzer] 丢弃 {len(broken)} 条无法锚定的建议(剩 {len(keep)} 条)")
+            derivations["recommendations"] = keep
 
     schema_draft = {
         "analysis_meta": meta,

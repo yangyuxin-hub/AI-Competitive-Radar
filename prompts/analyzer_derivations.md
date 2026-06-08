@@ -74,6 +74,8 @@ Step 1 已经把 evidence 整理成事实(features / pricing / personas / pains)
 3. **R4 推理链**:每条 recommendation 必须**至少**满足以下之一:
    - `source_feature_ids` 非空且其中至少 1 个 ID 存在于 facts.feature_tree
    - `source_pain_ids` 非空且其中至少 1 个 ID 存在于 facts.user_persona.pain_points
+   - 若为**定价类建议**(调价/档位/订阅折扣等),feature/pain 体系里无定价维度可锚,
+     则设 `"source_pricing": true`(该建议源自 facts.pricing_model 的定价分析)。
    否则 quick_validate 失败。
 4. **priority_score 必须按公式计算**(不要手填 `final_score`):
    ```
