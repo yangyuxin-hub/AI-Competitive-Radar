@@ -8,6 +8,7 @@ import type { ReportIndexItem } from "@/lib/types";
 export default function RecentReports() {
   const [items, setItems] = useState<ReportIndexItem[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     fetchReports()
@@ -18,11 +19,21 @@ export default function RecentReports() {
 
   if (!loaded || items.length === 0) return null;
 
+  const visibleItems = expanded ? items : items.slice(0, 5);
+  const hiddenCount = Math.max(0, items.length - visibleItems.length);
+
   return (
     <section>
-      <h2 className="mb-3 text-sm font-medium text-neutral-400">情报档案</h2>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-medium text-neutral-400">情报档案</h2>
+        {items.length > 5 && (
+          <span className="text-xs text-neutral-600">
+            {expanded ? `共 ${items.length} 条` : `显示 5 / ${items.length} 条`}
+          </span>
+        )}
+      </div>
       <div className="space-y-2">
-        {items.map((r) => (
+        {visibleItems.map((r) => (
           <Link
             key={r.report_id}
             href={`/report/${r.report_id}`}
@@ -63,6 +74,15 @@ export default function RecentReports() {
           </Link>
         ))}
       </div>
+      {items.length > 5 && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-3 w-full rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-sm text-neutral-400 transition hover:border-sky-500/40 hover:text-sky-300"
+        >
+          {expanded ? "收起到 5 条" : `展开其余 ${hiddenCount} 条`}
+        </button>
+      )}
     </section>
   );
 }

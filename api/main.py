@@ -104,7 +104,7 @@ _cors_env = os.environ.get("API_CORS_ORIGINS", "").strip()
 if _cors_env:
     _cors_kwargs: dict = {"allow_origins": [o.strip() for o in _cors_env.split(",") if o.strip()]}
 else:
-    _cors_kwargs = {"allow_origin_regex": r"https?://(localhost|127\.0\.0\.1)(:\d+)?"}
+    _cors_kwargs = {"allow_origin_regex": r"https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?"}
 app.add_middleware(
     CORSMiddleware,
     allow_methods=["*"],

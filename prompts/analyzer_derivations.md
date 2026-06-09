@@ -4,7 +4,7 @@
 > 输出:`swot` + `recommendations` 两个顶层字段
 > 输入额外含 Step 1 的 facts(feature_tree / pricing_model / user_persona)
 > 约束依据:design-v2.2 §6.4 硬约束、§4.5-§4.6 schema
-> 版本:v1.2 · 模型:Doubao-Seed-2.0-lite · 最后修订:2026-06-07(加精度纪律,SWOT 不复述精确分对比)
+> 版本:v1.3 · 模型:Doubao-Seed-2.0-lite · 最后修订:2026-06-09(加强决策主线、定价数值校验、建议竞争锚点)
 
 ---
 
@@ -26,6 +26,7 @@ Step 1 已经把 evidence 整理成事实(features / pricing / personas / pains)
 2. **事实和推断分离**:事实来自 evidence / facts;推断只能基于事实链路,并通过 confidence 表达不确定性。不要把"可能形成优势"写成"已经领先"。
 3. **必须考虑反证和短板**:如果 target 在某个维度领先,也要在 SWOT threats / weaknesses 中保留竞品更强的场景,避免单向吹捧。
 4. **战略建议要接到竞争位置**:recommendation 不只是修 bug,还要说明这条动作如何加强 target 的战略位置。
+5. **先形成一条主线再写字段**:内部先判断“target 当前领先在哪里 / 不稳在哪里 / 竞品机会在哪里”。SWOT 和 recommendations 都要服务这条主线,不要从各模块各摘一句拼成松散结论。
 
 ### SWOT 推导规则
 
@@ -97,6 +98,9 @@ Step 1 已经把 evidence 整理成事实(features / pricing / personas / pains)
 10. **每项评分需有理由**:在 rationale 中至少用一句话说明 pain_frequency / business_impact / implementation_feasibility 为什么是这个分,避免随手填。
 11. **建议必须可操作**:每条 recommendation 的 action 应该包含:具体做什么 + 针对谁(object/segment) + 预期指标或验收方式。禁止只写"提升体验""加强能力""优化流程"。
 12. **建议必须像轻量 PRD**:除 action/rationale 外,每条 recommendation 必须补充 `expected_impact` / `success_metric` / `risk` / `time_horizon` / `validation_method`。证据不足时写 `unknown` 或 `待验证`,不要编造精确数值。
+13. **建议必须绑定竞品机会**:每条 recommendation 的 rationale 必须明确回答“为什么这是竞品分析后的动作,而不是普通产品优化”。例如稳定性 bug 也要说明它如何削弱核心优势转化、给竞品迁移留下机会。
+14. **定价建议必须做数值自检**:如果 action/rationale 中出现“低于/防守/更便宜/价格压制”等表述,必须比较 `facts.pricing_model` 中的具体价格数字。新档位若不低于被比较竞品价格,禁止写“低于”;应改成“保持现价但增加权益/强化价值感”,或给出真正低于竞品的价格区间。
+15. **不要机械重复模板句**:避免反复使用“可作为优势叙事继续放大”“需补齐竞品对比再下结论”等空泛句式。改写成“结论强度 + 为什么 + 下一步补采/动作”的判断链。
 
 ---
 

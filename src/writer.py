@@ -97,12 +97,103 @@ _GAP_LABELS = {
     "unknown": "待确认",
 }
 
+_STATUS_LABELS = {
+    "supported": "supported",
+    "partially_supported": "partial",
+    "not_supported": "unsupported",
+    "unknown": "unknown",
+}
+
 
 def cite(evidence_ids: list[str]) -> str:
     """渲染 evidence chip。前端识别 \\[SXXXXXXX\\] 模式触发跳转。"""
     if not evidence_ids:
         return ""
     return "".join(f"[{eid}]" for eid in evidence_ids)
+
+
+def _evidence_map(evidence: Optional[list[dict]]) -> dict[str, dict]:
+    return {str(e.get("evidence_id")): e for e in (evidence or []) if e.get("evidence_id")}
+
+
+def _source_label(e: dict) -> str:
+    st = (e.get("source_type") or "").lower()
+    bias = (e.get("source_bias") or "").lower()
+    if st == "reddit":
+        return "Reddit"
+    if st == "hn":
+        return "Hacker News"
+    if st in ("official_page", "pricing_page") or bias == "vendor_claim":
+        return "官方"
+    if bias == "third_party":
+        return "第三方"
+    if bias == "user_generated":
+        return "用户反馈"
+    if st == "web_search":
+        return "搜索摘要"
+    return st or bias or "来源未知"
+
+
+def _claim_label(e: dict) -> str:
+    return {
+        "feature_existence": "功能确认",
+        "performance_quality": "体验质量",
+        "pricing": "定价",
+        "user_pain": "用户痛点",
+        "market_signal": "市场信号",
+    }.get(e.get("claim_type"), e.get("claim_type") or "证据")
+
+
+def cite_readable(evidence_ids: list[str], evidence: Optional[list[dict]], limit: int = 3) -> str:
+    """保留裸 [SXXXXXXX] chip,但在旁边补来源/类型,让 Markdown 导出也可审计。"""
+    if not evidence_ids:
+        return ""
+    by_id = _evidence_map(evidence)
+    parts = []
+    for eid in evidence_ids[:limit]:
+        e = by_id.get(str(eid)) or {}
+        if e:
+            parts.append(f"{cite([eid])} · {_source_label(e)} · {_claim_label(e)}")
+        else:
+            parts.append(cite([eid]))
+    return "<br>".join(parts)
+
+
+def _evidence_grade(evidence_ids: list[str], evidence: Optional[list[dict]]) -> str:
+    if not evidence_ids:
+        return "D"
+    by_id = _evidence_map(evidence)
+    evs = [by_id[eid] for eid in evidence_ids if eid in by_id]
+    if not evs:
+        return "D"
+    biases = {e.get("source_bias") for e in evs}
+    claims = {e.get("claim_type") for e in evs}
+    has_vendor = "vendor_claim" in biases
+    has_user_or_third = bool({"user_generated", "third_party"} & biases)
+    has_quality = bool({"performance_quality", "user_pain"} & claims)
+    if has_vendor and has_user_or_third and has_quality and len(evs) >= 3:
+        return "A"
+    if has_user_or_third and has_quality:
+        return "B"
+    if has_vendor:
+        return "C"
+    return "D"
+
+
+def _feature_name_map(feature_tree: dict) -> dict[str, str]:
+    return {
+        f.get("feature_id"): f.get("name", f.get("feature_id"))
+        for f in feature_tree.get("features") or []
+        if f.get("feature_id")
+    }
+
+
+def _pain_name_map(schema: dict) -> dict[str, str]:
+    return {
+        p.get("pain_id"): p.get("description", p.get("pain_id"))
+        for p in ((schema.get("user_persona") or {}).get("pain_points") or [])
+        if p.get("pain_id")
+    }
 
 
 def _render_header(meta: dict, target: str, competitors: list[str], focus: list[str]) -> str:
@@ -180,40 +271,70 @@ def _render_executive_summary(schema: dict, meta: dict) -> str:
         if avgs:
             only = next(iter(avgs))
             position = (f"仅 {only} 有足够质量证据({avgs[only]:.1f}/5),"
-                        "其余产品质量证据不足,暂不判定综合领先,功能对比以「是否具备」为主。")
+                        "其余产品质量证据不足,暂不判定已验证体验领先,功能对比以「是否具备」为主。")
         else:
-            position = "当前缺少质量证据,无法形成综合评分,功能对比以「是否具备」为主。"
+            position = "当前缺少质量证据,无法形成已验证体验评分,功能对比以「是否具备」为主。"
     elif leader and leader == target:
-        position = f"{target} 当前综合评分领先({avgs[leader]:.1f}/5)。"
+        position = f"{target} 在已验证体验均分上领先({avgs[leader]:.1f}/5)。"
     elif leader and target_score is not None:
         position = (
-            f"{leader} 当前综合评分最高({avgs[leader]:.1f}/5)，"
+            f"{leader} 当前已验证体验均分最高({avgs[leader]:.1f}/5)，"
             f"{target} 为 {target_score:.1f}/5。"
         )
     elif leader:
-        position = f"{leader} 当前综合评分最高({avgs[leader]:.1f}/5)。"
+        position = f"{leader} 当前已验证体验均分最高({avgs[leader]:.1f}/5)。"
     else:
         position = "当前证据不足以形成稳定综合评分。"
 
     risk_gap = next((g for g in gaps if not g["target_wins"]), None)
     strength_gap = next((g for g in gaps if g["target_wins"]), None)
-    lines = ["## 一、Executive Summary\n"]
-    lines.append(f"**结论先行**:{position}")
+    target_pain = next(
+        (p for p in pains if target in (p.get("affected_products") or [])),
+        pains[0] if pains else None,
+    )
+    coverage_note = ""
+    products_with_no_score = [p for p in products if p not in avgs]
+    if products_with_no_score:
+        coverage_note = (
+            "但 " + "、".join(products_with_no_score[:3]) +
+            " 多数维度仍缺用户侧/第三方质量证据,排名只能视为已验证体验的阶段性判断。"
+        )
+    short_action = recs[0].get("action", "") if recs else "补齐高置信证据后再排优先级"
+    if target_pain:
+        risk_text = target_pain.get("description", "")
+    elif risk_gap:
+        risk_text = f"{risk_gap.get('winner')} 在{risk_gap['name']}上形成压力"
+    else:
+        risk_text = "核心风险仍需进一步验证"
+
     if strength_gap:
-        lines.append(f"目标产品优势集中在 **{strength_gap['name']}**:{strength_gap['reason']} {cite(strength_gap['evidence_ids'][:3])}")
+        strength_text = f"{strength_gap['name']}是当前最可讲清的优势"
+    else:
+        strength_text = "暂未形成足够稳定的单点优势"
+
+    lines = ["## 一、Executive Summary\n"]
+    lines.append(f"**一句话主线**:{position}{coverage_note}")
+    lines.append(
+        f"{target} 的机会不是把所有指标都包装成领先,而是把「{strength_text}」"
+        f"和「{risk_text}」放在同一条决策链里:短期先处理会削弱优势转化的基础体验/可信度问题,"
+        "中期再围绕专业工作流、价格带或合规服务扩大差异化。"
+    )
+    if strength_gap:
+        lines.append(f"- **已验证优势**:{strength_gap['reason']} {cite(strength_gap['evidence_ids'][:3])}")
     if risk_gap:
-        lines.append(f"最大竞争压力来自 **{risk_gap.get('winner')}** 在 **{risk_gap['name']}** 上的领先:{risk_gap['reason']} {cite(risk_gap['evidence_ids'][:3])}")
+        lines.append(f"- **竞争压力**:{risk_gap['reason']} {cite(risk_gap['evidence_ids'][:3])}")
+    if target_pain:
+        ev_ids = (target_pain.get("frequency") or {}).get("evidence_ids") or target_pain.get("evidence_ids") or []
+        lines.append(f"- **会削弱转化的短板**:{target_pain.get('description', '')} {cite(ev_ids[:3])}")
     if recs:
         top = recs[0]
-        lines.append(f"优先行动建议: **{top.get('action', '')}** {cite((top.get('evidence_ids') or [])[:3])}")
-    elif pains:
-        lines.append(f"当前最需要补齐的是可执行建议层；已识别的首要痛点是 **{pains[0].get('description', '')}**。")
+        lines.append(f"- **优先行动**:{top.get('action', '')} {cite((top.get('evidence_ids') or [])[:3])}")
     lines.append("")
     lines.append("| 关键判断 | 内容 |")
     lines.append("|----------|------|")
     lines.append(f"| 竞争位置 | {position} |")
-    lines.append(f"| 核心风险 | {risk_gap['name'] if risk_gap else '待进一步验证'} |")
-    lines.append(f"| 产品机会 | {recs[0].get('action') if recs else '补齐高置信建议与验证指标'} |")
+    lines.append(f"| 核心风险 | {risk_text} |")
+    lines.append(f"| 产品机会 | {short_action} |")
     return "\n".join(lines)
 
 
@@ -306,44 +427,46 @@ def _render_uncertainty(evidence: list[dict], schema: dict) -> str:
     return "## 三、本报告的不确定性\n\n" + "\n".join(f"{i + 1}. {n}" for i, n in enumerate(notes))
 
 
-def _render_score_overview(feature_tree: dict, products: list[str]) -> str:
+def _render_score_overview(feature_tree: dict, products: list[str], evidence: Optional[list[dict]] = None) -> str:
     features = feature_tree.get("features") or []
     if not features or not products:
         return ""
 
     product_scores: dict[str, list[float]] = {p: [] for p in products}
     lines = ["## 四、多维度评分总览\n"]
-    lines.append("> 评分口径: 基于各维度证据评分计算，满分 5 分；证据不足时不计入均分。\n")
-    lines.append("| 维度 | " + " | ".join(products) + " | 关键差异 | 产品含义 |")
-    lines.append("|------|" + "|".join(["------"] * len(products)) + "|----------|----------|")
+    lines.append(
+        "> 口径: **能力状态**只说明是否具备;**已验证体验评分**仅在有用户侧或第三方质量证据时给 1-5 分;"
+        "**证据等级** A=官方+用户/第三方交叉验证,B=用户/第三方质量证据,C=仅官方功能证据,D=证据很薄。"
+        "未评分不计入均分,`supported` 不等于体验领先。\n"
+    )
+    lines.append("| 维度 | 能力状态 | 已验证体验评分 | 证据等级 | 关键判断 | 决策含义 |")
+    lines.append("|------|----------|----------------|----------|----------|----------|")
 
     for feat in features:
         name = feat.get("name", "?")
         by_product = feat.get("products") or {}
-        cells = []
+        status_cells = []
+        score_cells = []
+        grade_cells = []
+        any_score = False
         for product in products:
             pdata = by_product.get(product) or {}
             score = _score_cell(pdata)
             if score is not None:
                 product_scores.setdefault(product, []).append(score)
-                cells.append(f"{score:.1f}/5")
+                score_cells.append(f"{product}: {score:.1f}/5")
+                any_score = True
             else:
-                # 无质量分:若官网已确认具备,显示支持度图标(不再一律 "—" 显得整列空白)
-                status = (pdata.get("support_status") or "").lower()
-                if status == "supported":
-                    cells.append("✅具备")
-                elif status == "partially_supported":
-                    cells.append("⚠️部分")
-                elif status == "not_supported":
-                    cells.append("❌无")
-                else:
-                    cells.append("—")
-        scored_in_row = [c for c in cells if c not in ("—", "✅具备", "⚠️部分", "❌无")]
+                score_cells.append(f"{product}: 未评分")
+            status = (pdata.get("support_status") or "unknown").lower()
+            status_cells.append(f"{product}: {_STATUS_LABELS.get(status, status)}")
+            ev_ids = (pdata.get("support_evidence_ids") or []) + ((pdata.get("quality_score") or {}).get("evidence_ids") or [])
+            grade_cells.append(f"{product}: {_evidence_grade(ev_ids, evidence)}")
         gap = feat.get("gap") or {}
         winner = gap.get("winner")
         reason = gap.get("reason", "")
         insufficient = gap.get("gap_type") == "insufficient_evidence"
-        if not scored_in_row:
+        if not any_score:
             reason = "各产品均缺少质量证据，未评分"
             implication = "证据不足，需补采"
         elif insufficient:
@@ -356,8 +479,13 @@ def _render_score_overview(feature_tree: dict, products: list[str]) -> str:
         else:
             implication = "需要补充证据确认"
         lines.append(
-            f"| {name} | " + " | ".join(cells) +
-            f" | {reason} {cite((gap.get('evidence_ids') or [])[:2])} | {implication} |"
+            f"| {name} | "
+            + "；".join(status_cells)
+            + " | "
+            + "；".join(score_cells)
+            + " | "
+            + "；".join(grade_cells)
+            + f" | {reason} {cite((gap.get('evidence_ids') or [])[:2])} | {implication} |"
         )
 
     avg_cells = []
@@ -369,18 +497,19 @@ def _render_score_overview(feature_tree: dict, products: list[str]) -> str:
         for product, scores in product_scores.items()
         if scores
     ]
-    # 只有 ≥2 个产品有质量分时才宣布"综合领先";否则不下结论(避免单格=领先的误导)
+    # 只有 ≥2 个产品有质量分时才宣布"已验证体验领先";否则不下结论(避免单格=领先的误导)
     if len(ranked) >= 2:
-        leader_text = f"**{max(ranked)[1]} 综合领先**"
-        implication = "作为定位判断的第一层依据"
+        leader_text = f"**{max(ranked)[1]} 已验证体验均分领先**"
+        implication = "只代表有质量证据覆盖的维度,不是全能力绝对排名"
     else:
         leader_text = "评分覆盖过低,不判定综合领先"
         implication = "需补采用户/第三方质量证据后再比"
-    lines.append("| **综合均分** | " + " | ".join(avg_cells) + f" | {leader_text} | {implication} |")
+    avg_text = "；".join(f"{p}: {avg_cells[i]}" for i, p in enumerate(products))
+    lines.append(f"| **已验证体验均分** | — | {avg_text} | — | {leader_text} | {implication} |")
     return "\n".join(lines)
 
 
-def _render_feature_gaps(feature_tree: dict) -> str:
+def _render_feature_gaps(feature_tree: dict, evidence: Optional[list[dict]] = None) -> str:
     if not feature_tree:
         return ""
     lines = [f"## 五、功能差距 — {feature_tree.get('category', '功能对比')}\n"]
@@ -416,7 +545,7 @@ def _render_feature_gaps(feature_tree: dict) -> str:
                 cell = _score_cell(pdata)
                 quality = f"{cell:.0f}/{scale}" if cell is not None else "未评分"
                 ev_list = (pdata.get("support_evidence_ids") or []) + (qs.get("evidence_ids") or [])
-                ev = cite(sorted(set(ev_list))[:3])
+                ev = cite_readable(sorted(set(ev_list))[:3], evidence)
                 lines.append(f"| {pname} | {icon} {status} | {quality} | {ev} |")
             lines.append("")
 
@@ -576,9 +705,65 @@ def _render_personas(user_persona: dict, evidence: Optional[list[dict]] = None) 
     return "\n".join(lines)
 
 
-def _render_recommendations(recs: list[dict]) -> str:
+def _competitive_link_for_rec(r: dict, schema: dict) -> str:
+    feature_names = _feature_name_map(schema.get("feature_tree") or {})
+    pain_names = _pain_name_map(schema)
+    fids = [fid for fid in (r.get("source_feature_ids") or []) if fid in feature_names]
+    pids = [pid for pid in (r.get("source_pain_ids") or []) if pid in pain_names]
+    action = str(r.get("action") or "")
+    rationale = str(r.get("rationale") or "")
+    if r.get("source_pricing") or any(w in action + rationale for w in ("价格", "定价", "订阅", "档位", "$", "美元")):
+        return (
+            "这是价格带/价值感动作,需要明确回应竞品价格锚点;若新档位没有低于被防守竞品,"
+            "应改为权益增强或说明不是价格战。"
+        )
+    if fids and pids:
+        return (
+            "这条动作同时连接功能差距和用户痛点:围绕 "
+            + "、".join(feature_names[fid] for fid in fids[:2])
+            + " 修复 "
+            + "、".join(pain_names[pid] for pid in pids[:2])
+            + ",目的是把已验证优势转化为留存/迁移理由。"
+        )
+    if fids:
+        return (
+            "这条动作服务于竞争定位:围绕 "
+            + "、".join(feature_names[fid] for fid in fids[:2])
+            + " 拉开差异,而不是孤立补功能。"
+        )
+    if pids:
+        return (
+            "这条动作是基础体验防守:先修复 "
+            + "、".join(pain_names[pid] for pid in pids[:2])
+            + ",避免核心优势在转化和留存环节被抵消。"
+        )
+    return "这条动作的竞争锚点偏弱,建议补充对应功能差距、用户痛点或定价证据后再进入排期。"
+
+
+def _pricing_logic_warning(r: dict) -> str:
+    text = f"{r.get('action', '')} {r.get('rationale', '')}"
+    if not any(w in text for w in ("低于", "低价", "防守", "价格", "定价", "档位", "美元", "$")):
+        return ""
+    nums = [
+        float(a or b)
+        for a, b in re.findall(
+            r"(?:\$\s*(\d+(?:\.\d+)?)|(?<!\d)(\d+(?:\.\d+)?)\s*(?:美元|美金|USD))",
+            text,
+            flags=re.I,
+        )
+    ]
+    if len(nums) >= 2 and "低于" in text and nums[0] >= min(nums[1:]):
+        return (
+            "⚠️ 定价逻辑需复核:建议动作中的新价格并未低于文中对比价。"
+            "应改为真正低价档,或保持价格并增加权益。"
+        )
+    return ""
+
+
+def _render_recommendations(recs: list[dict], schema: Optional[dict] = None) -> str:
     if not recs:
         return ""
+    schema = schema or {}
     lines = ["## 八、改进建议(按优先级)\n"]
     for r in recs:
         rid = r.get("rec_id", "?")
@@ -594,7 +779,11 @@ def _render_recommendations(recs: list[dict]) -> str:
 
         lines.append(f"### {rid} · **{priority}**(评分 {final_text})\n")
         lines.append(f"**建议**:{action}\n")
+        lines.append(f"**竞品机会**:{_competitive_link_for_rec(r, schema)}\n")
         lines.append(f"**依据**:{rationale} {ev}\n")
+        warning = _pricing_logic_warning(r)
+        if warning:
+            lines.append(f"- 逻辑校验:{warning}")
         lines.append(f"- 目标收益:{r.get('expected_impact') or '待验证'}")
         lines.append(f"- 验收指标:{r.get('success_metric') or '待定义'}")
         lines.append(f"- 风险:{r.get('risk') or '待评估'}")
@@ -684,13 +873,13 @@ def writer_node(state: AgentState) -> AgentState:
         _render_executive_summary(schema, meta),
         _render_competitor_landscape(schema.get("competitor_landscape") or {}),
         _render_positioning_map(schema.get("positioning_map") or {}),
-        _render_score_overview(feature_tree, products),
-        _render_feature_gaps(feature_tree),
+        _render_score_overview(feature_tree, products, evidence),
+        _render_feature_gaps(feature_tree, evidence),
         _render_pricing(schema.get("pricing_model") or {}, feature_tree, products),
         _render_data_availability(quality_audit),
         _render_personas(schema.get("user_persona") or {}, evidence),
         _render_swot(schema.get("swot") or {}),
-        _render_recommendations(schema.get("recommendations") or []),
+        _render_recommendations(schema.get("recommendations") or [], schema),
         _render_evidence_coverage(evidence),
         _render_uncertainty(evidence, schema),
     ]
