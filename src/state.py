@@ -17,6 +17,11 @@ class AgentState(TypedDict):
     quality_report: Optional[dict]
     collection_meta: Optional[dict]
 
+    # 可观测:graph._instrument 每个节点末尾挂的本节点 StageReport(计时/token/checks)。
+    # 必须声明为 channel,否则 LangGraph 会丢弃节点返回的未声明 key,
+    # 导致 api 读不到 → 无 stage_report SSE 事件(前端交付清单不推进、token 计数为 0)。
+    _stage_report: Optional[dict]
+
     # 打回信息
     reject_target: Optional[Literal["collector", "analyzer", "writer"]]
     reject_requirements: Optional[list[dict]]
@@ -65,6 +70,7 @@ def build_initial_state(
         "report_draft": None,
         "quality_report": None,
         "collection_meta": None,
+        "_stage_report": None,
         "reject_target": None,
         "reject_requirements": None,
         "retry_count": {"collector": 0, "analyzer": 0, "writer": 0},
