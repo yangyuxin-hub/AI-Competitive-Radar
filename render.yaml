@@ -13,13 +13,13 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.7
-      # —— LLM(默认小米 MiMo)——
+      # —— LLM(豆包 Doubao)——
       - key: LLM_API_KEY
         sync: false            # ← 在 Render 网页填你的 key
       - key: LLM_BASE_URL
-        value: https://token-plan-cn.xiaomimimo.com/v1
+        value: https://ark.cn-beijing.volces.com/api/v3
       - key: LLM_MODEL
-        value: mimo-v2.5-pro
+        sync: false            # ← 在 Render 网页填你的 endpoint id
       # —— Web 搜索(主力 Brave;不填则自动降级到免费 DuckDuckGo)——
       - key: BRAVE_API_KEY
         sync: false            # ← 可选,在 Render 网页填

@@ -80,6 +80,16 @@ export default function StageQuality() {
                     {v} {n}
                   </span>
                 ))}
+                {s.avg_tokens != null && s.avg_tokens > 0 && (
+                  <span className="rounded bg-sky-500/10 px-2 py-0.5 text-sky-300">
+                    🪙 ~{s.avg_tokens >= 1000 ? `${(s.avg_tokens / 1000).toFixed(1)}k` : s.avg_tokens} tokens/次
+                  </span>
+                )}
+                {s.total_llm_calls != null && s.total_llm_calls > 0 && (
+                  <span className="rounded bg-white/5 px-2 py-0.5 text-neutral-400">
+                    {s.total_llm_calls} 次调用
+                  </span>
+                )}
                 {s.last_metrics &&
                   Object.entries(s.last_metrics)
                     .slice(0, 5)

@@ -17,6 +17,12 @@ const STATUS_STYLE: Record<string, { dot: string; chip: string; label: string }>
   failed: { dot: "bg-rose-400", chip: "text-rose-300 bg-rose-500/10", label: "失败" },
 };
 
+function fmtTokens(n: number | null | undefined): string {
+  if (n == null || n <= 0) return "";
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+
 function ProducedChips({ produced }: { produced: TimelineEntry["produced"] }) {
   const items = Object.entries(produced ?? {})
     .filter(([, v]) => v !== null && v !== undefined && v !== "")
@@ -80,6 +86,12 @@ export default function Timeline() {
         <div className="flex flex-wrap gap-1.5 text-[11px]">
           <span className="rounded bg-white/5 px-2 py-0.5 text-neutral-400">{summary.nodes} 段</span>
           <span className="rounded bg-white/5 px-2 py-0.5 text-neutral-400">{summary.total_elapsed_sec}s</span>
+          {(summary.total_tokens ?? 0) > 0 && (
+            <span className="rounded bg-sky-500/10 px-2 py-0.5 text-sky-300">🪙 {fmtTokens(summary.total_tokens)} tokens</span>
+          )}
+          {(summary.total_llm_calls ?? 0) > 0 && (
+            <span className="rounded bg-white/5 px-2 py-0.5 text-neutral-400">{summary.total_llm_calls} 次调用</span>
+          )}
           {summary.open_gaps > 0 && (
             <span className="rounded bg-rose-500/10 px-2 py-0.5 text-rose-300">{summary.open_gaps} 个缺口</span>
           )}
@@ -110,7 +122,10 @@ export default function Timeline() {
                 </span>
                 <span className="flex items-center gap-2">
                   <span className={`rounded px-2 py-0.5 text-[11px] ${st.chip}`}>{st.label}</span>
-                  <span className="text-xs text-neutral-500">{e.elapsed_sec != null ? `${e.elapsed_sec}s` : "—"}</span>
+                  <span className="text-xs text-neutral-500">
+                    {e.elapsed_sec != null ? `${e.elapsed_sec}s` : "—"}
+                    {e.cost?.tokens ? <span className="ml-1.5 text-sky-400/70">🪙 {fmtTokens(e.cost.tokens)}</span> : null}
+                  </span>
                 </span>
               </div>
 

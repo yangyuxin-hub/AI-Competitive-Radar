@@ -111,6 +111,7 @@ export interface Report {
     icon?: string;
     label: string;
     duration_sec: number;
+    tokens?: number | null;
     result?: string | null;
   }[];
   created_at: string;
@@ -173,6 +174,14 @@ export interface StageGap {
   task_key: string;
 }
 
+export interface CostInfo {
+  elapsed_sec?: number | null;
+  tokens?: number | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  llm_calls?: number | null;
+}
+
 export interface StageReport {
   stage: string;
   node: string;
@@ -182,10 +191,7 @@ export interface StageReport {
   produced: Record<string, number | string | boolean | string[] | null | undefined>;
   checks: StageCheck[];
   gaps: StageGap[];
-  cost: {
-    elapsed_sec?: number | null;
-    tokens?: number | null;
-  };
+  cost: CostInfo;
 }
 
 export type ProgressEvent =

@@ -326,23 +326,39 @@ export default function ReportView({ report }: { report: Report }) {
               <Chips ids={s.pricing_model.pricing_gap.evidence_ids} />
             </p>
           )}
-          {report.stage_timings && report.stage_timings.length > 0 && (
-            <details className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-sm">
-              <summary className="cursor-pointer text-neutral-400">
-                生成过程 · 共 {report.stage_timings.reduce((a, t) => a + (t.duration_sec || 0), 0)}s
-              </summary>
-              <div className="mt-2 space-y-1.5">
-                {report.stage_timings.map((t, i) => (
-                  <div key={i} className="flex items-start gap-2 text-xs">
-                    <span className="shrink-0">{t.icon ?? "•"}</span>
-                    <span className="shrink-0 text-neutral-300">{t.label}</span>
-                    <span className="shrink-0 font-mono text-emerald-400">{t.duration_sec}s</span>
-                    {t.result && <span className="text-neutral-500">· {t.result}</span>}
+          {report.stage_timings && report.stage_timings.length > 0 && (() => {
+            const totalTokens = report.stage_timings.reduce((a, t) => a + (t.tokens || 0), 0);
+            const totalDuration = report.stage_timings.reduce((a, t) => a + (t.duration_sec || 0), 0);
+            return (
+              <>
+                {totalTokens > 0 && (
+                  <div className="flex flex-wrap items-center gap-3 rounded-xl border border-sky-500/20 bg-sky-500/5 px-4 py-3 text-sm">
+                    <span className="text-sky-300">🪙 Token 消耗</span>
+                    <span className="font-mono text-sky-200">{totalTokens.toLocaleString()} tokens</span>
+                    <span className="text-neutral-500">·</span>
+                    <span className="text-neutral-400">{totalDuration}s</span>
                   </div>
-                ))}
-              </div>
-            </details>
-          )}
+                )}
+                <details className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-sm">
+                  <summary className="cursor-pointer text-neutral-400">
+                    生成过程 · 共 {totalDuration}s
+                    {totalTokens > 0 && ` · ${totalTokens.toLocaleString()} tokens`}
+                  </summary>
+                  <div className="mt-2 space-y-1.5">
+                    {report.stage_timings.map((t, i) => (
+                      <div key={i} className="flex items-start gap-2 text-xs">
+                        <span className="shrink-0">{t.icon ?? "•"}</span>
+                        <span className="shrink-0 text-neutral-300">{t.label}</span>
+                        <span className="shrink-0 font-mono text-emerald-400">{t.duration_sec}s</span>
+                        {t.tokens ? <span className="shrink-0 font-mono text-sky-400/70">🪙 {t.tokens >= 1000 ? `${(t.tokens / 1000).toFixed(1)}k` : t.tokens}</span> : null}
+                        {t.result && <span className="text-neutral-500">· {t.result}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              </>
+            );
+          })()}
         </section>
 
         <section className="space-y-3">

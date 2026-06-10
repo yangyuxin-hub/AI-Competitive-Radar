@@ -346,6 +346,8 @@ def aggregate_timeline(rows: list, run_id: Optional[str] = None) -> dict:
 
     entries: list = []
     total_elapsed = 0.0
+    total_tokens = 0
+    total_llm_calls = 0
     open_gaps = 0
     worst = "ok"
     for r in rows:
@@ -369,6 +371,11 @@ def aggregate_timeline(rows: list, run_id: Optional[str] = None) -> dict:
         open_gaps += len(g_brief)
         if _STATUS_RANK.get(status, 0) > _STATUS_RANK.get(worst, 0):
             worst = status
+        cost = r.get("cost")
+        if cost and isinstance(cost.get("tokens"), (int, float)):
+            total_tokens += cost["tokens"]
+        if cost and isinstance(cost.get("llm_calls"), (int, float)):
+            total_llm_calls += cost["llm_calls"]
         entries.append({
             "seq": len(entries) + 1,
             "stage": r.get("stage"),
@@ -381,6 +388,7 @@ def aggregate_timeline(rows: list, run_id: Optional[str] = None) -> dict:
             "produced": r.get("produced") or r.get("metrics") or {},
             "checks_summary": cs,
             "gaps": g_brief,
+            "cost": cost,
         })
 
     return {
@@ -391,6 +399,8 @@ def aggregate_timeline(rows: list, run_id: Optional[str] = None) -> dict:
             "total_elapsed_sec": round(total_elapsed, 1),
             "worst_status": worst if entries else None,
             "open_gaps": open_gaps,
+            "total_tokens": total_tokens,
+            "total_llm_calls": total_llm_calls,
         },
     }
 

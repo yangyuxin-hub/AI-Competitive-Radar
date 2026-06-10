@@ -129,8 +129,10 @@ _LLM_CALLBACK: contextvars.ContextVar[Optional[object]] = contextvars.ContextVar
 _RUN_STAGE: contextvars.ContextVar[Optional[tuple]] = contextvars.ContextVar(
     "llm_run_stage", default=None)
 # 本节点 LLM token 累加器,graph._instrument 进节点时 begin、出节点时读 → StageReport.cost。
-_TOKEN_ACC: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
-    "llm_token_acc", default=None)
+# 注意:Analyzer 用 ThreadPoolExecutor 并行调用 LLM,ContextVar 不跨线程继承,
+# 所以改用 threading.Lock 保护的全局累加器。
+_TOKEN_ACC: Optional[dict] = None
+_TOKEN_ACC_LOCK = threading.Lock()
 
 
 def set_llm_callback(cb) -> None:
@@ -157,17 +159,21 @@ def set_run_stage(run_id: Optional[str], stage: Optional[str]) -> None:
 
 def begin_token_accumulator() -> dict:
     """graph._instrument 进节点时调用:开一个本节点的 token 累加器并返回(出节点时读)。"""
+    global _TOKEN_ACC
     acc = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
-    _TOKEN_ACC.set(acc)
+    with _TOKEN_ACC_LOCK:
+        _TOKEN_ACC = acc
     return acc
 
 
 def _accumulate_tokens(prompt_tokens: int, completion_tokens: int) -> None:
-    acc = _TOKEN_ACC.get()
+    with _TOKEN_ACC_LOCK:
+        acc = _TOKEN_ACC
     if acc is not None:
-        acc["prompt_tokens"] += prompt_tokens or 0
-        acc["completion_tokens"] += completion_tokens or 0
-        acc["calls"] += 1
+        with _TOKEN_ACC_LOCK:
+            acc["prompt_tokens"] += prompt_tokens or 0
+            acc["completion_tokens"] += completion_tokens or 0
+            acc["calls"] += 1
 
 
 def is_mock_mode() -> bool:

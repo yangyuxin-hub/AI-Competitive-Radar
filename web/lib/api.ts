@@ -4,6 +4,7 @@ import type {
   ReportIndexItem,
   ProgressEvent,
   Answers,
+  CostInfo,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000";
@@ -158,6 +159,9 @@ export interface StageStat {
   avg_elapsed: number | null;
   verdicts: Record<string, number>;
   last_metrics: Record<string, number | string | null> | null;
+  avg_tokens?: number | null;
+  total_tokens?: number | null;
+  total_llm_calls?: number | null;
 }
 
 export async function fetchStageQuality(): Promise<{ stages: StageStat[]; recent: unknown[] }> {
@@ -188,6 +192,7 @@ export interface TimelineEntry {
   produced: Record<string, number | string | null>;
   checks_summary: { pass: number; warn: number; fail: number };
   gaps: TimelineGap[];
+  cost?: CostInfo | null;
 }
 
 export interface Timeline {
@@ -198,6 +203,8 @@ export interface Timeline {
     total_elapsed_sec: number;
     worst_status: "ok" | "degraded" | "failed" | null;
     open_gaps: number;
+    total_tokens?: number;
+    total_llm_calls?: number;
   };
 }
 

@@ -32,7 +32,12 @@
       "Bash(git rm *)",
       "Bash(npm install *)",
       "Bash(npm run *)",
-      "Bash(start *)"
+      "Bash(start *)",
+      "Bash(tasklist)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill *)",
+      "PowerShell($py = \"C:\\\\Users\\\\18113\\\\scoop\\\\apps\\\\python\\\\current\\\\python.exe\"; & $py -m uvicorn api.main:app --host 0.0.0.0 --port 8000)",
+      "PowerShell(Get-NetTCPConnection *)"
     ]
   }
 }
