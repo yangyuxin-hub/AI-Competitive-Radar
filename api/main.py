@@ -212,6 +212,10 @@ def api_intake_stream(req: ProposeReq):
 def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
+def _keepalive() -> str:
+    """纯 keep-alive 信号，前端忽略，仅保持连接活跃避免 PaaS 超时。"""
+    return ": keepalive\n\n"
+
 
 _CLAIM_LABELS = {
     "feature_existence": "功能具备性",
@@ -607,8 +611,10 @@ def _run_stream(args: dict):
             try:
                 item = q.get(timeout=1.0)
             except Empty:
-                # 心跳节流:长间隙(LLM 调用中)每 ~4s 才发一次稳定等待文案，避免刷屏淹没真实结论
-                if elapsed() - last_hb >= 4:
+                # 每次空闲都发 keep-alive 注释行（PaaS 保活），前端忽略
+                yield _keepalive()
+                # 有内容的心跳节流:每 ~2s 发一次状态文案
+                if elapsed() - last_hb >= 2:
                     last_hb = elapsed()
                     wait = _WAIT_MESSAGE.get(current_node, "仍在处理中")
                     in_node = elapsed() - prev_end  # 当前节点已耗时
@@ -835,7 +841,8 @@ def api_stage_quality(limit: int = 300):
     for r in rows:
         s = r.get("stage") or "?"
         a = agg.setdefault(s, {"runs": 0, "elapsed_sum": 0.0, "elapsed_n": 0,
-                               "verdicts": {}, "last_metrics": None})
+                               "verdicts": {}, "last_metrics": None,
+                               "tokens_sum": 0, "tokens_n": 0, "llm_calls_sum": 0})
         a["runs"] += 1
         e = r.get("elapsed_sec")
         if isinstance(e, (int, float)):
@@ -844,6 +851,14 @@ def api_stage_quality(limit: int = 300):
         v = r.get("verdict") or "?"
         a["verdicts"][v] = a["verdicts"].get(v, 0) + 1
         a["last_metrics"] = r.get("metrics")
+        cost = r.get("cost") or {}
+        tok = cost.get("tokens")
+        if isinstance(tok, (int, float)) and tok > 0:
+            a["tokens_sum"] += tok
+            a["tokens_n"] += 1
+        calls = cost.get("llm_calls")
+        if isinstance(calls, (int, float)):
+            a["llm_calls_sum"] += calls
     stages = []
     for s in [*order, *[k for k in agg if k not in order]]:
         if s not in agg:
@@ -853,6 +868,9 @@ def api_stage_quality(limit: int = 300):
             "stage": s, "runs": a["runs"],
             "avg_elapsed": round(a["elapsed_sum"] / a["elapsed_n"], 1) if a["elapsed_n"] else None,
             "verdicts": a["verdicts"], "last_metrics": a["last_metrics"],
+            "avg_tokens": round(a["tokens_sum"] / a["tokens_n"]) if a["tokens_n"] else None,
+            "total_tokens": a["tokens_sum"] or None,
+            "total_llm_calls": a["llm_calls_sum"] or None,
         })
     return {"stages": stages, "recent": rows[-20:]}
 
