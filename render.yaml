@@ -7,7 +7,7 @@ services:
     runtime: python
     plan: free                 # 免费档;空闲约 15 分钟后休眠,下次访问冷启动数十秒
     region: singapore          # Render 里离中国最近的区
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && playwright install --with-deps chromium
     # SSE 长连接 + 单 worker(流水线内部已自带线程池);超时给足
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 75
     envVars:
