@@ -201,10 +201,9 @@ class LLMClient:
             raise RuntimeError(
                 "LLM_API_KEY / ARK_API_KEY 未设置。若要无 API key 跑骨架,设置 ANALYZER_MOCK=1"
             )
-        # 显式 LLM_* 优先;否则只要使用 ARK_API_KEY/ARK_EP,就走火山 ARK 端点。
-        # 避免把 ARK key 误发到默认 MiMo 地址,造成 401 后被上层误判为超时。
+        # 显式 LLM_* 优先;否则走火山 ARK 端点
         if os.environ.get("LLM_BASE_URL") or os.environ.get("LLM_MODEL") or os.environ.get("LLM_API_KEY"):
-            base_url = os.environ.get("LLM_BASE_URL") or "https://token-plan-cn.xiaomimimo.com/v1"
+            base_url = os.environ.get("LLM_BASE_URL") or "https://ark.cn-beijing.volces.com/api/v3"
         else:
             base_url = os.environ.get("ARK_BASE_URL") or "https://ark.cn-beijing.volces.com/api/v3"
         timeout = float(os.environ.get("LLM_TIMEOUT", os.environ.get("ARK_TIMEOUT", "200")))
@@ -241,7 +240,7 @@ class LLMClient:
         client = self._ensure()
         if model is None:
             if os.environ.get("LLM_MODEL") or os.environ.get("LLM_API_KEY"):
-                model = os.environ.get("LLM_MODEL") or "mimo-v2.5-pro"
+                model = os.environ.get("LLM_MODEL") or "doubao-seed-2-0-lite-250428"
             else:
                 model = os.environ.get("ARK_EP") or "doubao-seed-2-0-lite-250428"
         messages = [
@@ -308,7 +307,7 @@ class LLMClient:
         client = self._ensure()
         if model is None:
             if os.environ.get("LLM_MODEL") or os.environ.get("LLM_API_KEY"):
-                model = os.environ.get("LLM_MODEL") or "mimo-v2.5-pro"
+                model = os.environ.get("LLM_MODEL") or "doubao-seed-2-0-lite-250428"
             else:
                 model = os.environ.get("ARK_EP") or "doubao-seed-2-0-lite-250428"
         messages = [

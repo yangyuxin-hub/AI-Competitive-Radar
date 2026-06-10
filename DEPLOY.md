@@ -15,7 +15,7 @@
 1. 注册 https://render.com （用 GitHub 账号登录最方便）。
 2. Dashboard → **New +** → **Blueprint** → 选中本仓库 → Render 会自动读取根目录的 `render.yaml`。
 3. 点 **Apply**，进入服务后到 **Environment** 标签，填入标了 `sync:false` 的密钥：
-   - `LLM_API_KEY` = 你的小米 MiMo / 火山 key（**必填**）
+   - `LLM_API_KEY` = 你的火山豆包 key（**必填**）
    - `BRAVE_API_KEY` = Brave 搜索 key（可选；不填会自动用免费 DuckDuckGo 兜底）
    - `API_CORS_ORIGINS` 先**留空**，等第 2 步拿到前端域名再回填。
 4. 等首次构建完成（约 3-5 分钟），拿到后端地址，形如

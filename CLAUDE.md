@@ -125,9 +125,9 @@ docs/task-requirements.md     # 赛题需求
 
 ## 8. 资源
 
-- **LLM**：默认小米 MiMo（`mimo-v2.5-pro`，TTFT ~2-5s，远快于 Doubao EP 的 25-38s）。运行时环境变量注入，**不要 commit**：
-  - `LLM_API_KEY`（或回退 `ARK_API_KEY`）、`LLM_BASE_URL`（默认 `https://token-plan-cn.xiaomimimo.com/v1`）、`LLM_MODEL`（默认 `mimo-v2.5-pro`）
-  - 切回 Doubao：显式设 `LLM_MODEL=ep-...` + `LLM_BASE_URL=<ark>`（不再隐式回退 `ARK_EP`）
+- **LLM**：默认豆包 Doubao（`doubao-seed-2-0-lite`）。运行时环境变量注入，**不要 commit**：
+  - `ARK_API_KEY` + `ARK_EP`（或 `LLM_API_KEY` + `LLM_MODEL` + `LLM_BASE_URL`）
+  - `ANALYZER_MOCK=1`：无 API key 跑骨架，走 `sample_report.json`
   - `ANALYZER_MOCK=1`：无 API key 跑骨架，走 `sample_report.json`
   - 代理实测给 LLM 调用平添 ~10s，客户端已 `trust_env=False` 关掉系统代理
 - **Web 搜索**：多供应商自动降级（`src/search.py`），统一返回 `{title,url,content,score}`：
