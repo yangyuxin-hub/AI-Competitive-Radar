@@ -308,14 +308,11 @@ def _scope_draft_to_domain(draft: dict, base: dict, products: dict) -> dict:
     out = dict(draft)
     target = _filter_known_to_domain(out.get("target_candidates") or [], products, domain_products)
     comp = _filter_known_to_domain(out.get("competitors_candidates") or [], products, domain_products)
-    if target:
-        out["target_candidates"] = _dedupe(target + (base.get("target_candidates") or []))
-    else:
-        out["target_candidates"] = base.get("target_candidates") or []
-    if comp:
-        out["competitors_candidates"] = _dedupe(comp + (base.get("competitors_candidates") or []))
-    else:
-        out["competitors_candidates"] = base.get("competitors_candidates") or []
+    # 纯 LLM 信任:只用 LLM 给的(域过滤后)列表,不再把 config 写死的老竞品 +base 注入回来——
+    # 那会用 config 裸名(Kling/Runway)重造跨语言/变体重复 + 空 hint 噪声。config 竞品已通过
+    # known_products 喂给 LLM;它觉得相关会自己带,觉得凉了就不带(隐式剔旧)。base 仅在 LLM 空时兜底。
+    out["target_candidates"] = _dedupe(target) or (base.get("target_candidates") or [])
+    out["competitors_candidates"] = _dedupe(comp) or (base.get("competitors_candidates") or [])
     out["competitors_suggested"] = [
         c for c in (out.get("competitors_suggested") or base.get("competitors_suggested") or [])
         if c in out["competitors_candidates"]
