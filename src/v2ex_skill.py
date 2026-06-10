@@ -336,7 +336,7 @@ class V2EXSkill(CollectorSkill):
                 "source_bias": "community_feedback",
                 "source_url": url,
                 "observed_at": observed,
-                "source_freshness": "current",
+                "source_freshness": "unknown",  # A1: V2EX API 无发布时间，标 unknown
                 "claim": claim,
                 "extracted_snippet": snippet,
                 "source_reliability": scoring_config.reliability("v2ex_topic", 0.68),
@@ -363,7 +363,7 @@ class V2EXSkill(CollectorSkill):
                     "source_bias": "community_feedback",
                     "source_url": r_url,
                     "observed_at": observed,
-                    "source_freshness": "current",
+                    "source_freshness": "unknown",  # A1: V2EX API 无发布时间
                     "claim": r_claim,
                     "extracted_snippet": f"[V2EX reply by @{r_author}] {r_text[:500]}",
                     "source_reliability": scoring_config.reliability("v2ex_reply", 0.60),

@@ -142,7 +142,9 @@ def score_quality(e: dict) -> float:
 
     rel = float(e.get("claim_relevance") or 0.5)
     auth = float(e.get("source_reliability") or 0.5)
-    fresh = 1.0 if (e.get("source_freshness") in (None, "current", "recent")) else 0.5
+    # A1: freshness 三档 — current/recent=1.0, unknown=0.7(无发布时间不罚太重), stale=0.5
+    _fs = e.get("source_freshness")
+    fresh = 1.0 if _fs in (None, "current", "recent") else (0.7 if _fs == "unknown" else 0.5)
 
     w = _sc.weights("evidence_quality", _DEFAULT_WEIGHTS)   # config 可调,缺失回退默认
     score = (w["specificity"] * spec + w["integrity"] * integ + w["relevance"] * rel

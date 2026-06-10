@@ -47,6 +47,62 @@ FRESHNESS_TTL_DAYS = {
 }
 
 
+# 数字/价格模式:匹配 $12, 12.5%, ¥99, €10, 12K, 1.5M, 100ms, 30s 等
+_NUM_PATTERN = re.compile(r'[\$¥€£]\s*\d[\d,.]*|\d[\d,.]*\s*(?:%|ms|s|GB|MB|KB|TB|K|M|B|万|亿|元|美元|月|天|年|倍|倍率|[Cc]ents?|[Dd]ollars?)')
+
+
+def smart_truncate(text: str, max_len: int) -> str:
+    """A3: 智能截断 — 优先保留含数字/价格的句子，避免截断点丢关键数据。
+
+    策略:
+    1. 按句子拆分，找含数字的句子优先拼入
+    2. 若含数字句子已够长，直接返回
+    3. 否则用剩余空间补充上下文句子
+    4. 兜底:无数字句子或拆分失败时，回退前 N 字符
+    """
+    if len(text) <= max_len:
+        return text
+    # 按中英文句号/分号/换行拆
+    sentences = re.split(r'(?<=[。；！？.!?\n])\s*', text)
+    if len(sentences) <= 1:
+        return text[:max_len]
+    # 分两桶:含数字 vs 不含
+    with_num = [s for s in sentences if _NUM_PATTERN.search(s)]
+    without_num = [s for s in sentences if not _NUM_PATTERN.search(s)]
+    result = ""
+    # 先拼含数字的句子
+    for s in with_num:
+        if len(result) + len(s) + 1 > max_len:
+            break
+        result += s + " "
+    # 剩余空间补上下文
+    for s in without_num:
+        if len(result) + len(s) + 1 > max_len:
+            break
+        result += s + " "
+    return result.strip() if result.strip() else text[:max_len]
+
+
+def compute_freshness(published_at: Optional[str], claim_type: Optional[str]) -> str:
+    """根据发布时间 + claim_type TTL 计算 source_freshness。
+
+    - published_at: ISO 日期字符串(如 "2025-06-01")，None/空 → "unknown"
+    - claim_type: 用于查 TTL；缺失回退 30 天
+    返回 "current" / "stale" / "unknown"
+    """
+    if not published_at:
+        return "unknown"
+    try:
+        pub_date = date.fromisoformat(published_at[:10])
+    except (ValueError, TypeError):
+        return "unknown"
+    from . import scoring_config
+    ct = claim_type or ""
+    ttl = scoring_config.ttl_days(ct, FRESHNESS_TTL_DAYS.get(ct, 30))
+    age = (date.today() - pub_date).days
+    return "current" if age < ttl else "stale"
+
+
 def _resolve_sample_path() -> Path:
     """优先级: SAMPLE_SOURCES_PATH 环境变量 > config/domains.yaml[DOMAIN] > 默认 sample_sources.json"""
     env_path = os.environ.get("SAMPLE_SOURCES_PATH")
@@ -475,16 +531,33 @@ def _reclassify_official_claim_types(evidence: list[dict]) -> int:
         return 0
     changed = 0
     batch = int(os.environ.get("CLAIM_LLM_BATCH", "40"))
-    for s in range(0, len(idxs), batch):
-        chunk = idxs[s:s + batch]
-        labels = classify_claim_types_llm(
-            [(evidence[i].get("extracted_snippet") or evidence[i].get("claim") or "") for i in chunk])
-        if not labels:
-            continue
-        for j, i in enumerate(chunk):
-            if labels[j] and labels[j] != evidence[i].get("claim_type"):
-                evidence[i]["claim_type"] = labels[j]
-                changed += 1
+    batches = [(s, idxs[s:s + batch]) for s in range(0, len(idxs), batch)]
+
+    def _classify_batch(item: tuple[int, list[int]]):
+        s, chunk = item
+        snippets = [(evidence[i].get("extracted_snippet") or evidence[i].get("claim") or "") for i in chunk]
+        labels = classify_claim_types_llm(snippets)
+        return chunk, labels
+
+    # 批间无依赖 → 并行调 LLM（实测 14 批串行 680s → 并行 ~50s）
+    max_workers = min(len(batches), int(os.environ.get("CLAIM_LLM_WORKERS", "6")))
+    if max_workers > 1 and len(batches) > 1:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for chunk, labels in pool.map(_classify_batch, batches):
+                if not labels:
+                    continue
+                for j, i in enumerate(chunk):
+                    if labels[j] and labels[j] != evidence[i].get("claim_type"):
+                        evidence[i]["claim_type"] = labels[j]
+                        changed += 1
+    else:
+        for chunk, labels in map(_classify_batch, batches):
+            if not labels:
+                continue
+            for j, i in enumerate(chunk):
+                if labels[j] and labels[j] != evidence[i].get("claim_type"):
+                    evidence[i]["claim_type"] = labels[j]
+                    changed += 1
     if changed:
         print(f"[collector] 官网证据 claim_type LLM 批量精分类:修正 {changed}/{len(idxs)} 条")
     return changed

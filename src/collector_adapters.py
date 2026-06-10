@@ -363,7 +363,7 @@ class OfficialPageAdapter(SourceAdapter):
                 "source_bias": "vendor_claim",
                 "source_url": url,
                 "observed_at": observed,
-                "source_freshness": "current",
+                "source_freshness": "unknown",  # A1: 官网无发布时间，标 unknown
                 "claim": claim,
                 "extracted_snippet": snippet,
                 "source_reliability": scoring_config.reliability("official_page", 0.85),
@@ -494,20 +494,15 @@ class CacheAdapter(SourceAdapter):
         self._dump(product, list(existing.values()))
 
     def fetch(self, product: str, focus: str) -> list[dict]:
-        """返回该产品全部缓存证据,按 TTL 重算 freshness。relevance 留给 Analyzer 判断。
-        中文 focus + 英文 snippet 的过滤极不准确,所以这一层不做过滤。"""
+        """返回该产品全部缓存证据,按 TTL 重算 freshness。优先用 published_at,回退 observed_at。"""
+        from .collector_common import compute_freshness
         evidences = self._load(product)
-        today = date.today()
         out = []
         for ev in evidences:
-            obs = ev.get("observed_at")
             ct = ev.get("claim_type", "")
-            ttl = scoring_config.ttl_days(ct, FRESHNESS_TTL_DAYS.get(ct, 30))
-            try:
-                age = (today - date.fromisoformat(obs)).days
-                ev = {**ev, "source_freshness": "current" if age < ttl else "stale"}
-            except (ValueError, TypeError):
-                ev = {**ev, "source_freshness": "unknown"}
+            # A1: 优先用发布时间，回退到抓取时间
+            date_str = ev.get("published_at") or ev.get("observed_at")
+            ev = {**ev, "source_freshness": compute_freshness(date_str, ct)}
             out.append(ev)
         return out
 

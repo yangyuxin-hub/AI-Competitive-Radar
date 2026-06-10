@@ -17,6 +17,7 @@ import re
 import time
 from datetime import datetime, timezone
 from typing import Optional
+from .collector_common import compute_freshness
 
 import httpx
 
@@ -364,6 +365,8 @@ class HNSkill(CollectorSkill):
                 snippet = f"[HN story by {author}, {points} points] {title}"
                 claim_type = _infer_claim_type(title)
                 eid = _evidence_id(product, url, claim)
+                # A1: freshness 按 HN 发帖时间对 TTL 判定
+                published_at = created[:10] if created else None
                 evidences.append({
                     "evidence_id": eid,
                     "product": product,
@@ -372,7 +375,8 @@ class HNSkill(CollectorSkill):
                     "source_bias": "community_feedback",
                     "source_url": url,
                     "observed_at": observed,
-                    "source_freshness": "current",
+                    "source_freshness": compute_freshness(published_at, claim_type),
+                    "published_at": published_at,
                     "claim": claim,
                     "extracted_snippet": snippet,
                     "source_reliability": scoring_config.reliability("hn_story", 0.70),
@@ -397,6 +401,9 @@ class HNSkill(CollectorSkill):
                 snippet = f"[HN comment by {c_author}] {ctext[:500]}"
                 claim_type = _infer_claim_type(ctext)
                 eid = _evidence_id(product, c_url, claim)
+                # A1: freshness 按评论发布时间对 TTL 判定
+                c_created = comment.get("created_at", "")
+                c_published_at = c_created[:10] if c_created else None
                 evidences.append({
                     "evidence_id": eid,
                     "product": product,
@@ -405,7 +412,8 @@ class HNSkill(CollectorSkill):
                     "source_bias": "community_feedback",
                     "source_url": c_url,
                     "observed_at": observed,
-                    "source_freshness": "current",
+                    "source_freshness": compute_freshness(c_published_at, claim_type),
+                    "published_at": c_published_at,
                     "claim": claim,
                     "extracted_snippet": snippet,
                     "source_reliability": scoring_config.reliability("hn_comment", 0.65),

@@ -14,7 +14,7 @@ import os
 import re
 import threading
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -179,6 +179,26 @@ def _is_on_topic(text: str, aliases: list[str], trusted: bool) -> bool:
     if trusted:
         return True
     return any(anchor in text for anchor in _CONTEXT_ANCHORS)
+
+
+def _topic_relevance_score(text: str, aliases: list[str], trusted: bool) -> float:
+    """A2: 基于关键词命中数的 relevance 梯度分(0.6-0.95)，替代常量 0.7/0.9。
+
+    计分规则:
+    - 基础分:trusted 域 0.75,非 trusted 0.60
+    - 每命中一个 alias +0.05(上限 +0.15)
+    - 命中语境锚点 +0.05
+    - 最终 clamp 到 [0.6, 0.95]
+    """
+    text_lower = text.lower()
+    base = 0.75 if trusted else 0.60
+    # alias 命中数
+    alias_hits = sum(1 for a in aliases if a and a in text_lower)
+    bonus = min(alias_hits * 0.05, 0.15)
+    # 语境锚点
+    if any(anchor in text_lower for anchor in _CONTEXT_ANCHORS):
+        bonus += 0.05
+    return round(min(base + bonus, 0.95), 2)
 
 _HTTP_TIMEOUT = None  # 懒建,见 _timeout()
 
@@ -395,6 +415,7 @@ tavily_search = web_search
 
 def _result_to_evidence(product: str, result: dict, q: dict) -> Optional[dict]:
     from .collector import generate_evidence_id  # 延迟导入避免循环
+    from .collector_common import compute_freshness, smart_truncate
 
     url = result.get("url") or ""
     content = (result.get("content") or "").strip()
@@ -408,22 +429,28 @@ def _result_to_evidence(product: str, result: dict, q: dict) -> Optional[dict]:
     trusted = _is_trusted_domain(url)
     if _relevance_gate_on() and not _is_on_topic(f"{title} {content}", _product_aliases(product), trusted):
         return None
-    # 片段过长会撑大 analyzer prompt、抬高 evidence_id 误引率 → 截断控质量与速度
-    snippet = content[:260]
+    # A3: 智能截断 — 优先保留含数字/价格的句子，避免截断点丢关键数据
+    snippet = smart_truncate(content, 260)
     claim = title or content[:120]
     bias = q.get("bias") or "third_party"
     score = result.get("score")
-    # 供应商无 score 时(Brave/DDG)用域名信誉兜底,让 analyzer 压缩层能把可信源排前
-    relevance = round(float(score), 2) if isinstance(score, (int, float)) else (0.9 if trusted else 0.7)
+    # A2: 供应商无 score 时(Brave/DDG)用关键词命中梯度分，替代常量 0.7/0.9
+    aliases = _product_aliases(product)
+    relevance = round(float(score), 2) if isinstance(score, (int, float)) else _topic_relevance_score(f"{title} {content}", aliases, trusted)
+    # A1: freshness 按发布时间对 TTL 判定，不再硬编码 current
+    published_at = result.get("published_date") or result.get("date") or ""
+    claim_type = q.get("claim_type")
+    freshness = compute_freshness(published_at or None, claim_type)
     return {
         "evidence_id": generate_evidence_id(product, url, snippet),
         "product": product,
-        "claim_type": q.get("claim_type"),
+        "claim_type": claim_type,
         "source_type": q.get("source_type") or "web_search",
         "source_bias": bias,
         "source_url": url,
         "observed_at": date.today().isoformat(),
-        "source_freshness": "current",
+        "source_freshness": freshness,
+        "published_at": published_at or None,
         "claim": claim,
         "extracted_snippet": snippet,
         "source_reliability": _reliability_for_bias(bias),

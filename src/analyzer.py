@@ -65,6 +65,10 @@ from .analyzer_fallback import (  # noqa: F401 — 骨架兜底构建器,re-expo
 from .llm import get_llm, is_mock_mode, load_sample_report
 from .state import AgentState
 
+# B2: per-product feature_fill 调用计数（跨 gap_refill 轮次累加），超阈值走骨架兜底
+_FILL_ATTEMPTS: dict[str, int] = {}
+_FILL_ATTEMPTS_MAX = int(os.environ.get("FEATURE_FILL_MAX_ATTEMPTS", "3"))
+
 
 def collect_all_evidence_refs(
     schema: dict,
@@ -477,6 +481,11 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
     )
 
     def _fill(product: str) -> tuple[str, dict]:
+        # B2: 超阈值直接走骨架兜底，不再反复调 LLM
+        _FILL_ATTEMPTS[product] = _FILL_ATTEMPTS.get(product, 0) + 1
+        if _FILL_ATTEMPTS[product] > _FILL_ATTEMPTS_MAX:
+            print(f"[analyzer] feature_fill '{product}' 已达 {_FILL_ATTEMPTS_MAX} 次上限，用骨架兜底")
+            return product, {}
         prod_ev = _compact_evidence(
             [e for e in ft_ev if e.get("product") == product]
         )
@@ -867,6 +876,7 @@ def _unanchored_recs(derivations: dict, facts: dict) -> list[dict]:
 
 def analyzer_node(state: AgentState) -> AgentState:
     evidence = state["raw_evidence"] or []
+    _FILL_ATTEMPTS.clear()  # B2: 每次 analyzer 运行重置计数
     print(f"\n[analyzer] received {len(evidence)} raw_evidence")
     if evidence:
         by_source = {}
@@ -1039,5 +1049,11 @@ def analyzer_node(state: AgentState) -> AgentState:
     schema_draft, dropped = sanitize_schema_evidence_refs(schema_draft, evidence)
     if dropped:
         print(f"[analyzer] schema sanitize dropped {dropped} invalid evidence refs")
+    # B2: 记录 per-product fill 尝计数到 schema_draft metadata（供 stage_report 观测）
+    if _FILL_ATTEMPTS:
+        schema_draft["_fill_attempts"] = dict(_FILL_ATTEMPTS)
+        _exceeded = {p: n for p, n in _FILL_ATTEMPTS.items() if n > _FILL_ATTEMPTS_MAX}
+        if _exceeded:
+            print(f"[analyzer] feature_fill 超限产品(用骨架兜底): {_exceeded}")
     # 补采可能扩充了 evidence → 写回 state,保证 writer/reviewer 看到的引用都真实存在
     return {**state, "raw_evidence": evidence, "schema_draft": schema_draft}

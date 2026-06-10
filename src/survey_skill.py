@@ -97,7 +97,7 @@ class SurveySkill(CollectorSkill):
                 "source_bias": "synthetic",
                 "source_url": source_url,
                 "observed_at": observed,
-                "source_freshness": "current",
+                "source_freshness": "unknown",  # A1: 合成数据无真实发布时间
                 "claim": claim,
                 "extracted_snippet": snippet,
                 # 合成数据可信度低于真实用户/第三方,避免在可信度评分里被高估

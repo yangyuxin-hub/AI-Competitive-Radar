@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from .collector_common import smart_truncate
 from .progress import ProgressChannel
 
 # 四类必备 claim_type(覆盖审计/缺口扫描共用),与 collector.REQUIRED_CLAIM_TYPES 同源语义
@@ -269,7 +270,7 @@ def _compact_evidence(evidence: list[dict]) -> list[dict]:
                 "claim_type": e.get("claim_type"),
                 "source_bias": e.get("source_bias"),
                 "claim": e.get("claim"),
-                "extracted_snippet": (e.get("extracted_snippet") or "")[:snip],
+                "extracted_snippet": smart_truncate(e.get("extracted_snippet") or "", snip),
             })
             if len(kept_tok) >= per_type:
                 break

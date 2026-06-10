@@ -63,8 +63,9 @@ class RelevanceGateTest(unittest.TestCase):
         ev = search._result_to_evidence("Linear", on, q)
         self.assertIsNotNone(ev)
         self.assertEqual(ev["product"], "Linear")
-        # 官网域名 → 权威源,无 score 时 relevance 兜底为 0.9
-        self.assertEqual(ev["claim_relevance"], 0.9)
+        # A2: 官网域名 + alias 命中 + 语境锚点 → 梯度分 0.85(原常量 0.9 已改为梯度)
+        self.assertGreaterEqual(ev["claim_relevance"], 0.8)
+        self.assertLessEqual(ev["claim_relevance"], 0.95)
 
 
 class FarmFilterTest(unittest.TestCase):
