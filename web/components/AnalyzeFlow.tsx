@@ -109,6 +109,7 @@ export default function AnalyzeFlow({
   const [busy, setBusy] = useState(false);
   const [refining, setRefining] = useState(false); // 渐进式:LLM 在后台精修候选(流式)
   const [error, setError] = useState<string | null>(null);
+  const [tokenStats, setTokenStats] = useState<{ total: number; prompt: number; completion: number; calls: number }>({ total: 0, prompt: 0, completion: 0, calls: 0 });
   const cancelRunRef = useRef<(() => void) | null>(null);
   const cancelIntakeRef = useRef<(() => void) | null>(null); // 中止上一次流式精修
   const touchedRef = useRef<Set<string>>(new Set()); // 用户手动改过的问题,LLM 刷新时不覆盖
@@ -235,6 +236,7 @@ export default function AnalyzeFlow({
     setEvents([]);
     setReport(null);
     setError(null);
+    setTokenStats({ total: 0, prompt: 0, completion: 0, calls: 0 });
     setStage("running");
     onRunStart?.({ clientRunId, args });
     cancelRunRef.current = runAnalysis(args, (e) => {
@@ -246,6 +248,15 @@ export default function AnalyzeFlow({
         setStage("report");
         onRunDone?.({ clientRunId, reportId: e.report_id, report: e.report });
       } else if (e.type === "stage_report") {
+        const cost = e.report.cost;
+        if (cost && typeof cost.tokens === "number" && cost.tokens > 0) {
+          setTokenStats((prev) => ({
+            total: prev.total + cost.tokens!,
+            prompt: prev.prompt + (cost.prompt_tokens ?? 0),
+            completion: prev.completion + (cost.completion_tokens ?? 0),
+            calls: prev.calls + (cost.llm_calls ?? 0),
+          }));
+        }
         onStageReport?.({ clientRunId, report: e.report });
       } else if (e.type === "error") {
         cancelRunRef.current = null;
@@ -364,6 +375,16 @@ export default function AnalyzeFlow({
                   <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-sky-400 align-middle" />
                 )}
               </p>
+            </div>
+          )}
+          {intakeIntent && (
+            <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] px-3 py-2 text-xs text-emerald-300">
+              <span className="font-medium">Agent 的判断：</span>
+              {intakeIntent === "feature_compare" && "功能对比分析"}
+              {intakeIntent === "pain_attribution" && "痛点归因分析"}
+              {intakeIntent === "selection" && "选型辅助分析"}
+              {intakeIntent === "market_entry" && "市场进入分析"}
+              {intakeIntent === "pricing" && "定价策略分析"}
             </div>
           )}
           <p className="text-sm text-neutral-400">
@@ -508,7 +529,7 @@ export default function AnalyzeFlow({
         </div>
       )}
 
-      {stage === "running" && <AgentProgress events={events} onCancel={cancelRun} />}
+      {stage === "running" && <AgentProgress events={events} onCancel={cancelRun} tokenStats={tokenStats} />}
 
       {stage === "report" && report && (
         <div className="space-y-6">
@@ -732,7 +753,7 @@ function buildAgentGroups(stream: TLEvent[]): AgentGroup[] {
   return groups;
 }
 
-function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel: () => void }) {
+function AgentProgress({ events, onCancel, tokenStats }: { events: ProgressEvent[]; onCancel: () => void; tokenStats?: { total: number; prompt: number; completion: number; calls: number } }) {
   const elapsed = useElapsed(true);
 
   const stream = events.filter(
@@ -799,6 +820,11 @@ function AgentProgress({ events, onCancel }: { events: ProgressEvent[]; onCancel
           已收集 <span className="font-mono text-sky-400">{evidenceCount}</span> 条证据
         </span>
         <span className="font-mono text-neutral-500">{elapsed}s</span>
+        {tokenStats && tokenStats.total > 0 && (
+          <span className="text-sky-400/80">
+            🪙 {tokenStats.total >= 1000 ? `${(tokenStats.total / 1000).toFixed(1)}k` : tokenStats.total} tokens
+          </span>
+        )}
         {totalRetry > 0 && (
           <span className="rounded bg-amber-500/15 px-2 py-0.5 text-xs text-amber-400">
             打回重试 ×{totalRetry}
