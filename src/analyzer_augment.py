@@ -7,7 +7,9 @@ analyzer.py re-export 保 back-compat(测试引 _coverage_gaps/_run_survey/_real
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
+
+from .progress import CtxThreadPoolExecutor
 from typing import Optional
 
 from .analyzer_common import _FACTS_SECTIONS, _REQUIRED_CT, _target_products
@@ -233,7 +235,7 @@ def _run_survey(evidence: list[dict], meta: dict) -> tuple[list[dict], Optional[
     added: list[dict] = []
     questions: list[dict] = []
     personas: set[str] = set()
-    with ThreadPoolExecutor(max_workers=max(1, len(products))) as ex:
+    with CtxThreadPoolExecutor(max_workers=max(1, len(products))) as ex:
         futs = {ex.submit(sk.execute, [], product=p, focus=focus): p for p in products}
         for fut in as_completed(futs):
             try:

@@ -510,14 +510,14 @@ def search_plan_to_evidence(
 
     query_events 记录每条查询的命中数/状态，供前端展示「爬了哪些来源」。
     """
-    from concurrent.futures import ThreadPoolExecutor
+    from .progress import CtxThreadPoolExecutor
 
     evidences: list[dict] = []
     events: list[dict] = []
     if not tavily_available() or not plan:
         return evidences, events
     # 多条查询并发(每条是独立的 Tavily HTTP 调用)
-    with ThreadPoolExecutor(max_workers=min(8, len(plan))) as pool:
+    with CtxThreadPoolExecutor(max_workers=min(8, len(plan))) as pool:
         for hits, event in pool.map(
             lambda q: _run_one_query(product, q, results_per_query), plan
         ):

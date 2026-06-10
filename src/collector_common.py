@@ -11,12 +11,12 @@ import json
 import os
 import re
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import as_completed, wait
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Optional
 from . import scoring_config
-from .progress import ProgressChannel
+from .progress import CtxThreadPoolExecutor, ProgressChannel
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -238,7 +238,7 @@ def discover_all_urls(products: list[str], allow_llm: bool = True) -> dict[str, 
     cfg = _load_products_config()
     results: dict[str, dict] = {}
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    with CtxThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(discover_urls, p, cfg, allow_llm): p for p in products}
         done, _ = wait(futures.keys(), timeout=60)
         for fut in done:
@@ -542,7 +542,7 @@ def _reclassify_official_claim_types(evidence: list[dict]) -> int:
     # 批间无依赖 → 并行调 LLM（实测 14 批串行 680s → 并行 ~50s）
     max_workers = min(len(batches), int(os.environ.get("CLAIM_LLM_WORKERS", "6")))
     if max_workers > 1 and len(batches) > 1:
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        with CtxThreadPoolExecutor(max_workers=max_workers) as pool:
             for chunk, labels in pool.map(_classify_batch, batches):
                 if not labels:
                     continue

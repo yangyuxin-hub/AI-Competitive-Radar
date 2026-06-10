@@ -60,7 +60,7 @@ _STATUS_COPY = {
     ],
     "analyzer": [
         "梳理事实：功能、定价、用户痛点",
-        "核对每条结论的证据来源，杜绝编造",
+        "核对证据来源，发现空缺则定向补采",
         "推导 SWOT 与优先级建议",
     ],
     "writer": [
@@ -80,7 +80,7 @@ _STATUS_COPY = {
 _WAIT_MESSAGE = {
     "evidence_planner": "正在规划本轮需要采集的证据",
     "collector": "正在联网检索并整理证据",
-    "analyzer": "正在深度分析：梳理功能/定价/痛点并推导建议，这一步最慢",
+    "analyzer": "正在深度分析：梳理事实、定向补采缺口、推导建议，这一步最慢",
     "writer": "正在把结构化结论整理成报告",
     "reviewer": "正在逐条核查质检规则",
     "degraded_writer": "正在生成分层降级报告",
@@ -478,17 +478,17 @@ def _analyzer_status(evt: dict, elapsed: int) -> dict:
     if step == "overview":
         msg = summary or "已读取证据，开始梳理事实"
     elif step == "facts" and phase == "enrich_start":
-        msg = summary or "按功能清单为各产品针对性补采证据"
+        msg = summary or "[分析阶段] 按功能清单为各产品定向补采证据"
     elif step == "facts" and phase == "enrich_done":
-        msg = f"✅ {summary}" if summary else "针对性补采完成"
+        msg = f"✅ {summary}" if summary else "[分析阶段] 定向补采完成"
     elif step == "facts" and phase == "survey_start":
-        msg = summary or "问卷/访谈 Agent：设计问卷并模拟用户访谈"
+        msg = summary or "[分析阶段] 问卷/访谈 Agent：设计问卷并模拟用户访谈"
     elif step == "facts" and phase == "survey_done":
-        msg = f"📋 {summary}" if summary else "问卷调研完成"
+        msg = f"📋 {summary}" if summary else "[分析阶段] 问卷调研完成"
     elif step == "facts" and phase == "gap_refill_start":
-        msg = summary or "检测到证据空缺，正在定向补采"
+        msg = summary or "[分析阶段] 检测到证据空缺，正在定向补采"
     elif step == "facts" and phase == "gap_refill_done":
-        msg = f"🔁 {summary}" if summary else "补采完成，重新梳理事实"
+        msg = f"🔁 {summary}" if summary else "[分析阶段] 补采完成，重新梳理事实"
     elif step == "facts" and phase == "start":
         msg = "第一步 · 梳理事实：从证据中提炼功能、定价、用户痛点"
     elif step == "facts" and phase == "repair":

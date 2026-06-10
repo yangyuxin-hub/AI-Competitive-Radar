@@ -10,7 +10,9 @@ import json
 import os
 import re
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import as_completed, wait
+
+from .progress import CtxThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -612,7 +614,7 @@ class AdapterRegistry:
             return name, evs, skill_meta
 
         if applicable:
-            with ThreadPoolExecutor(max_workers=len(applicable)) as sp:
+            with CtxThreadPoolExecutor(max_workers=len(applicable)) as sp:
                 sfuts = {sp.submit(_run_skill, it): it[0] for it in applicable}
                 for sfut in as_completed(sfuts):
                     name = sfuts[sfut]

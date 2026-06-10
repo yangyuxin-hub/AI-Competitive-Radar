@@ -12,7 +12,9 @@ import os
 import re
 import time
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import as_completed, wait
+
+from .progress import CtxThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -227,7 +229,7 @@ def collector_node(state: AgentState) -> AgentState:
     )
     print(f"[collector_node] registry.live_adapters={len(registry.live_adapters)}, products={products}")
 
-    pool = ThreadPoolExecutor(max_workers=6)
+    pool = CtxThreadPoolExecutor(max_workers=6)
     pending = set()
     try:
         futures = {pool.submit(registry.fetch_all, p, focus): p for p in products}

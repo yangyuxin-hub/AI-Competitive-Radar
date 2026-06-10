@@ -11,7 +11,9 @@ import copy
 import json
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
+
+from .progress import CtxThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -422,10 +424,10 @@ def _enrich_evidence_by_features(
         return evidence, spine
 
     _emit_progress(step="facts", phase="enrich_start",
-                   summary=f"按 {len(feat_names)} 个功能为 {len(products)} 个产品针对性补采证据")
+                   summary=f"[分析阶段] 按 {len(feat_names)} 个功能为 {len(products)} 个产品定向补采证据")
     existing_ids = {e.get("evidence_id") for e in evidence}
     added: list[dict] = []
-    with ThreadPoolExecutor(max_workers=max(1, len(products))) as ex:
+    with CtxThreadPoolExecutor(max_workers=max(1, len(products))) as ex:
         futs = {
             ex.submit(search.feature_targeted_evidence, p, feat_names, focus): p
             for p in products
@@ -442,7 +444,7 @@ def _enrich_evidence_by_features(
                 print(f"[analyzer] enrich '{product}' 补采失败(忽略): {e}")
     print(f"[analyzer] feature-targeted enrich added {len(added)} new evidence")
     _emit_progress(step="facts", phase="enrich_done",
-                   summary=f"针对性补采新增 {len(added)} 条证据")
+                   summary=f"[分析阶段] 定向补采完成，新增 {len(added)} 条证据")
     return evidence + added, spine
 
 
@@ -528,7 +530,7 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
         return product, (block or {})
 
     per_product: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=max(1, len(fill_products))) as ex:
+    with CtxThreadPoolExecutor(max_workers=max(1, len(fill_products))) as ex:
         futs = {ex.submit(_fill, p): p for p in fill_products}
         for fut in as_completed(futs):
             p = futs[fut]
@@ -741,7 +743,7 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0,
     facts: dict = {}
     fb = None  # 懒构造的兜底(整套 facts)
     prev_ft = (prev_facts or {}).get("feature_tree")
-    with ThreadPoolExecutor(max_workers=len(sections)) as ex:
+    with CtxThreadPoolExecutor(max_workers=len(sections)) as ex:
         futs = {ex.submit(_facts_section_call, s, system, evidence, meta,
                           spine if s == "feature_tree" else None,
                           only_products if s == "feature_tree" else None,
@@ -810,7 +812,7 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
     # swot ‖ recommendations 并行子调用;任一失败用兜底对应字段填充
     der: dict = {}
     fb = None
-    with ThreadPoolExecutor(max_workers=len(_DERIV_SECTIONS)) as ex:
+    with CtxThreadPoolExecutor(max_workers=len(_DERIV_SECTIONS)) as ex:
         futs = {ex.submit(_deriv_section_call, s, system, payload): s for s in _DERIV_SECTIONS}
         for fut in as_completed(futs):
             section = futs[fut]
@@ -901,12 +903,12 @@ def analyzer_node(state: AgentState) -> AgentState:
     if (_survey_should_run(evidence, meta) and not is_mock_mode()
             and (os.environ.get("LLM_API_KEY") or os.environ.get("ARK_API_KEY"))):
         try:
-            _emit_progress(step="facts", phase="survey_start", summary="设计问卷并模拟用户访谈采集")
+            _emit_progress(step="facts", phase="survey_start", summary="[分析阶段] 设计问卷并模拟用户访谈采集")
             evidence, research_method = _run_survey(evidence, meta)
             if research_method:
                 print(f"[analyzer] survey added {research_method['n_findings']} synthetic interview evidence")
                 _emit_progress(step="facts", phase="survey_done",
-                               summary=f"问卷调研完成：{len(research_method['questions'])} 题 / "
+                               summary=f"[分析阶段] 问卷调研完成：{len(research_method['questions'])} 题 / "
                                        f"{research_method['n_findings']} 条模拟访谈")
         except Exception as e:  # noqa: BLE001
             print(f"[analyzer] survey 失败(忽略): {e}")
@@ -952,7 +954,7 @@ def analyzer_node(state: AgentState) -> AgentState:
             _ptail = f"，{len(pgap)} 个产品定价缺失" if pgap else ""
             _rtag = f"第{round_idx + 1}轮：" if round_idx else ""
             _emit_progress(step="facts", phase="gap_refill_start",
-                           summary=f"{_rtag}发现 {len(gaps['unknown_cells'])} 个空白项{_tail}{_ptail}，定向补采")
+                           summary=f"[分析阶段] {_rtag}发现 {len(gaps['unknown_cells'])} 个空白项{_tail}{_ptail}，定向补采")
             try:
                 new_ev = _gap_targeted_recollect(meta, gaps, focus, round_idx=round_idx)
             except Exception as e:  # noqa: BLE001
@@ -986,7 +988,7 @@ def analyzer_node(state: AgentState) -> AgentState:
             _ponly = f"(仅 {len(gap_products)}/{len(_target_products(meta))} 个产品)" if gap_products and "feature_tree" in affected else ""
             print(f"[analyzer] gap refill round {round_idx + 1} added {len(new_ev)} evidence; 只重出: {affected} 产品: {gap_products or '全部'}")
             _emit_progress(step="facts", phase="gap_refill_done",
-                           summary=f"{_rtag}定向补采 {len(new_ev)} 条，重新梳理{_names}{_ponly}")
+                           summary=f"[分析阶段] {_rtag}定向补采 {len(new_ev)} 条，重新梳理{_names}{_ponly}")
             partial = _step1_facts(evidence, meta, analyzer_retry=analyzer_retry,
                                    spine=spine, only_sections=affected,
                                    only_products=gap_products or None, prev_facts=facts)
