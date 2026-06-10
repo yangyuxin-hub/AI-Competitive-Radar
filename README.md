@@ -35,6 +35,12 @@ flowchart TD
 
 ---
 
+## 📖 详细配置指南
+
+👉 **[SETUP.md](SETUP.md)** — 完整的环境配置步骤，让项目能直接跑起来
+
+---
+
 ## 🚀 快速开始
 
 ```powershell
@@ -49,8 +55,10 @@ pip install -r requirements.txt
 $env:ANALYZER_MOCK="1"
 python -m src.graph
 
-# 3b. 真实 LLM（小米 MiMo）
+# 3b. 真实 LLM（豆包 Doubao）
 $env:LLM_API_KEY="你的 key"
+$env:LLM_MODEL="ep-xxx"
+$env:LLM_BASE_URL="https://ark.cn-beijing.volces.com/api/v3"
 python -m src.graph
 
 # 3c. 启动前端工作台
@@ -82,8 +90,8 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000
 | 变量 | 用途 | 默认 |
 |------|------|------|
 | `LLM_API_KEY` | LLM API key | unset（非 Mock 必填） |
-| `LLM_MODEL` | 模型 id | `mimo-v2.5-pro` |
-| `LLM_BASE_URL` | API 地址 | 小米 MiMo 端点 |
+| `LLM_MODEL` | 模型 id | `ep-xxx`（豆包 Doubao） |
+| `LLM_BASE_URL` | API 地址 | `https://ark.cn-beijing.volces.com/api/v3` |
 | `DOMAIN` | 选行业域 | `ai_coding` |
 | `API_CORS_ORIGINS` | 生产前端域名 | unset |
 
