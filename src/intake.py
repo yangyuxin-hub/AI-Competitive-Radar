@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Optional
 
@@ -389,9 +390,10 @@ def _competitor_web_context(user_input: str, max_results: int = 8) -> list[dict]
         target = _guess_target_for_discovery(user_input)
         if not target:
             return []
+        year = date.today().year
         queries = [
-            f"{target} alternatives 2026",
-            f"best {target} competitors",
+            f"{target} alternatives {year}",
+            f"best {target} competitors latest",
             f"AI {target} alternative new",  # 偏向召回 AI 原生/新锐颠覆者
         ]
         seen: set = set()
@@ -472,6 +474,7 @@ def _propose_via_llm(user_input: str) -> Optional[dict]:
             system_prompt=_load_prompt("intake"),
             user_payload={
                 "user_input": user_input,
+                "current_date": date.today().isoformat(),
                 "known_products": _known_product_names(),
                 "web_competitor_signals": signals,
             },
@@ -637,6 +640,7 @@ def propose_stream(user_input: str, domain_hint: Optional[str] = None):
                 system_prompt=_load_prompt("intake"),
                 user_payload={
                     "user_input": user_input,
+                    "current_date": date.today().isoformat(),
                     "known_products": _known_product_names(),
                     "web_competitor_signals": signals,
                 },

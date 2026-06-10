@@ -1047,10 +1047,43 @@ function PricingCard({ product }: { product: PricingProduct }) {
 }
 
 function minMonthlyPrice(product?: PricingProduct) {
+  // 0 是「未抓到价格」占位(Analyzer 抽不到数值时填 0),不是真实免费价 — 与后端 _lowest_price 同口径。
+  // 排除后该列含义 = 最低付费档,免费档不再把整列刷成 $0/mo。
   const prices = (product?.tiers ?? [])
     .map((t) => t.price?.normalized_usd_month)
-    .filter((x): x is number => typeof x === "number");
+    .filter((x): x is number => typeof x === "number" && x > 0);
   return prices.length ? Math.min(...prices) : null;
+}
+
+/** 部分信息也给判断:price/score 缺谁就按可得的单维判,只有全缺才落 "—"。
+ *  返回 missing 标记供表脚注汇总(避免逐格刷"信息不足/待确认"的破碎观感)。 */
+function judgeValueThreat(
+  price: number | null,
+  score: number | null,
+  targetPrice: number | null,
+  targetScore: number | null
+): { value: string; threat: string; missing: "price" | "score" | "both" | null } {
+  const hasP = price != null && targetPrice != null;
+  const hasS = score != null && targetScore != null;
+  if (hasP && hasS) {
+    if (price < targetPrice && score >= targetScore - 0.5)
+      return { value: "性价比压力强", threat: "高", missing: null };
+    if (score > targetScore) return { value: "能力领先", threat: "中高", missing: null };
+    if (price < targetPrice) return { value: "价格防守强", threat: "中", missing: null };
+    return { value: "差异化压力有限", threat: "低", missing: null };
+  }
+  if (hasS) {
+    // 只有能力分 → 按能力单维判,价格列脚注说明
+    if (score > targetScore + 0.4) return { value: "能力领先", threat: "中高", missing: "price" };
+    if (score >= targetScore - 0.5) return { value: "能力接近", threat: "中", missing: "price" };
+    return { value: "能力落后", threat: "低", missing: "price" };
+  }
+  if (hasP) {
+    // 只有价格 → 按价格单维判
+    if (price < targetPrice) return { value: "价格更低", threat: "待确认", missing: "score" };
+    return { value: "价格更高", threat: "低", missing: "score" };
+  }
+  return { value: "—", threat: "—", missing: "both" };
 }
 
 function PriceAbilityMap({
@@ -1067,57 +1100,59 @@ function PriceAbilityMap({
   const avgs = averageScores(features, cols);
   const byName = Object.fromEntries(products.map((p) => [p.name, p]));
   const targetPrice = minMonthlyPrice(byName[target]);
-  const targetScore = avgs[target];
+  const targetScore = avgs[target] ?? null;
+  const noPrice: string[] = [];
+  const noScore: string[] = [];
+  const rows = cols.map((name) => {
+    const price = minMonthlyPrice(byName[name]);
+    const score = avgs[name] ?? null;
+    if (price == null) noPrice.push(name);
+    if (score == null) noScore.push(name);
+    if (name === target) return { name, price, score, value: "基准产品", threat: "—" };
+    const j = judgeValueThreat(price, score, targetPrice, targetScore);
+    return { name, price, score, value: j.value, threat: j.threat };
+  });
+  const notes: string[] = [];
+  if (noScore.length) notes.push(`${noScore.join("、")} 缺少体验类证据,能力分未评出`);
+  if (noPrice.length) notes.push(`${noPrice.join("、")} 未抓到付费档价格数值`);
+  if (notes.length) notes.push("缺失维度的判断按可得信息单维给出,空格以 — 展示");
   return (
     <div className="overflow-x-auto rounded-xl border border-white/10">
       <table className="w-full border-collapse text-sm">
         <thead className="bg-white/5">
           <tr>
             <th className="px-3 py-2 text-left font-medium text-neutral-300">产品</th>
-            <th className="px-3 py-2 text-left font-medium text-neutral-300">入门月价</th>
+            <th className="px-3 py-2 text-left font-medium text-neutral-300">入门付费价</th>
             <th className="px-3 py-2 text-left font-medium text-neutral-300">能力均分</th>
             <th className="px-3 py-2 text-left font-medium text-neutral-300">性价比判断</th>
             <th className="px-3 py-2 text-left font-medium text-neutral-300">对 {target} 的威胁</th>
           </tr>
         </thead>
         <tbody>
-          {cols.map((name) => {
-            const price = minMonthlyPrice(byName[name]);
-            const score = avgs[name];
-            let value = "信息不足";
-            let threat = "待确认";
-            if (name === target) {
-              value = "基准产品";
-              threat = "—";
-            } else if (price != null && score != null && targetPrice != null && targetScore != null) {
-              if (price < targetPrice && score >= targetScore - 0.5) {
-                value = "性价比压力强";
-                threat = "高";
-              } else if (score > targetScore) {
-                value = "能力领先";
-                threat = "中高";
-              } else if (price < targetPrice) {
-                value = "价格防守强";
-                threat = "中";
-              } else {
-                value = "差异化压力有限";
-                threat = "低";
-              }
-            }
-            return (
-              <tr key={name} className="border-t border-white/10">
-                <td className="px-3 py-2 text-neutral-200">{name}</td>
-                <td className="px-3 py-2 font-mono text-sky-300">{price != null ? `$${price}/mo` : "待确认"}</td>
-                <td className="px-3 py-2">
-                  <ScoreBar value={score ?? null} kind={score != null ? "real" : "none"} />
-                </td>
-                <td className="px-3 py-2 text-neutral-400">{value}</td>
-                <td className="px-3 py-2 text-neutral-400">{threat}</td>
-              </tr>
-            );
-          })}
+          {rows.map((r) => (
+            <tr key={r.name} className="border-t border-white/10">
+              <td className="px-3 py-2 text-neutral-200">{r.name}</td>
+              <td className={`px-3 py-2 font-mono ${r.price != null ? "text-sky-300" : "text-neutral-600"}`}>
+                {r.price != null ? `$${r.price}/mo` : "—"}
+              </td>
+              <td className="px-3 py-2">
+                <ScoreBar value={r.score} kind={r.score != null ? "real" : "none"} />
+              </td>
+              <td className={`px-3 py-2 ${r.value === "—" ? "text-neutral-600" : "text-neutral-400"}`}>
+                {r.value}
+              </td>
+              <td className={`px-3 py-2 ${r.threat === "—" ? "text-neutral-600" : "text-neutral-400"}`}>
+                {r.threat}
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
+      {notes.length > 0 && (
+        <div className="border-t border-white/10 px-3 py-2 text-[11px] leading-relaxed text-neutral-500">
+          {notes.join(";")}。
+        </div>
+      )}
     </div>
   );
 }

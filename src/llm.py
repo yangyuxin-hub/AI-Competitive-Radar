@@ -8,9 +8,12 @@
 """
 from __future__ import annotations
 
+import contextvars
+import hashlib
 import json
 import os
 import re
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -50,6 +53,9 @@ def _save_raw(label: str, content: str) -> Path:
 
 
 _TRACE_PATH = _LOGS_DIR / "llm_calls.jsonl"
+_PROMPTS_DIR = _LOGS_DIR / "llm_prompts"   # system_prompt 内容寻址去重存放处
+_TRACE_LOCK = threading.Lock()             # 并行 section 同时写 jsonl 时防交错/损坏行
+_TRACE_MAX_BYTES = 20 * 1024 * 1024        # 单文件 20MB 即轮转,防无限膨胀
 
 
 def _trace_enabled() -> bool:
@@ -57,52 +63,111 @@ def _trace_enabled() -> bool:
     return os.environ.get("LLM_TRACE", "1").strip() not in ("0", "false", "False")
 
 
+def _save_prompt_once(system_prompt: str) -> str:
+    """system_prompt 内容寻址:同一 prompt 只落一份到 llm_prompts/<hash>.txt,
+    jsonl 里只存 hash。深跑同一 facts/derivations prompt 重复 50+ 次,去重后
+    llm_calls.jsonl 体积砍掉绝大部分(prompt 占每条记录的大头)。"""
+    digest = hashlib.sha1(system_prompt.encode("utf-8")).hexdigest()[:12]
+    try:
+        _PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+        path = _PROMPTS_DIR / f"{digest}.txt"
+        if not path.exists():
+            path.write_text(system_prompt, encoding="utf-8")
+    except OSError:
+        pass
+    return digest
+
+
+def _rotate_trace_if_needed() -> None:
+    """超过阈值就把当前 jsonl 滚成 .1 备份(只留一代,够排查近一次运行)。"""
+    try:
+        if _TRACE_PATH.exists() and _TRACE_PATH.stat().st_size > _TRACE_MAX_BYTES:
+            _TRACE_PATH.replace(_TRACE_PATH.with_suffix(".jsonl.1"))
+    except OSError:
+        pass
+
+
 def _trace_call(label: str, model: str, system_prompt: str, user_payload: dict,
                 raw: str, prompt_tokens: int, completion_tokens: int, elapsed: float) -> None:
-    """把每次 LLM 调用的完整输入/输出/token/耗时追加到 logs/llm_calls.jsonl,供离线分析优化。"""
+    """把每次 LLM 调用的输入/输出/token/耗时追加到 logs/llm_calls.jsonl,供离线分析优化。
+    system_prompt 去重存 llm_prompts/,这里只记 hash;按 run_id/stage 归因便于逐环节分析。"""
     if not _trace_enabled():
         return
     try:
-        _LOGS_DIR.mkdir(exist_ok=True)
+        rs = _RUN_STAGE.get()
         rec = {
             "ts": datetime.now().isoformat(),
+            "run_id": rs[0] if rs else None,
+            "stage": rs[1] if rs else None,
             "label": label,
             "model": model,
             "duration_sec": round(elapsed, 2),
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
-            "system_prompt": system_prompt,
+            "system_prompt_hash": _save_prompt_once(system_prompt),
             "user_payload": user_payload,
             "raw_output": raw,
         }
-        with _TRACE_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        with _TRACE_LOCK:
+            _LOGS_DIR.mkdir(exist_ok=True)
+            _rotate_trace_if_needed()
+            with _TRACE_PATH.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception as e:  # noqa: BLE001
         print(f"[llm] trace 写入失败(忽略): {e}")
 
 
 # ───────────────────────────────────────────────────────────────────────
-# 进度回调(UI 实时刷新用)
+# 进度回调(UI 实时刷新用)+ 按 run/stage 的成本归因
 # ───────────────────────────────────────────────────────────────────────
 
-_LLM_CALLBACK = None  # type: Optional[callable]
+# 回调用 contextvar:每个 /api/run 请求在自己 worker 线程里跑,天然按请求隔离,
+# 不会像进程级全局那样被并发请求互相覆盖(与 progress.ProgressChannel 同理)。
+_LLM_CALLBACK: contextvars.ContextVar[Optional[object]] = contextvars.ContextVar(
+    "llm_callback", default=None)
+# 当前 graph 节点的 (run_id, stage),由 graph._instrument 在进节点时设置,_trace_call 写入。
+_RUN_STAGE: contextvars.ContextVar[Optional[tuple]] = contextvars.ContextVar(
+    "llm_run_stage", default=None)
+# 本节点 LLM token 累加器,graph._instrument 进节点时 begin、出节点时读 → StageReport.cost。
+_TOKEN_ACC: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "llm_token_acc", default=None)
 
 
 def set_llm_callback(cb) -> None:
     """注册 LLM 调用事件回调。事件字典字段:
     {label, phase: 'start'|'done', duration, prompt_tokens, completion_tokens, json_mode}
     回调失败不影响主流程。"""
-    global _LLM_CALLBACK
-    _LLM_CALLBACK = cb
+    _LLM_CALLBACK.set(cb)
 
 
 def _emit_llm(**evt) -> None:
-    if _LLM_CALLBACK is None:
+    cb = _LLM_CALLBACK.get()
+    if cb is None:
         return
     try:
-        _LLM_CALLBACK(evt)
+        cb(evt)
     except Exception:
         pass
+
+
+def set_run_stage(run_id: Optional[str], stage: Optional[str]) -> None:
+    """graph._instrument 进节点时调用:后续该节点内所有 LLM 调用都按此 run/stage 归因。"""
+    _RUN_STAGE.set((run_id, stage))
+
+
+def begin_token_accumulator() -> dict:
+    """graph._instrument 进节点时调用:开一个本节点的 token 累加器并返回(出节点时读)。"""
+    acc = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+    _TOKEN_ACC.set(acc)
+    return acc
+
+
+def _accumulate_tokens(prompt_tokens: int, completion_tokens: int) -> None:
+    acc = _TOKEN_ACC.get()
+    if acc is not None:
+        acc["prompt_tokens"] += prompt_tokens or 0
+        acc["completion_tokens"] += completion_tokens or 0
+        acc["calls"] += 1
 
 
 def is_mock_mode() -> bool:
@@ -201,6 +266,7 @@ class LLMClient:
         prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
         completion_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
         print(f"[llm] {label}: {elapsed:.1f}s · prompt={prompt_tokens} completion={completion_tokens}")
+        _accumulate_tokens(prompt_tokens, completion_tokens)
         _emit_llm(
             label=label, phase="done",
             duration=elapsed, json_mode=False,
@@ -279,6 +345,7 @@ class LLMClient:
         raw = "".join(parts) or "{}"
         elapsed = time.time() - t0
         print(f"[llm] {label}(stream): {elapsed:.1f}s · chars={len(raw)}")
+        _accumulate_tokens(0, 0)  # 流式无 usage,只记一次调用计数
         _emit_llm(label=label, phase="done", duration=elapsed, json_mode=False,
                   prompt_tokens=0, completion_tokens=0)
         try:

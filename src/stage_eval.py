@@ -2,131 +2,47 @@
 
 给 collector/analyzer/writer/reviewer 每个节点末尾打可观测分，落 logs/stage_quality.jsonl，
 每 run 每段一行，用于暴露瓶颈(哪段耗时高/质量低/有幻觉)。失败静默，绝不阻断主流程。
+
+verdict/metrics(legacy)与 status/checks/gaps/produced(v3 StageReport)**同源**:
+全部由 stage_report.to_stage_report() 一次计算派生(status_to_verdict 映射 verdict,
+produced 即 metrics),不再各自维护一套判定逻辑,避免两套指标互相矛盾。
 """
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 _LOG = Path("logs/stage_quality.jsonl")
-_CHIP = re.compile(r"\[S[0-9A-F]{7}\]")
-_REF = re.compile(r'"(S[0-9A-F]{7})"')
-
-
-def _collector_metrics(state: dict):
-    qa = (state.get("collection_meta") or {}).get("quality_audit") or {}
-    ev = state.get("raw_evidence") or []
-    avgq = qa.get("avg_quality")
-    metrics = {
-        "evidence": len(ev),
-        "avg_quality": avgq,
-        "quantity_gaps": len(qa.get("quantity_gaps") or []),
-        "quality_gaps": len(qa.get("quality_gaps") or []),
-        "gaps_open": len(qa.get("gaps") or []),
-    }
-    verdict = "pass" if qa.get("passed") else ("warn" if ev else "fail")
-    return metrics, verdict
-
-
-def _evidence_planner_metrics(state: dict):
-    plan = state.get("evidence_plan") or (state.get("analysis_meta") or {}).get("evidence_plan") or {}
-    required = plan.get("required_claim_types") or []
-    optional = plan.get("optional_claim_types") or []
-    tasks = plan.get("evidence_tasks") or []
-    metrics = {
-        "required_claim_types": len(required),
-        "optional_claim_types": len(optional),
-        "evidence_tasks": len(tasks),
-        "intent": plan.get("analysis_intent"),
-    }
-    verdict = "pass" if required and tasks else "fail"
-    return metrics, verdict
-
-
-def _analyzer_metrics(state: dict):
-    sd = state.get("schema_draft") or {}
-    ev_ids = {e.get("evidence_id") for e in (state.get("raw_evidence") or [])}
-    blob = json.dumps(sd, ensure_ascii=False)
-    refs = _REF.findall(blob)
-    halluc = sum(1 for r in refs if r not in ev_ids)
-    feats = (sd.get("feature_tree") or {}).get("features") or []
-    metrics = {
-        "evidence_refs": len(refs),
-        "hallucination_count": halluc,      # 应为 0(核心原则#4)
-        "unknown_hits": blob.count("unknown"),
-        "feature_dims": len(feats),
-    }
-    verdict = "fail" if halluc > 0 else ("pass" if feats else "warn")
-    return metrics, verdict
-
-
-def _writer_metrics(state: dict):
-    rpt = state.get("report_draft") or ""
-    metrics = {
-        "report_chars": len(rpt),
-        "chips": len(_CHIP.findall(rpt)),
-        "modules": rpt.count("\n## "),
-        "score_leak": rpt.count("quality_score"),   # 应为 0(正文禁泄)
-    }
-    verdict = "fail" if not rpt else ("warn" if metrics["score_leak"] else "pass")
-    return metrics, verdict
-
-
-def _reviewer_metrics(state: dict):
-    qr = state.get("quality_report") or {}
-    metrics = {
-        "quality_score": qr.get("quality_score"),
-        "failed_rules": len(qr.get("failed_rules") or []),
-        "warning_rules": len(qr.get("warning_rules") or []),
-        "status": state.get("status"),
-    }
-    verdict = "pass" if not (qr.get("failed_rules")) else "warn"
-    return metrics, verdict
-
-
-_DISPATCH = {
-    "evidence_planner": _evidence_planner_metrics,
-    "collector": _collector_metrics,
-    "analyzer": _analyzer_metrics,
-    "writer": _writer_metrics,
-    "degraded_writer": _writer_metrics,
-    "reviewer": _reviewer_metrics,
-}
 
 
 def log_stage_quality(stage: str, state: dict, elapsed_sec: Optional[float] = None,
-                      run_id: Optional[str] = None, path: Optional[Path] = None) -> Optional[dict]:
-    """计算该 stage 的可观测指标并 append 到 jsonl。返回写入的记录(失败返回 None)。"""
+                      run_id: Optional[str] = None, path: Optional[Path] = None,
+                      tokens: Optional[dict] = None) -> Optional[dict]:
+    """计算该 stage 的可观测指标并 append 到 jsonl。返回写入的记录(失败返回 None)。
+    verdict/metrics 与 status/checks/gaps/produced/cost 全部由 to_stage_report 单源派生。"""
     try:
-        fn = _DISPATCH.get(stage)
-        if not fn:
+        from .stage_report import status_to_verdict, to_stage_report
+
+        report = to_stage_report(stage, state, elapsed_sec=elapsed_sec, run_id=run_id, tokens=tokens)
+        if report is None:
             return None
-        metrics, verdict = fn(state)
         rec = {
             "ts": datetime.now(timezone.utc).isoformat(),
-            "run_id": run_id, "stage": stage, "verdict": verdict,
+            "run_id": run_id,
+            "stage": stage,
+            "node": report["node"],
+            "verdict": status_to_verdict(report["status"]),
             "elapsed_sec": round(elapsed_sec, 1) if elapsed_sec is not None else None,
-            "metrics": metrics,
+            "metrics": report["produced"],          # legacy 别名,= produced
+            "status": report["status"],
+            "attempt": report["attempt"],
+            "produced": report["produced"],
+            "checks": report["checks"],
+            "gaps": report["gaps"],
+            "cost": report["cost"],
         }
-        # v3 M0:叠加统一 StageReport 契约(加法,旧字段 verdict/metrics 保留供 /api/stage_quality)。
-        # 失败静默,绝不影响既有埋点。
-        try:
-            from .stage_report import to_stage_report
-            report = to_stage_report(stage, state, elapsed_sec=elapsed_sec, run_id=run_id)
-            if report:
-                rec.update({
-                    "status": report["status"],
-                    "attempt": report["attempt"],
-                    "produced": report["produced"],
-                    "checks": report["checks"],
-                    "gaps": report["gaps"],
-                    "cost": report["cost"],
-                })
-        except Exception:  # noqa: BLE001
-            pass
         p = Path(path) if path else _LOG
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a", encoding="utf-8") as f:

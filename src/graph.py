@@ -59,16 +59,27 @@ def build_app(llm: Optional[object] = None, reviewer_mode: Optional[str] = None)
     reviewer_node = make_reviewer_node(llm=llm, mode=mode)
 
     # 各环节质量评估埋点(§8.7):包一层计时+落 logs/stage_quality.jsonl。invoke/stream 两条路径都覆盖。
+    # 同时设 run/stage 归因 + 开本节点 token 累加器(llm.py),让节点内所有 LLM 调用的 token
+    # 归到本节点 → StageReport.cost;并把本节点 StageReport 挂回 state(单一计时口径,api 直接读)。
     def _instrument(name, fn):
         import time as _t
+        from .llm import begin_token_accumulator, set_run_stage
         from .stage_eval import log_stage_quality
 
         def _wrapped(state):
+            rid = (state.get("analysis_meta") or {}).get("agent_trace_id")
+            set_run_stage(rid, name)
+            tokens = begin_token_accumulator()
             _t0 = _t.time()
             out = fn(state)
+            elapsed = _t.time() - _t0
             try:
-                rid = (out.get("analysis_meta") or {}).get("agent_trace_id")
-                log_stage_quality(name, out, elapsed_sec=_t.time() - _t0, run_id=rid)
+                rid = (out.get("analysis_meta") or {}).get("agent_trace_id") or rid
+                rec = log_stage_quality(name, out, elapsed_sec=elapsed, run_id=rid, tokens=tokens)
+                if rec is not None:
+                    # 把本节点 StageReport 挂到 state,api 直接读(单一计时口径,
+                    # 不在 SSE 循环里用队列到达间隔重估一遍耗时)。
+                    out = {**out, "_stage_report": rec}
             except Exception:  # noqa: BLE001
                 pass
             return out
@@ -348,6 +359,23 @@ def main() -> int:
     print(f"\nReport written:  {report_path}")
     print(f"Schema written:  {schema_path}")
     print(f"Quality report:  {qr_path}")
+
+    # 业务价值 headline:CLI 路径用 stage_timings_from_run 从本次 run 的 stage_quality.jsonl
+    # 取逐节点实测耗时,与 API 路径(state["_stage_report"])同源,喂给 business_value_metrics。
+    try:
+        from .business_value import business_value_metrics
+        from .stage_report import stage_timings_from_run
+
+        rid = (final.get("analysis_meta") or {}).get("agent_trace_id")
+        bv = business_value_metrics(
+            final.get("schema_draft") or {},
+            final.get("analysis_meta") or {},
+            stage_timings_from_run(rid),
+            final.get("raw_evidence") or [],
+        )
+        print(f"\nBusiness value:  {bv.get('headline')}")
+    except Exception:  # noqa: BLE001
+        pass
 
     if final.get("status") == "passed":
         return 0

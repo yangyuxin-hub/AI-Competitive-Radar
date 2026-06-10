@@ -4,26 +4,33 @@
 不能共用一个全局通道,否则 SSE 事件会串台)。各模块仍以原公开名
 `set_progress_callback` / `_emit_progress` 暴露薄封装,callsite 与 api 接线零变化。
 
+回调用 `contextvars.ContextVar` 存,而非普通实例属性:每个 `/api/run` 请求在自己的
+worker 线程里跑完整条流水线,新线程默认拿到空 contextvar——天然按请求隔离,多请求并发
+时一个请求注册的回调绝不会被另一个请求的 emit 命中(普通属性是进程级共享,会串)。
+
 回调失败一律静默 —— 进度是旁路观测,绝不影响主流程。
 """
 from __future__ import annotations
 
+import contextvars
 from typing import Callable, Optional
 
 
 class ProgressChannel:
-    """单个节点的进度事件通道。"""
+    """单个节点的进度事件通道(回调按请求线程隔离)。"""
 
     def __init__(self) -> None:
-        self._cb: Optional[Callable[[dict], None]] = None
+        self._cb: contextvars.ContextVar[Optional[Callable[[dict], None]]] = (
+            contextvars.ContextVar("progress_cb", default=None)
+        )
 
     def set_callback(self, cb: Optional[Callable[[dict], None]]) -> None:
         """注册/清空回调。传 None 即解绑。"""
-        self._cb = cb
+        self._cb.set(cb)
 
     def emit(self, **event) -> None:
         """发事件(防御性拷贝)。无回调或回调抛错都静默。"""
-        cb = self._cb
+        cb = self._cb.get()
         if cb is None:
             return
         try:

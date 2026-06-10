@@ -105,7 +105,8 @@ data/
   debug/                      # evidence_debug 落盘（gitignore）
 api/main.py                   # FastAPI + SSE 后端(+ /api/stage_quality 阶段质量聚合)
 web/                          # Next.js 前端（输入 / Agent 状态 / 报告溯源）
-logs/agent_trace.jsonl        # 可观测性日志；llm_calls.jsonl 全量调用日志
+logs/stage_quality.jsonl       # 各环节 StageReport(status/checks/gaps/produced/cost,按 run_id/node 聚合)
+logs/llm_calls.jsonl           # LLM 全量调用日志(system_prompt 去重存 llm_prompts/,按大小轮转)
 docs/design-v2.2.md           # 设计文档(v2.2) + 附录 A-D(对比/合规/judge/roadmap)
 docs/usage-scenarios.md       # 需求场景叙事 + MVP user journey
 docs/competitive-analysis-playbook.md  # 分析方法论
@@ -133,7 +134,7 @@ docs/task-requirements.md     # 赛题需求
   - 主力 **Brave**（`BRAVE_API_KEY`，免费额度大）→ **Tavily**（`TAVILY_API_KEY`，额度小易触 432）→ **DuckDuckGo**（`ddgs` 包，无 key 免费兜底）
   - `SEARCH_PROVIDER=brave,ddg` 显式指定顺序；留空=auto；结果磁盘缓存于 `data/cache/tavily`（TTL 72h）
   - `search_available()`/`tavily_available()` 同义（向后兼容）；只要 ddgs 装了就恒为 True
-- **可观测**：LangSmith（`LANGCHAIN_PROJECT=competitive-analysis-agent`）+ `logs/agent_trace.jsonl`
+- **可观测**：LangSmith（`LANGCHAIN_PROJECT=competitive-analysis-agent`）+ `logs/stage_quality.jsonl`（各环节 StageReport）+ `logs/llm_calls.jsonl`（LLM 调用全量，按 run_id/stage 归因）
 - **合规**：遵守 robots.txt；source_bias 标注；用户访谈数据脱敏
 
 ## 9. 待办（v2.2 §十三）

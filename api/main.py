@@ -87,8 +87,8 @@ _WAIT_MESSAGE = {
 }
 
 # 各节点典型耗时(秒)— 用于给前端算 ETA(预计剩余),让长等待可预期。
-# 数值取自 logs/llm_calls.jsonl 实测 + Tier1/2 并行化后的估计;偏保守。
-_NODE_TYPICAL_SEC = {
+# 兜底默认(早期无历史数据时用);有历史后由 node_typical_seconds() 用 stage_quality.jsonl 的 p50 覆盖。
+_NODE_TYPICAL_SEC_DEFAULT = {
     "evidence_planner": 1,
     "collector": 55,
     "analyzer": 130,
@@ -587,6 +587,13 @@ def _run_stream(args: dict):
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
 
+    # ETA 用历史 p50(样本不足回退默认),每条流开头算一次。
+    try:
+        from src.stage_report import node_typical_seconds  # noqa: WPS433
+        node_typical_sec = node_typical_seconds(_NODE_TYPICAL_SEC_DEFAULT)
+    except Exception:  # noqa: BLE001
+        node_typical_sec = _NODE_TYPICAL_SEC_DEFAULT
+
     last_state: dict = {}
     last_completed: Optional[str] = None
     current_node = "evidence_planner"
@@ -605,7 +612,7 @@ def _run_stream(args: dict):
                     last_hb = elapsed()
                     wait = _WAIT_MESSAGE.get(current_node, "仍在处理中")
                     in_node = elapsed() - prev_end  # 当前节点已耗时
-                    eta = _NODE_TYPICAL_SEC.get(current_node, 60) - in_node
+                    eta = node_typical_sec.get(current_node, 60) - in_node
                     eta_txt = f"，预计还需 ~{max(5, eta)}s" if eta > 3 else "，即将完成"
                     yield _sse(_status_event(
                         current_node, f"{wait}…（已用 {elapsed()}s{eta_txt}）",
@@ -621,14 +628,22 @@ def _run_stream(args: dict):
                 state = item["state"]
                 last_completed = node_name
                 last_state = state
-                # 记录本环节耗时 + 成果
+                # 记录本环节耗时 + 成果。耗时单源:graph._instrument 已把本节点 StageReport
+                # (节点内实测 elapsed_sec/tokens)挂到 state["_stage_report"],不再用 SSE 队列到达
+                # 间隔(now - prev_end)重估一遍(那个口径含队列排队延迟,会偏大)。
                 now = elapsed()
                 icon, label = _NODE_META.get(node_name, ("•", node_name))
+                _rep = state.get("_stage_report")
+                _cost = (_rep or {}).get("cost") or {}
+                duration_sec = _cost.get("elapsed_sec")
+                if duration_sec is None:
+                    duration_sec = max(0, now - prev_end)
                 stage_timings.append({
                     "node": node_name,
                     "icon": icon,
                     "label": label,
-                    "duration_sec": max(0, now - prev_end),
+                    "duration_sec": duration_sec,
+                    "tokens": _cost.get("tokens"),
                     "result": _result_summary(node_name, state),
                 })
                 prev_end = now
@@ -636,18 +651,10 @@ def _run_stream(args: dict):
                 last_hb = elapsed()  # 进入新节点，重置心跳计时
                 yield _sse(_progress_event(node_name, state))
                 # design-v3 M1:每节点完成推一条统一 StageReport,供时间线 UX 实时点亮。
-                # 加法事件,前端未知 type 自动忽略;失败静默不阻断主流。
-                try:
-                    from src.stage_report import to_stage_report  # noqa: WPS433
-                    _rid = (state.get("analysis_meta") or {}).get("agent_trace_id")
-                    _rep = to_stage_report(
-                        node_name, state,
-                        elapsed_sec=stage_timings[-1]["duration_sec"] if stage_timings else None,
-                        run_id=_rid)
-                    if _rep:
-                        yield _sse({"type": "stage_report", "report": _rep})
-                except Exception:  # noqa: BLE001
-                    pass
+                # 直接用 graph._instrument 已算好挂在 state 的那份(单一计时口径,含 token 归因),
+                # 不在这里重算 to_stage_report。加法事件,前端未知 type 自动忽略;失败静默不阻断主流。
+                if _rep:
+                    yield _sse({"type": "stage_report", "report": _rep})
                 if node_name != "reviewer" or state.get("status") != "passed":
                     nxt = _WAIT_MESSAGE.get(current_node, "继续处理下一步")
                     yield _sse(_status_event(current_node, nxt, elapsed(), last_state))

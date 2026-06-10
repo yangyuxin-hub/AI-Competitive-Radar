@@ -606,40 +606,66 @@ def _render_pricing(pricing_model: dict, feature_tree: dict, products: list[str]
     target_score = avgs.get(target)
     if products and by_name:
         lines.append("### 价格-能力映射\n")
-        lines.append("| 产品 | 入门月价 | 能力均分 | 性价比判断 | 对目标产品的威胁 |")
+        lines.append("| 产品 | 入门付费价 | 能力均分 | 性价比判断 | 对目标产品的威胁 |")
         lines.append("|------|---------:|---------:|------------|------------------|")
+        no_price: list[str] = []
+        no_score: list[str] = []
         for product in products:
             info = by_name.get(product) or {}
             price = _lowest_price(info)
             score = avgs.get(product)
-            price_text = f"${price:.0f}" if price is not None else "待确认"
+            if price is None:
+                no_price.append(product)
+            if score is None:
+                no_score.append(product)
+            price_text = f"${price:.0f}" if price is not None else "—"
             score_text = f"{score:.1f}/5" if score is not None else "—"
             if product == target:
                 # 目标产品本身就是基准(即便自身价格信息不足,也不应被竞品比下去标成别的)
                 value = "基准产品"
                 threat = "—"
-            elif price is None or score is None:
-                value = "信息不足"
-                threat = "待确认"
-            elif target_score is not None and target_price is not None:
-                if price < target_price and score >= target_score - 0.5:
-                    value = "性价比压力强"
-                    threat = "高"
-                elif score > target_score:
-                    value = "能力领先"
-                    threat = "中高"
-                elif price < target_price:
-                    value = "价格防守强"
-                    threat = "中"
-                else:
-                    value = "差异化压力有限"
-                    threat = "低"
             else:
-                # 目标产品价格/能力信息不足,无法做横向对比
-                value = "待对齐(目标信息不足)"
-                threat = "待确认"
+                value, threat = _judge_value_threat(price, score, target_price, target_score)
             lines.append(f"| {product} | {price_text} | {score_text} | {value} | {threat} |")
+        notes: list[str] = []
+        if no_score:
+            notes.append(f"{'、'.join(no_score)} 缺少体验类证据,能力分未评出")
+        if no_price:
+            notes.append(f"{'、'.join(no_price)} 未抓到付费档价格数值")
+        if notes:
+            notes.append("缺失维度的判断按可得信息单维给出,空格以 — 展示")
+            lines.append("")
+            lines.append(f"> {';'.join(notes)}。")
     return "\n".join(lines)
+
+
+def _judge_value_threat(
+    price: Optional[float], score: Optional[float],
+    target_price: Optional[float], target_score: Optional[float],
+) -> tuple[str, str]:
+    """价格-能力映射的判断:price/score 缺谁就按可得单维判,全缺才落 "—"。
+    与前端 ReportView.judgeValueThreat 同一套规则,两端呈现一致。"""
+    has_p = price is not None and target_price is not None
+    has_s = score is not None and target_score is not None
+    if has_p and has_s:
+        if price < target_price and score >= target_score - 0.5:
+            return "性价比压力强", "高"
+        if score > target_score:
+            return "能力领先", "中高"
+        if price < target_price:
+            return "价格防守强", "中"
+        return "差异化压力有限", "低"
+    if has_s:
+        if score > target_score + 0.4:
+            return "能力领先", "中高"
+        if score >= target_score - 0.5:
+            return "能力接近", "中"
+        return "能力落后", "低"
+    if has_p:
+        if price < target_price:
+            return "价格更低", "待确认"
+        return "价格更高", "低"
+    return "—", "—"
 
 
 def _render_personas(user_persona: dict, evidence: Optional[list[dict]] = None) -> str:

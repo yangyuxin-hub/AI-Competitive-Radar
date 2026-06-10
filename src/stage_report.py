@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Literal, Optional, TypedDict
 
 Verdict = Literal["pass", "warn", "fail"]
@@ -225,6 +226,19 @@ def _analyzer_parts(state: dict):
     refs = _REF.findall(blob)
     halluc = sum(1 for r in refs if r not in ev_ids)
     feats = (sd.get("feature_tree") or {}).get("features") or []
+    # unknown_hits: 只数语义上"未判定"的字段(support_status / winner / gap_type == "unknown"),
+    # 不再用 blob.count("unknown") 对整段 JSON 做子串计数(会把 source_freshness/billing_cycle
+    # 等无关字段里的 "unknown" 也算进去,虚高且不可解释)。
+    unknown_hits = 0
+    for feat in feats:
+        for pdata in (feat.get("products") or {}).values():
+            if (pdata or {}).get("support_status") == "unknown":
+                unknown_hits += 1
+        gap = feat.get("gap") or {}
+        if gap.get("winner") == "unknown":
+            unknown_hits += 1
+        if gap.get("gap_type") == "unknown":
+            unknown_hits += 1
     checks = [
         _check("evidence_ref_integrity", halluc == 0, "schema_draft",
                f"{halluc} 个引用不存在于 raw_evidence（疑似幻觉 ID）", severity_on_fail="error"),
@@ -234,7 +248,7 @@ def _analyzer_parts(state: dict):
     produced = {
         "evidence_refs": len(refs),
         "hallucination_count": halluc,
-        "unknown_hits": blob.count("unknown"),
+        "unknown_hits": unknown_hits,
         "feature_dims": len(feats),
     }
     return checks, [], produced
@@ -382,12 +396,16 @@ def aggregate_timeline(rows: list, run_id: Optional[str] = None) -> dict:
 
 
 def to_stage_report(stage: str, state: dict, *, elapsed_sec: Optional[float] = None,
-                    run_id: Optional[str] = None, tokens: Optional[int] = None) -> Optional[StageReport]:
-    """把某 stage 的现有 state 产物收编成统一 StageReport。未知 stage 返回 None。"""
+                    run_id: Optional[str] = None, tokens: Optional[dict] = None) -> Optional[StageReport]:
+    """把某 stage 的现有 state 产物收编成统一 StageReport。未知 stage 返回 None。
+
+    tokens: graph._instrument 用 llm.begin_token_accumulator() 收集的本节点 LLM 调用
+    token 累计 {prompt_tokens, completion_tokens, calls};非 LLM 节点为 None 或 calls=0。"""
     fn = _PARTS.get(stage)
     if not fn:
         return None
     checks, gaps, produced = fn(state)
+    has_tok = bool(tokens and tokens.get("calls"))
     report: StageReport = {
         "stage": stage,
         "node": stage,  # 未拆子节点时 node==stage；Collector 拆分后由子节点各自指定
@@ -399,7 +417,70 @@ def to_stage_report(stage: str, state: dict, *, elapsed_sec: Optional[float] = N
         "gaps": gaps,
         "cost": {
             "elapsed_sec": round(elapsed_sec, 1) if elapsed_sec is not None else None,
-            "tokens": tokens,
+            "tokens": (tokens["prompt_tokens"] + tokens["completion_tokens"]) if has_tok else None,
+            "prompt_tokens": tokens.get("prompt_tokens") if has_tok else None,
+            "completion_tokens": tokens.get("completion_tokens") if has_tok else None,
+            "llm_calls": tokens.get("calls") if has_tok else None,
         },
     }
     return report
+
+
+def stage_timings_from_run(run_id: Optional[str], limit: int = 800,
+                           path: Optional[Path] = None) -> list[dict]:
+    """从 logs/stage_quality.jsonl 按 run_id 取逐节点耗时,转成 business_value_metrics 需要的
+    [{"node", "duration_sec"}, ...]。CLI(run_demo)路径用它补 stage_timings,与 API 路径
+    (state["_stage_report"])同源——都来自 graph._instrument 的节点内实测。"""
+    if not run_id:
+        return []
+    p = path or Path("logs/stage_quality.jsonl")
+    if not p.exists():
+        return []
+    rows: list[dict] = []
+    for line in p.read_text(encoding="utf-8").splitlines()[-limit:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if r.get("run_id") == run_id:
+            rows.append(r)
+    return [
+        {"node": r.get("node") or r.get("stage"),
+         "duration_sec": (r.get("cost") or {}).get("elapsed_sec") or r.get("elapsed_sec") or 0}
+        for r in rows
+    ]
+
+
+def node_typical_seconds(defaults: dict, limit: int = 500, min_samples: int = 5,
+                         path: Optional[Path] = None) -> dict:
+    """按 logs/stage_quality.jsonl 最近 limit 条历史算各节点 elapsed_sec 的 p50,用于前端 ETA。
+    某节点样本 < min_samples 时回退 defaults(文件缺失/解析失败也回退,失败静默不抛)。"""
+    p = path or Path("logs/stage_quality.jsonl")
+    samples: dict[str, list[float]] = {}
+    if p.exists():
+        try:
+            for line in p.read_text(encoding="utf-8").splitlines()[-limit:]:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except Exception:  # noqa: BLE001
+                    continue
+                node = r.get("node") or r.get("stage")
+                el = (r.get("cost") or {}).get("elapsed_sec")
+                if el is None:
+                    el = r.get("elapsed_sec")
+                if node and isinstance(el, (int, float)) and el > 0:
+                    samples.setdefault(node, []).append(float(el))
+        except OSError:
+            pass
+    result = dict(defaults)
+    for node, vals in samples.items():
+        if len(vals) >= min_samples:
+            vals.sort()
+            result[node] = vals[len(vals) // 2]
+    return result

@@ -36,6 +36,7 @@ def build_initial_state(
     runtime_profile: str = "deep",
     analysis_intent: str = "feature_compare",
 ) -> AgentState:
+    import secrets
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
@@ -54,7 +55,9 @@ def build_initial_state(
             "runtime_profile": runtime_profile,
             "generated_at": now.isoformat(),
             "data_cutoff": now.strftime("%Y-%m-%d"),
-            "agent_trace_id": f"trace_{now.strftime('%Y%m%d%H%M%S')}",
+            # 加 4 位随机后缀:同秒内并发起的多个 run(API 高并发)不会撞同一 trace_id,
+            # 否则 stage_quality.jsonl / llm_calls.jsonl 按 run_id 聚合会串运行。
+            "agent_trace_id": f"trace_{now.strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(2)}",
         },
         "evidence_plan": None,
         "raw_evidence": None,
