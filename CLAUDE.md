@@ -25,13 +25,12 @@
 ## 3. 架构速览
 
 ```
-Collector → Analyzer(2步) → Writer → Reviewer ─┬─ passed → END
-                                                ├─ running → 按 target 配额回到对应节点
-                                                │            (collector:1, analyzer:2, writer:1)
-                                                └─ degraded → degraded_writer → END
+Collector → Analyzer(2步) → Writer → Reviewer → guard_revise → END
 ```
 
-四个 Agent 节点 + 一个降级节点，LangGraph 编排。Analyzer v2.2 拆 facts→derivations 两步，每步自带 quick_validate。状态见 `AgentState`（v2.2 §三）。
+直线控制流（v3 M4，2026-06-11）：打回路由/retry 配额/degraded_writer 节点已删（54 run 仅 1 次触发打回）。Reviewer 定位清单 → `guard_revise` 确定性修订 → 有变化则 writer 重渲染出货；终态规则：running+有修订→passed / 零修订→degraded（报告外层包分层说明，原 degraded_writer 措辞由 `guard._degraded_annex` 承担）。Analyzer v2.2 拆 facts→derivations 两步，每步自带 quick_validate。状态见 `AgentState`（v2.2 §三）。
+
+v3 新模块（详见 `docs/design-v3-draft.md` §六迁移表）：`evidence_gaps`（缺口判定唯一入口 `find_gaps`→`stage_report.Gap` + 池内回捞）、`guard`（结论强度唯一 owner：G1 强对比对账/G2 basis 对账/幂等 `apply()`）、`evidence_service`（采集执行唯一 owner：`fill()` 回捞优先→定向外搜；Analyst 簇零采集 import，AST 回归测试锁边界）。
 
 ## 4. 模块职责（不要越界）
 
