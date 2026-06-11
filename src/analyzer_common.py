@@ -310,6 +310,10 @@ def _compact_evidence(evidence: list[dict], per_type: Optional[int] = None,
             base -= 0.15
         elif freshness == "unknown":
             base -= 0.05
+        if e.get("_recalled"):
+            # 池内回捞(evidence_gaps.recall_from_pool)的证据是缺口定向捞回的,
+            # 必须进 prompt 视野,否则回捞轮白跑 → 直接顶到桶首
+            base += 1.0
         return base
     for lst in by_key.values():
         ranked = sorted(lst, key=_rank_key, reverse=True)
@@ -322,6 +326,12 @@ def _compact_evidence(evidence: list[dict], per_type: Optional[int] = None,
             if any(_near_dup(tok, kt, thresh) for kt in kept_tok):
                 continue  # 近似重复,已有更高可信度的代表
             kept_tok.append(tok)
+            # 回捞证据放宽截断:默认 snip 常把档位价/功能细节切掉,正是假性缺口的成因
+            if e.get("_recalled"):
+                from .evidence_gaps import RECALL_SNIPPET_LEN
+                snip_e = max(snip, RECALL_SNIPPET_LEN)
+            else:
+                snip_e = snip
             out.append({
                 "evidence_id": e.get("evidence_id"),
                 "product": e.get("product"),
@@ -330,7 +340,7 @@ def _compact_evidence(evidence: list[dict], per_type: Optional[int] = None,
                 "source_freshness": e.get("source_freshness"),
                 "observed_at": e.get("observed_at"),
                 "claim": e.get("claim"),
-                "extracted_snippet": smart_truncate(e.get("extracted_snippet") or "", snip),
+                "extracted_snippet": smart_truncate(e.get("extracted_snippet") or "", snip_e),
             })
             if len(kept_tok) >= per_type:
                 break

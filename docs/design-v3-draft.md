@@ -171,7 +171,7 @@ Intake → EvidenceService → Analyst ⇄(缺口声明/补证据) → Guard →
 | 步骤 | 内容 | 验证 |
 |------|------|------|
 | M0 ✅ | (design-v3.md 已完成)StageReport 契约 `src/stage_report.py` + timeline/checklist 观测面 | 已合入,本草案直接复用 Gap/Check,不重做 |
-| M1 | 合并缺口判定口径(最疼的):`audit_coverage` 与 `_coverage_gaps` 统一(含 reviewer intent-aware 口径),产出 `stage_report.Gap`,补"先回捞池内"逻辑 | 同输入下缺口判定结果与两套旧逻辑的并集一致;refill 外搜轮次下降 |
+| M1 ✅ | (2026-06-11 代码完成)`src/evidence_gaps.py`:`find_gaps()` 统一两套口径产出 `stage_report.Gap`(并集+task_key 去重);`recall_from_pool()` 外搜前先回捞池内被 top-K/截断挡住的证据(`_recalled` 标记 → `_compact_evidence` 顶进视野+放宽截断至 400 字符);analyzer refill 循环回捞优先,collector 验收门挂 `gaps_unified`。回退开关 `ANALYZER_POOL_RECALL=0` | 对账测试 7 例通过(并集一致/去重/回捞收敛/视野提升);238 测试全过;refill 外搜轮次下降待答辩后 live trace 复核。注:阈值表仍在 quality/augment 原位,M3 随 EvidenceService 迁入吸收 |
 | M2 | 收编 Guard:sanitize/soften/anchors 迁入单模块 + R6 对账规则 | R6 warning 9→≤3 条;quality_score 73→80+;幂等性测试 |
 | M3 | 拆 EvidenceService:`analyzer_augment` 执行逻辑迁入,Analyst 只留缺口声明接口(`Gap[]`) | analyzer 节点零网络调用;端到端耗时不升 |
 | M4 | 删打回机器 + degraded_writer,控制流改直线+一次修订 | 全量测试基线零回归(测试数随迭代增长,不写死);DEMO_LOOP 场景改由 Guard 修订路径覆盖 |

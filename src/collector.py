@@ -117,6 +117,13 @@ def acceptance_gate_and_heal(merged: list[dict], meta: dict, focus: str,
         merged = cap_evidence_per_product(dedupe_evidence(merged + patch), limit=cap_limit)
         audit = annotate_and_audit(merged, meta)
         print(f"  [self-heal] round {rnd+1} 后: Gap {before} → {len(audit['gaps'])}, +{len(patch)} 证据")
+    # M1 统一口径(加法):同一份 gaps 归一为 stage_report.Gap(owner_node/task_key 派生),
+    # 供 StageReport/checklist/后续 EvidenceService 消费;旧 audit['gaps'] 原样保留。
+    try:
+        from .evidence_gaps import find_gaps
+        audit["gaps_unified"] = find_gaps(merged, meta, audit=audit)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [self-heal] gaps 归一失败(忽略): {type(e).__name__}: {e}")
     return merged, audit
 
 
