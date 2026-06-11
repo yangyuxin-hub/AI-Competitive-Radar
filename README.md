@@ -293,6 +293,7 @@ pytest -q          # 26 个测试文件 / 201 用例，覆盖 collector / analyz
 
 - 📋 [`presentation/demo_script.md`](presentation/demo_script.md) — 现场演示脚本（含台词）
 - 💬 [`presentation/talking_points.md`](presentation/talking_points.md) — 评委 Q&A 应答模板
+- 🧭 [`docs/project-overview-diagrams.md`](docs/project-overview-diagrams.md) — 项目介绍与图设计（答辩 / README / 路演页复用）
 - 🏗️ [`docs/design-v2.2.md`](docs/design-v2.2.md) — 完整架构设计（v2.2.1 frozen）
 - 📖 [`docs/competitive-analysis-playbook.md`](docs/competitive-analysis-playbook.md) — 竞品分析方法论
 

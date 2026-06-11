@@ -39,7 +39,7 @@ MODE_CONFIG = {
     },
     "full": {
         "hard_gate": {"R0", "R1", "R2", "R3", "R4", "R5", "R9", "R10"},
-        "soft": {"R7"},
+        "soft": {"R7"},  # R7 的 freshness_stale_pricing 在 full 模式通过 _UPGRADE_TO_HARD 升级
         "llm": True,
     },
 }
@@ -55,6 +55,7 @@ ISSUE_TYPE_TO_TARGET = {
     "semantic_grounding_fail": "analyzer",
     "semantic_grounding_unavailable": "analyzer",
     "freshness_stale": "collector",
+    "freshness_stale_pricing": "collector",
     "missing_product_evidence": "collector",
     "missing_claim_type_coverage": "collector",
     "missing_pricing_content": "collector",
@@ -225,10 +226,18 @@ def check_freshness_and_confidence(schema: dict, evidence: list[dict]) -> list[d
             if not ev:
                 continue
             if ev.get("source_freshness") == "stale":
-                issues.append(_mk_issue(
-                    "R7", "freshness_stale", f"evidence.{eid}",
-                    f"evidence {eid} 已过期({ev.get('observed_at', '?')})",
-                ))
+                # pricing 类 stale 影响最大(TTL=7d),单独标记以便 full 模式下升级为 hard gate
+                if ev.get("claim_type") == "pricing":
+                    issues.append(_mk_issue(
+                        "R7", "freshness_stale_pricing", f"evidence.{eid}",
+                        f"定价证据 {eid} 已过期({ev.get('observed_at', '?')}),定价变化快需及时更新",
+                        required_claim_types=["pricing"],
+                    ))
+                else:
+                    issues.append(_mk_issue(
+                        "R7", "freshness_stale", f"evidence.{eid}",
+                        f"evidence {eid} 已过期({ev.get('observed_at', '?')})",
+                    ))
     return issues
 
 
@@ -572,11 +581,13 @@ def check_semantic_grounding(schema: dict, evidence: list[dict], llm) -> list[di
     }
 
     try:
+        from .llm import deep_thinking_mode
         raw = llm.call_json(
             _r6_system_prompt(),
             payload,
             max_tokens=3072,
             label="reviewer_r6",
+            thinking=deep_thinking_mode(),  # 审查是推理任务,走 DEEP 档位
         )
     except Exception as e:
         return _r6_unavailable(f"R6 LLM 调用失败:{type(e).__name__}: {e}")
@@ -819,7 +830,11 @@ def make_reviewer_node(llm=None, mode: Optional[str] = None):
                     issue["severity"] = "error"
                     all_issues.append(issue)
                 elif rule_id in cfg["soft"]:
-                    issue["severity"] = "warning"
+                    # freshness_stale_pricing 在 full 模式下升级为 hard gate — 定价过期=无参考价值
+                    if issue.get("issue_type") == "freshness_stale_pricing" and mode == "full":
+                        issue["severity"] = "error"
+                    else:
+                        issue["severity"] = "warning"
                     all_issues.append(issue)
 
         # R9/R10 writer 自检:作用于已渲染的 report_draft(chip 可溯源 / 禁泄 quality_score)

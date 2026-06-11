@@ -217,7 +217,7 @@ def score_report(
 
     需要真实 LLM(ARK_API_KEY);Mock 模式会抛错——评分本质需要语义判断。
     """
-    from .llm import get_llm, is_mock_mode
+    from .llm import deep_thinking_mode, get_llm, is_mock_mode
 
     if is_mock_mode():
         raise RuntimeError("judge 需要真实 LLM 语义判断,请取消 ANALYZER_MOCK 并设置 ARK_API_KEY")
@@ -235,6 +235,7 @@ def score_report(
         },
         max_tokens=2048,
         label="judge",
+        thinking=deep_thinking_mode(),  # 质量评分是语义判断,走 DEEP 档位
     )
 
     return _assemble_scorecard(raw, features, meta, rubric)

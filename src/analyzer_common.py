@@ -228,7 +228,55 @@ def _near_dup(a: set, b: set, thresh: float = 0.82) -> bool:
     return union > 0 and len(a & b) / union >= thresh
 
 
-def _compact_evidence(evidence: list[dict]) -> list[dict]:
+def prompt_slim_enabled() -> bool:
+    """ANALYZER_PROMPT_SLIM=1 → 启用 payload 瘦身(meta 白名单 + derivations 按 section 过滤证据)。
+
+    未设置=完全沿用旧 payload(零行为变化)。实测旧口径下全 run prompt 21.6 万 token,
+    其中 derivations 四 section 各带逐字节相同的 45.5k 字符证据(~35%),meta 的
+    evidence_plan(采集规划)对 Analyzer LLM 无用却全员搭车。"""
+    return os.environ.get("ANALYZER_PROMPT_SLIM", "").strip() in ("1", "true", "True")
+
+
+# LLM 真正用得上的 meta 字段;evidence_plan/trace 类是 Collector/可观测性的内务,不进 prompt
+_LLM_META_KEYS = (
+    "report_id", "target_product", "competitors", "analysis_focus",
+    "analysis_purpose", "analysis_intent", "data_cutoff",
+)
+
+
+def _slim_meta_for_llm(meta: dict) -> dict:
+    return {k: meta[k] for k in _LLM_META_KEYS if k in meta}
+
+
+def llm_meta(meta: dict) -> dict:
+    """payload 组装统一入口:flag 开 → 白名单瘦身;关 → 原样透传。"""
+    return _slim_meta_for_llm(meta) if prompt_slim_enabled() else meta
+
+
+# derivations 各 section 真正需要的证据类型;None=全类型(swot 要全景)。
+# 引用合法性不受影响:过滤后是全量证据的子集,R1/R9/sanitize 校验的是全量池。
+_DERIV_SECTION_CLAIM_TYPES: dict[str, Optional[set]] = {
+    "swot": None,
+    "recommendations": {"user_pain", "performance_quality", "feature_existence", "pricing"},
+    "positioning_map": {"pricing", "feature_existence", "performance_quality"},
+    "competitor_landscape": {"feature_existence", "performance_quality", "market_signal"},
+}
+
+
+def compact_evidence_for_deriv(evidence: list[dict], section: str) -> list[dict]:
+    """derivations 专用:按 section 过滤 claim_type + 更紧的 top-K/片段长。
+
+    derivations 主要基于 facts 推导,证据是佐证而非全集,
+    用 ANALYZER_DERIV_MAX_PER_TYPE(默认5)/ANALYZER_DERIV_SNIPPET_LEN(默认140)收口。"""
+    types = _DERIV_SECTION_CLAIM_TYPES.get(section)
+    sub = evidence if types is None else [e for e in evidence if e.get("claim_type") in types]
+    per_type = int(os.environ.get("ANALYZER_DERIV_MAX_PER_TYPE", "5"))
+    snip = int(os.environ.get("ANALYZER_DERIV_SNIPPET_LEN", "140"))
+    return _compact_evidence(sub, per_type=per_type, snip=snip)
+
+
+def _compact_evidence(evidence: list[dict], per_type: Optional[int] = None,
+                      snip: Optional[int] = None) -> list[dict]:
     """给 LLM 的精简证据:按 (claim_type × 产品) 各取 top-K(按可信度)+ 近似去重 + 截短片段。
     防止证据过多时 prompt 爆炸 → 调用超时。全量证据仍用于本地 evidence_id 校验。
 
@@ -241,18 +289,28 @@ def _compact_evidence(evidence: list[dict]) -> list[dict]:
     而非同一吐槽的 8 种措辞,提升喂给 LLM 的信息密度。空片段直接丢。
     可调:ANALYZER_MAX_EVIDENCE_PER_TYPE(默认8,现为每产品每类)、ANALYZER_SNIPPET_LEN(默认180)、
     ANALYZER_NEARDUP_THRESH(默认0.82,设 1.1 等于关闭近似去重)。"""
-    per_type = int(os.environ.get("ANALYZER_MAX_EVIDENCE_PER_TYPE", "8"))
-    snip = int(os.environ.get("ANALYZER_SNIPPET_LEN", "180"))
+    if per_type is None:
+        per_type = int(os.environ.get("ANALYZER_MAX_EVIDENCE_PER_TYPE", "8"))
+    if snip is None:
+        snip = int(os.environ.get("ANALYZER_SNIPPET_LEN", "180"))
     thresh = float(os.environ.get("ANALYZER_NEARDUP_THRESH", "0.82"))
     by_key: dict[tuple, list[dict]] = {}
     for e in evidence:
         by_key.setdefault((e.get("claim_type", "?"), e.get("product")), []).append(e)
     out: list[dict] = []
-    # 单轨:统一按 quality_score 排序(质量门口径)。evidence_confidence 已退役为决策信号,
-    # 仅在证据缺 quality_score 时作末位兜底(生产链路 collector 已全量打分,实际不会触发)。
+    # 单轨:统一按 quality_score 排序(质量门口径),stale 证据降权——
+    # 时效性差的证据排到同 claim_type 桶尾,让 current 证据优先进 top-K。
+    # pricing 类(TTL=7d)对时效最敏感,stale 定价几乎无参考价值,直接末位。
     def _rank_key(e):
         q = e.get("quality_score")
-        return q if q is not None else (e.get("evidence_confidence", 0) or 0)
+        base = q if q is not None else (e.get("evidence_confidence", 0) or 0)
+        freshness = e.get("source_freshness")
+        if freshness == "stale":
+            # stale 证据降 0.15 分(约一个质量等级),确保被 current 挤出 top-K
+            base -= 0.15
+        elif freshness == "unknown":
+            base -= 0.05
+        return base
     for lst in by_key.values():
         ranked = sorted(lst, key=_rank_key, reverse=True)
         kept_tok: list[set] = []
@@ -269,6 +327,8 @@ def _compact_evidence(evidence: list[dict]) -> list[dict]:
                 "product": e.get("product"),
                 "claim_type": e.get("claim_type"),
                 "source_bias": e.get("source_bias"),
+                "source_freshness": e.get("source_freshness"),
+                "observed_at": e.get("observed_at"),
                 "claim": e.get("claim"),
                 "extracted_snippet": smart_truncate(e.get("extracted_snippet") or "", snip),
             })

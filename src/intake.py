@@ -629,7 +629,7 @@ def propose_stream(user_input: str, domain_hint: Optional[str] = None):
 
     draft: Optional[dict] = None
     try:
-        from .llm import get_llm
+        from .llm import deep_thinking_mode, get_llm
         acc: list[str] = []
         emitted = 0          # 已 yield 的 JSON-reasoning 字符数(无思维链通道时的兜底游标)
         saw_reasoning = False
@@ -641,7 +641,9 @@ def propose_stream(user_input: str, domain_hint: Optional[str] = None):
                     "known_products": _known_product_names(),
                     "web_competitor_signals": signals,
                 },
-                max_tokens=1024, label="intake"):
+                max_tokens=1024, label="intake",
+                # 流式思维链是 intake 的 UX 卖点,走 DEEP 档位(全局 disabled 时仍可单独保留)
+                thinking=deep_thinking_mode()):
             if kind == "reasoning":
                 saw_reasoning = True
                 yield ("reasoning", payload)

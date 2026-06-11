@@ -8,12 +8,13 @@ class FakeLLM:
         self.response = response
         self.calls = []
 
-    def call_json(self, system_prompt, user_payload, max_tokens=4096, label="call"):
+    def call_json(self, system_prompt, user_payload, max_tokens=4096, label="call", **kwargs):
         self.calls.append({
             "system_prompt": system_prompt,
             "user_payload": user_payload,
             "max_tokens": max_tokens,
             "label": label,
+            **kwargs,
         })
         return self.response
 

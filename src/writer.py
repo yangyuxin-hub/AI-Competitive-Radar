@@ -416,7 +416,15 @@ def _render_uncertainty(evidence: list[dict], schema: dict) -> str:
         notes.append("当前证据主要来自厂商官方材料，用户体验与痛点结论需要第三方/用户侧证据补强。")
     stale_count = sum(1 for e in evidence if e.get("source_freshness") == "stale")
     if stale_count:
-        notes.append(f"存在 {stale_count} 条超过 TTL 的证据，涉及定价或功能变化时应优先复核。")
+        stale_pricing = sum(1 for e in evidence
+                           if e.get("source_freshness") == "stale" and e.get("claim_type") == "pricing")
+        stale_other = stale_count - stale_pricing
+        parts: list[str] = []
+        if stale_pricing:
+            parts.append(f"{stale_pricing} 条定价证据(TTL=7天)已过期，定价可能已调整，建议立即复核官网")
+        if stale_other:
+            parts.append(f"{stale_other} 条其他证据超过 TTL")
+        notes.append("存在 " + "；".join(parts) + "。")
     if not schema.get("recommendations"):
         notes.append("本次分析缺少可执行建议，不能直接作为产品排期依据。")
     swot = schema.get("swot") or {}

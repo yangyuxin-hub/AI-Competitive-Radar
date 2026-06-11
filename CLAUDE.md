@@ -129,6 +129,10 @@ docs/task-requirements.md     # 赛题需求
   - `ARK_API_KEY` + `ARK_EP`（或 `LLM_API_KEY` + `LLM_MODEL` + `LLM_BASE_URL`）
   - `ANALYZER_MOCK=1`：无 API key 跑骨架，走 `sample_report.json`
   - `ANALYZER_MOCK=1`：无 API key 跑骨架，走 `sample_report.json`
+  - `LLM_THINKING=disabled`：关掉 Doubao Seed 思考模型的隐藏思维链（`llm_calls.jsonl` 实测 43%-91% 的 completion_tokens 是不可见 reasoning，~70 tok/s 下即每次 20-40s 纯思考；机械分类实测 24.8s→1.4s）。未设置=不传参数零行为变化
+  - `LLM_THINKING_DEEP`：深度推理调用（swot/recommendations/reviewer_r6/judge/intake 流式）的独立档位，未设回退全局。注意：**Seed-2.0-lite 只支持 enabled/disabled，传 auto 报 400**；llm.py 对 thinking 被拒会自动去参重试一次，不会把 run 打成 degraded
+  - `ANALYZER_PROMPT_SLIM=1`：Analyzer payload 瘦身——meta 白名单（剔除 evidence_plan 等采集内务）+ derivations 按 section 过滤证据类型（不再四份相同 45k 快照）+ deriv 专用紧口径（`ANALYZER_DERIV_MAX_PER_TYPE=5`/`ANALYZER_DERIV_SNIPPET_LEN=140`）。未设=旧口径零变化
+  - **推荐运行配置（已 A/B 验证）**：`LLM_THINKING=disabled` + `LLM_THINKING_DEEP=enabled` + `ANALYZER_PROMPT_SLIM=1`——derivations prompt −23~38%、recommendations 74s→40s、judge 盲评零掉分、chip 不减、R 规则零新增 failed
   - 代理实测给 LLM 调用平添 ~10s，客户端已 `trust_env=False` 关掉系统代理
 - **Web 搜索**：多供应商自动降级（`src/search.py`），统一返回 `{title,url,content,score}`：
   - 主力 **Brave**（`BRAVE_API_KEY`，免费额度大）→ **Tavily**（`TAVILY_API_KEY`，额度小易触 432）→ **DuckDuckGo**（`ddgs` 包，无 key 免费兜底）

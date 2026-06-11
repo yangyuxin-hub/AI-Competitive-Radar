@@ -32,6 +32,9 @@ from .analyzer_common import (  # noqa: F401 — 基座 helper/预览/dedup/进�
     _REQUIRED_CT,
     _compact_evidence,
     _der_summary,
+    compact_evidence_for_deriv,
+    llm_meta,
+    prompt_slim_enabled,
     _derivations_preview,
     _emit_progress,
     _evidence_ids,
@@ -64,7 +67,7 @@ from .analyzer_fallback import (  # noqa: F401 — 骨架兜底构建器,re-expo
     _fallback_derivations,
     _fallback_facts,
 )
-from .llm import get_llm, is_mock_mode, load_sample_report
+from .llm import deep_thinking_mode, get_llm, is_mock_mode, load_sample_report
 from .state import AgentState
 
 # B2: per-product feature_fill 调用计数（跨 gap_refill 轮次累加），超阈值走骨架兜底
@@ -389,7 +392,7 @@ def _feature_spine(system_base: str, evidence: list[dict], meta: dict) -> list[d
     )
     spine = get_llm().call_json(
         f"{system_base}\n\n## 本次任务范围(重要)\n{spine_instruct}",
-        {"analysis_meta": meta, "feature_evidence_count_by_product": cov_by_prod,
+        {"analysis_meta": llm_meta(meta), "feature_evidence_count_by_product": cov_by_prod,
          "raw_evidence": _compact_evidence(ft_ev)},
         label="facts:feature_spine", timeout=timeout,
     )
@@ -523,7 +526,7 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
         )
         out = get_llm().call_json(
             f"{system_base}\n\n## 本次任务范围(重要)\n{fill_instruct}",
-            {"analysis_meta": meta, "feature_list": feats, "raw_evidence": prod_ev},
+            {"analysis_meta": llm_meta(meta), "feature_list": feats, "raw_evidence": prod_ev},
             label=f"facts:feature_fill:{product}", timeout=timeout,
         )
         block = out.get("products") if isinstance(out, dict) else None
@@ -626,7 +629,7 @@ def _facts_section_call(section: str, system_base: str, evidence: list[dict], me
     cfg = _FACTS_SECTIONS[section]
     sub_ev = _compact_evidence([e for e in evidence if e.get("claim_type") in cfg["claim_types"]])
     system = f"{system_base}\n\n## 本次任务范围(重要)\n{cfg['instruct']}\n仍需遵守上面所有 HARD CONSTRAINTS。"
-    payload = {"analysis_meta": meta, "raw_evidence": sub_ev}
+    payload = {"analysis_meta": llm_meta(meta), "raw_evidence": sub_ev}
     # facts 三 section 并行,任意一个 hang 不该拖到共享 client 的 200s 才降级。
     # 单独给一个更短超时(ANALYZER_FACTS_TIMEOUT,默认 90s),超时即抛 → 上层用兜底填充。
     timeout = float(os.environ.get("ANALYZER_FACTS_TIMEOUT", "90"))
@@ -706,7 +709,11 @@ def _deriv_section_call(section: str, system_base: str, payload: dict) -> tuple[
         "仍需遵守上面所有约束。"
     )
     timeout = float(os.environ.get("ANALYZER_DERIV_TIMEOUT", "90"))
-    out = get_llm().call_json(system, payload, label=f"derivations:{section}", timeout=timeout)
+    # swot/recommendations 是真推理任务,走 LLM_THINKING_DEEP 档位保质量;
+    # positioning_map/competitor_landscape 偏结构化抽取,沿用全局档位。
+    deep = deep_thinking_mode() if section in ("swot", "recommendations") else None
+    out = get_llm().call_json(system, payload, label=f"derivations:{section}",
+                              timeout=timeout, thinking=deep)
     return section, _extract_section(out, section)
 
 
@@ -805,15 +812,26 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
         return der
 
     system = load_prompt("analyzer_derivations")
-    # derivations 主要基于 facts;证据用精简版即可(不再重复塞全量,防 prompt 爆炸)
-    payload = {"analysis_meta": meta, "raw_evidence": _compact_evidence(evidence), "facts": facts}
+    # derivations 主要基于 facts;证据用精简版即可(不再重复塞全量,防 prompt 爆炸)。
+    # ANALYZER_PROMPT_SLIM=1 时进一步按 section 过滤证据类型(四 section 不再共享同一份
+    # 45k 字符快照)+ meta 白名单;关闭时保持共享 payload 旧口径。
+    if prompt_slim_enabled():
+        payloads = {
+            s: {"analysis_meta": llm_meta(meta),
+                "raw_evidence": compact_evidence_for_deriv(evidence, s),
+                "facts": facts}
+            for s in _DERIV_SECTIONS
+        }
+    else:
+        shared = {"analysis_meta": meta, "raw_evidence": _compact_evidence(evidence), "facts": facts}
+        payloads = {s: shared for s in _DERIV_SECTIONS}
     _emit_progress(step="derivations", phase="start", attempt=1, preview=_facts_preview(facts))
 
     # swot ‖ recommendations 并行子调用;任一失败用兜底对应字段填充
     der: dict = {}
     fb = None
     with CtxThreadPoolExecutor(max_workers=len(_DERIV_SECTIONS)) as ex:
-        futs = {ex.submit(_deriv_section_call, s, system, payload): s for s in _DERIV_SECTIONS}
+        futs = {ex.submit(_deriv_section_call, s, system, payloads[s]): s for s in _DERIV_SECTIONS}
         for fut in as_completed(futs):
             section = futs[fut]
             try:
@@ -960,8 +978,17 @@ def analyzer_node(state: AgentState) -> AgentState:
             except Exception as e:  # noqa: BLE001
                 print(f"[analyzer] gap refill 失败(忽略): {e}")
                 new_ev = []
+            # 双重去重:evidence_id 之外再按归一化文本去一次——SPA 页重抓时 chunk 顺序
+            # 漂移会让同内容拿到新 ID(id 含页内 idx),纯 id 去重拦不住,重复内容会
+            # 虚增"新证据"并触发无意义的 section 重算(实测一轮虚增 32 条)。
             existing_ids = {e.get("evidence_id") for e in evidence}
-            new_ev = [e for e in new_ev if e.get("evidence_id") not in existing_ids]
+            def _ev_text(e):
+                return " ".join(sorted(_norm_tokens(
+                    (e.get("extracted_snippet") or e.get("claim") or ""))))
+            existing_txt = {_ev_text(e) for e in evidence}
+            new_ev = [e for e in new_ev
+                      if e.get("evidence_id") not in existing_ids
+                      and _ev_text(e) not in existing_txt]
             if not new_ev:
                 print(f"[analyzer] gap refill round {round_idx + 1}: 没补到新证据,停止")
                 break  # 补不到新证据 → 再循环也白搭

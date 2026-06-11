@@ -180,6 +180,38 @@ def is_mock_mode() -> bool:
     return os.environ.get("ANALYZER_MOCK", "").strip() in ("1", "true", "True")
 
 
+def _thinking_extra_body(mode: Optional[str] = None) -> Optional[dict]:
+    """thinking 档位 → 透传 Ark thinking 参数;无效/未设置 → 不传(零行为变化)。
+
+    优先级:显式 mode 参数 > 环境变量 LLM_THINKING。
+    背景:Doubao-Seed-2.0 系思考模型,默认每次调用先吐数千 token 思维链
+    (llm_calls.jsonl 实测 43%-91% 的 completion_tokens 是不可见 reasoning,
+    吞吐 ~70 tok/s 下即 20-40s/次纯思考)。机械抽取/分类任务关掉可砍大头延迟。"""
+    m = (mode or os.environ.get("LLM_THINKING", "")).strip().lower()
+    if m in ("disabled", "enabled", "auto"):
+        return {"thinking": {"type": m}}
+    return None
+
+
+def _is_thinking_rejected(e: Exception) -> bool:
+    """服务端拒绝 thinking 参数(如 Doubao-Seed-2.0-lite 不支持 auto,400 InvalidParameter)。
+
+    实测 2026-06-11:lite 只认 enabled/disabled,传 auto 报
+    'Unsupported thinking type for the current model'。按消息文本判断,
+    避免 import openai 异常类型造成硬依赖。"""
+    msg = str(e)
+    return "thinking" in msg.lower() and ("InvalidParameter" in msg or "Unsupported" in msg)
+
+
+def deep_thinking_mode() -> Optional[str]:
+    """深度推理类调用(swot/recommendations/reviewer R6/judge/intake 流式)的 thinking 档位。
+
+    LLM_THINKING_DEEP 优先;未设置返回 None → call_json 内回退全局 LLM_THINKING。
+    推荐 Demo 配置:LLM_THINKING=disabled + LLM_THINKING_DEEP=enabled
+    (机械抽取砍延迟,深度推理保质量)。"""
+    return os.environ.get("LLM_THINKING_DEEP", "").strip().lower() or None
+
+
 def load_sample_report() -> dict:
     """Mock 模式下,把 sample_report.json 拆成 facts / derivations 两部分"""
     with _SAMPLE_REPORT_PATH.open(encoding="utf-8") as f:
@@ -230,6 +262,7 @@ class LLMClient:
         max_tokens: Optional[int] = None,
         label: str = "call",
         timeout: Optional[float] = None,
+        thinking: Optional[str] = None,
     ) -> dict:
         """调用 LLM,要求返回 JSON 对象。Mock 模式下不实际调用。
 
@@ -261,10 +294,20 @@ class LLMClient:
         kwargs = {"model": model, "messages": messages, "temperature": 0.2}
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        extra = _thinking_extra_body(thinking)
+        if extra is not None:
+            kwargs["extra_body"] = extra
         # 单次调用可覆写超时(facts 并行子调用用更短的超时 → hung 的 section 快速降级,
         # 不必等共享 client 的 200s)。其余字段沿用 _ensure() 建好的 client。
         call_client = client.with_options(timeout=timeout) if timeout is not None else client
-        resp = call_client.chat.completions.create(**kwargs)
+        try:
+            resp = call_client.chat.completions.create(**kwargs)
+        except Exception as e:
+            # thinking 档位被服务端拒绝 → 去掉参数重试一次,不让配置错误把整个 section 打成兜底
+            if "extra_body" not in kwargs or not _is_thinking_rejected(e):
+                raise
+            kwargs.pop("extra_body")
+            resp = call_client.chat.completions.create(**kwargs)
         elapsed = time.time() - t0
         raw = resp.choices[0].message.content or "{}"
         usage = getattr(resp, "usage", None)
@@ -301,6 +344,7 @@ class LLMClient:
         max_tokens: Optional[int] = None,
         label: str = "call",
         timeout: Optional[float] = None,
+        thinking: Optional[str] = None,
     ):
         """流式版 call_json。生成器,逐块 yield 过程事件,最后 yield 解析结果:
             ("reasoning", delta)  模型思维链增量(模型走 reasoning_content 通道时才有)
@@ -323,13 +367,22 @@ class LLMClient:
         kwargs = {"model": model, "messages": messages, "temperature": 0.2, "stream": True}
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        extra = _thinking_extra_body(thinking)
+        if extra is not None:
+            kwargs["extra_body"] = extra
         call_client = client.with_options(timeout=timeout) if timeout is not None else client
 
         t0 = time.time()
         _emit_llm(label=label, phase="start")
         parts: list[str] = []
         try:
-            stream = call_client.chat.completions.create(**kwargs)
+            try:
+                stream = call_client.chat.completions.create(**kwargs)
+            except Exception as e:
+                if "extra_body" not in kwargs or not _is_thinking_rejected(e):
+                    raise
+                kwargs.pop("extra_body")
+                stream = call_client.chat.completions.create(**kwargs)
             for chunk in stream:
                 choices = getattr(chunk, "choices", None)
                 if not choices:
