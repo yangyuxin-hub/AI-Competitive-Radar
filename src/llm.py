@@ -44,10 +44,58 @@ def _strip_json(text: str) -> str:
     return text
 
 
+def _close_truncated(s: str) -> str:
+    """扫描 JSON 文本,闭合尾部未结的字符串和括号(不动中间内容)。"""
+    stack: list[str] = []
+    in_str = esc = False
+    for ch in s:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack:
+            stack.pop()
+    return s + ('"' if in_str else "") + "".join(reversed(stack))
+
+
+def repair_truncated_json(raw: str) -> Optional[dict]:
+    """尽力修复尾部截断的 JSON(completion 撞 max_tokens/服务端上限的典型产物):
+    先闭合未结的字符串/括号;仍不合法则从尾部逐段砍掉不完整碎片(如 `"key":` 悬空)
+    再闭合重试。成功返回 dict(只丢截断点附近的碎片,保住其余数据),无解返回 None。
+    注意:不能复用 _strip_json——它按 rfind("}") 尾切,会把截断点之前最后一个 `}`
+    之后的整段数据(往往是正在生成的大半个对象)连带扔掉,只剥前缀即可。"""
+    s = (raw or "").strip()
+    start = s.find("{")
+    if start < 0:
+        return None
+    s = s[start:]
+    for _ in range(50):
+        candidate = _close_truncated(s.rstrip().rstrip(","))
+        try:
+            out = json.loads(candidate)
+            return out if isinstance(out, dict) else None
+        except json.JSONDecodeError:
+            cut = max(s.rfind(","), s.rfind("{"), s.rfind("["))
+            if cut <= 0:
+                return None
+            s = s[:cut]
+    return None
+
+
 def _save_raw(label: str, content: str) -> Path:
     _LOGS_DIR.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    path = _LOGS_DIR / f"llm_raw_{label}_{ts}.txt"
+    # label 可能含 `:`(如 facts:pricing_model)——Windows NTFS 把冒号当备用数据流
+    # 分隔符,内容会写进隐藏流、主文件 0 字节,验尸文件等于消失。统一消毒成安全字符。
+    safe_label = re.sub(r"[^\w.-]", "_", label)
+    path = _LOGS_DIR / f"llm_raw_{safe_label}_{ts}.txt"
     path.write_text(content, encoding="utf-8")
     return path
 
@@ -310,6 +358,7 @@ class LLMClient:
             resp = call_client.chat.completions.create(**kwargs)
         elapsed = time.time() - t0
         raw = resp.choices[0].message.content or "{}"
+        finish_reason = getattr(resp.choices[0], "finish_reason", None)
         usage = getattr(resp, "usage", None)
         prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
         completion_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
@@ -331,9 +380,17 @@ class LLMClient:
             try:
                 return json.loads(cleaned)
             except json.JSONDecodeError as e:
+                # 截断修复兜底:completion 撞 max_tokens/服务端上限时输出拦腰截断
+                # (finish_reason=length),整段报废太亏——闭合/砍碎片salvage,只丢尾部。
+                repaired = repair_truncated_json(raw)
+                if repaired:
+                    print(f"[llm] {label}: ⚠ JSON 截断已修复(finish_reason={finish_reason},"
+                          f" 原文 {len(raw)} 字符),丢弃尾部碎片继续")
+                    return repaired
                 path = _save_raw(label, raw)
                 raise RuntimeError(
-                    f"LLM 输出无法解析为 JSON: {e}; 原始输出已保存到 {path}"
+                    f"LLM 输出无法解析为 JSON(finish_reason={finish_reason}): {e}; "
+                    f"原始输出已保存到 {path}"
                 ) from e
 
     def stream_json(
