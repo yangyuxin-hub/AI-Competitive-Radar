@@ -69,7 +69,7 @@ from .analyzer_fallback import (  # noqa: F401 — 骨架兜底构建器,re-expo
     _fallback_derivations,
     _fallback_facts,
 )
-from .evidence_gaps import pool_recall_enabled, recall_from_pool  # M1 统一缺口口径+池内回捞
+from .evidence_service import fill as _evidence_fill  # M3:缺口声明 → EvidenceService 补证据
 from .llm import deep_thinking_mode, get_llm, is_mock_mode, load_sample_report
 from .state import AgentState
 
@@ -993,35 +993,18 @@ def analyzer_node(state: AgentState) -> AgentState:
             _rtag = f"第{round_idx + 1}轮：" if round_idx else ""
             _emit_progress(step="facts", phase="gap_refill_start",
                            summary=f"[分析阶段] {_rtag}发现 {len(gaps['unknown_cells'])} 个空白项{_tail}{_ptail}，定向补采")
-            # M1 池内回捞优先(design-v3-draft §三):缺口对应的证据可能本来就在池里,
-            # 只是被 top-K/截断挡在 prompt 视野外 → 先零成本捞回(标 _recalled,
-            # _compact_evidence 顶进视野+放宽截断),捞不到才外搜。
-            pool_recalled = recall_from_pool(evidence, gaps) if pool_recall_enabled() else []
-            if pool_recalled:
-                new_ev = pool_recalled  # 已在池内:不追加 evidence,只触发受影响 section 重出
+            # M3:Analyst 只声明缺口,补证据交给 EvidenceService
+            # (回捞优先 → 定向外搜,id+文本双重去重都在 service 内部)。
+            new_ev, fill_mode = _evidence_fill(evidence, meta, gaps, focus, round_idx=round_idx)
+            if fill_mode == "pool":
+                # 回捞的证据已在池内(_recalled 标记 → _compact_evidence 顶视野),不追加
                 print(f"[analyzer] gap refill round {round_idx + 1}: 池内回捞 {len(new_ev)} 条"
                       f"(零搜索成本),重出受影响 section")
-            else:
-                try:
-                    new_ev = _gap_targeted_recollect(meta, gaps, focus, round_idx=round_idx)
-                except Exception as e:  # noqa: BLE001
-                    print(f"[analyzer] gap refill 失败(忽略): {e}")
-                    new_ev = []
-                # 双重去重:evidence_id 之外再按归一化文本去一次——SPA 页重抓时 chunk 顺序
-                # 漂移会让同内容拿到新 ID(id 含页内 idx),纯 id 去重拦不住,重复内容会
-                # 虚增"新证据"并触发无意义的 section 重算(实测一轮虚增 32 条)。
-                existing_ids = {e.get("evidence_id") for e in evidence}
-                def _ev_text(e):
-                    return " ".join(sorted(_norm_tokens(
-                        (e.get("extracted_snippet") or e.get("claim") or ""))))
-                existing_txt = {_ev_text(e) for e in evidence}
-                new_ev = [e for e in new_ev
-                          if e.get("evidence_id") not in existing_ids
-                          and _ev_text(e) not in existing_txt]
-                if not new_ev:
-                    print(f"[analyzer] gap refill round {round_idx + 1}: 没补到新证据,停止")
-                    break  # 补不到新证据 → 再循环也白搭
+            elif fill_mode == "search":
                 evidence = evidence + new_ev
+            else:
+                print(f"[analyzer] gap refill round {round_idx + 1}: 没补到新证据,停止")
+                break  # 补不到新证据 → 再循环也白搭
             # 成本闸门:只重跑「这一轮真补到了对应类型新证据」的 section。
             # 否则像 Asana 付费档这种客观补不上的缺口,会让昂贵的 pricing_model 每轮空转重算(实测 4×/183s)。
             new_cts = {e.get("claim_type") for e in new_ev}

@@ -12,8 +12,8 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from .collector_common import smart_truncate
 from .progress import ProgressChannel
+from .textutil import smart_truncate
 
 # 四类必备 claim_type(覆盖审计/缺口扫描共用),与 collector.REQUIRED_CLAIM_TYPES 同源语义
 _REQUIRED_CT = ("feature_existence", "performance_quality", "pricing", "user_pain")

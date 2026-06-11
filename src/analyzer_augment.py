@@ -1,18 +1,24 @@
-"""Analyzer 证据增强侧流 — 覆盖缺口定向补采 + 合成用户访谈。
+"""Analyzer 缺口判定(纯函数,零网络) — v3 M3 后只留"声明缺口",不再执行采集。
 
-analyzer_node 在主 pipeline 之外调用:_coverage_gaps 扫缺口→_gap_targeted_recollect 补采;
-真实 UGC 不足时 _run_survey 合成访谈兜底。依赖 analyzer_common(单向),采集/搜索为懒导入避环。
-analyzer.py re-export 保 back-compat(测试引 _coverage_gaps/_run_survey/_real_ugc_count 等)。
+执行逻辑(_gap_targeted_recollect/_recollect_pricing_official/_run_survey 系)已迁入
+`evidence_service.py`(系统里唯一碰外部世界的缺口补证据模块),本文件 re-export
+保 back-compat(测试/旧 callsite 引 analyzer._run_survey 等零改动)。
+本文件仅剩:_coverage_gaps(facts 感知缺口扫描)+ _gap_affected_sections(缺口→section 映射)。
 """
 from __future__ import annotations
 
 import os
 import re
-from concurrent.futures import as_completed
-from typing import Optional
 
 from .analyzer_common import _FACTS_SECTIONS, _REQUIRED_CT, _target_products
-from .progress import CtxThreadPoolExecutor
+from .evidence_service import (  # noqa: F401 — M3 执行逻辑迁入 evidence_service,re-export 保 back-compat
+    _gap_targeted_recollect,
+    _real_ugc_count,
+    _recollect_pricing_official,
+    _run_survey,
+    _survey_enabled,
+    _survey_should_run,
+)
 
 
 def _gap_refill_enabled() -> bool:
@@ -114,191 +120,3 @@ def _gap_affected_sections(gaps: dict) -> list[str]:
         else:  # feature_existence / performance_quality 都在 feature_tree 里
             secs.add("feature_tree")
     return [s for s in _FACTS_SECTIONS if s in secs]
-
-
-def _recollect_pricing_official(products: list[str], focus: str) -> list[dict]:
-    """定价缺口治本:对配了 pricing_pages/official_pages 的产品,直接走官网定价页 +
-    Playwright 渲染(SPA 档位价的权威出处),比 web_search 命中准、能拿到真实档位。
-    未配 URL 的产品由调用方的 web_search 兜底。"""
-    if not products:
-        return []
-    try:
-        from .collector import OfficialPageAdapter
-    except Exception:  # noqa: BLE001
-        return []
-    official = OfficialPageAdapter()
-    out: list[dict] = []
-    for product in products:
-        if not official.can_fetch(product):
-            continue
-        try:
-            evs = official.fetch(product, focus)
-            priced = [e for e in evs if e.get("claim_type") == "pricing"]
-            out.extend(priced)
-            print(f"[analyzer] 官网定价补采 '{product}': {len(priced)} 条 pricing 证据")
-        except Exception as e:  # noqa: BLE001
-            print(f"[analyzer] 官网定价补采 '{product}' failed: {type(e).__name__}: {e}")
-    return out
-
-
-def _gap_targeted_recollect(meta: dict, gaps: dict, focus: str, round_idx: int = 0) -> list[dict]:
-    """对缺口做定向搜索:每个空缺 (产品×功能) 一条查询 + 每个产品对缺失 claim_type 一条查询 +
-    per-product 定价缺口走官网渲染。比盲目全量补采更省额度、命中更准。
-
-    query/site 构造复用 source_planner 的语言一致构造器 + 站点锚定,杜绝旧版
-    `{英文产品} {中文功能} {中文焦点}` 中英混搭 + site="" 裸搜捞同名页/学术站的问题。
-    round_idx≥1(多轮升级):提高 results_per_query 并放开站点锚定(全网兜底),扩大召回。"""
-    from collections import defaultdict
-
-    from . import search, source_planner as sp
-
-    added: list[dict] = []
-    # 定价缺口走官网渲染(不依赖搜索额度,SPA 档位价最权威),两种触发:
-    #   - per-product 缺口(有的产品有价、有的没);
-    #   - 全表无价(pricing 整类缺失;per-product 因 any_priced=False 不触发,这里兜住——治"AI编程定价全空")。
-    pricing_gap_products = gaps.get("pricing_gap_products") or []
-    pricing_targets = list(pricing_gap_products)
-    if "pricing" in (gaps.get("missing_claim_types") or []):
-        for p in _target_products(meta):
-            if p not in pricing_targets:
-                pricing_targets.append(p)
-    if pricing_targets:
-        added.extend(_recollect_pricing_official(pricing_targets, focus))
-
-    if not search.tavily_available():
-        return added
-    domain = os.environ.get("DOMAIN", "").strip()
-    cat_en, cat_cn = sp._domain_category(domain)
-    by_ct = sp.load_sources_config().get("by_claim_type") or {}
-    max_cells = int(os.environ.get("ANALYZER_GAP_MAX_QUERIES", "10"))
-    max_sites = int(os.environ.get("ANALYZER_GAP_MAX_SITES", "2"))
-    # 多轮升级:第 2 轮起放开站点锚定 + 多取结果,把第一轮没补到的缺口用更宽的网捞
-    widen = round_idx >= 1
-    rpq = 3 if round_idx == 0 else 5
-    plans: dict[str, list[dict]] = defaultdict(list)
-
-    def _emit(product: str, ct: str, focus_kw: str) -> None:
-        """按 claim_type 锚定权威源各发一条;widen/无 site 时给一条全网兜底(相关性门兜底过滤)。"""
-        base_q = sp._build_query(product, focus_kw, ct, cat_en, cat_cn)
-        sites = [] if widen else sp._sites_for_claim(product, ct, by_ct)[:max_sites]
-        if sites:
-            for site, st, bias in sites:
-                plans[product].append({
-                    "query": base_q, "claim_type": ct, "site": site,
-                    "source_type": st, "bias": bias,
-                })
-        else:
-            plans[product].append({
-                "query": base_q, "claim_type": ct, "site": "",
-                "source_type": "web_search",
-                "bias": "vendor_claim" if ct in ("pricing", "feature_existence") else "third_party",
-            })
-
-    # 空白格 (产品×功能,support_status=unknown):缺的是「该产品到底有没有这个能力」=feature_existence,
-    # 官网/文档是权威出处(和定价同理)。旧版搜 performance_quality(UGC质量)填不了「—」格,导致矩阵塌陷。
-    # 同时补一条质量搜索:若该能力确实存在,顺带捞 UGC 评价(命中则连质量分一起补上)。
-    # **用英文别名检索**:维度名是中文,官网/文档是英文,中文名搜命中低;spine 给的 name_en 命中更准。
-    dim_en = gaps.get("dim_en") or {}
-    for product, fname in gaps["unknown_cells"][:max_cells]:
-        kw = dim_en.get(fname) or fname or focus
-        _emit(product, "feature_existence", kw)
-        _emit(product, "performance_quality", kw)
-    # 整类缺失:每个产品对缺失 claim_type 各补一条(焦点回退到分析焦点)
-    for product in _target_products(meta):
-        for ct in gaps["missing_claim_types"]:
-            _emit(product, ct, focus)
-    # per-product 定价缺口:除官网外,再补一条 pricing 搜索(覆盖未配官网 URL 的产品)
-    for product in pricing_gap_products:
-        _emit(product, "pricing", focus)
-
-    for product, plan in plans.items():
-        try:
-            evs, _ = search.search_plan_to_evidence(product, plan, results_per_query=rpq)
-            added.extend(evs)
-        except Exception as e:  # noqa: BLE001
-            print(f"[analyzer] gap recollect '{product}' failed: {type(e).__name__}: {e}")
-    return added
-
-
-def _survey_enabled() -> bool:
-    return os.environ.get("ANALYZER_SURVEY", "1").strip() not in ("0", "false", "False")
-
-
-def _real_ugc_count(evidence: list[dict]) -> int:
-    """真实用户侧证据数(非合成):reddit/hn/v2ex/UGC 搜索。"""
-    return sum(
-        1 for e in evidence
-        if e.get("source_bias") == "user_generated"
-        and not str(e.get("source_url") or "").startswith("synthetic")
-    )
-
-
-def _survey_should_run(evidence: list[dict], meta: dict) -> bool:
-    """合成问卷只作兜底:真实 UGC 充足时不跑(省时 + 避免合成数据污染结论)。
-    SURVEY_MIN_REAL_UGC(默认 8)条真实用户证据以上即跳过;不足则用合成兜底(已标注)。"""
-    if not _survey_enabled():
-        return False
-    threshold = int(os.environ.get("SURVEY_MIN_REAL_UGC", "8"))
-    real = _real_ugc_count(evidence)
-    if real >= threshold:
-        print(f"[analyzer] survey 跳过:已有 {real} 条真实 UGC(≥{threshold}),不用合成兜底")
-        return False
-    return True
-
-
-def _run_survey(evidence: list[dict], meta: dict) -> tuple[list[dict], Optional[dict]]:
-    """问卷/用户访谈采集 Agent(合成,已标注):对每个产品设计问卷+模拟访谈→证据。
-    在 analyzer 跑(不受采集超时限制、默认全档生效)。返回 (合并 evidence, research_method)。"""
-    from .survey_skill import SurveySkill
-    sk = SurveySkill()
-    products = _target_products(meta)
-    focus = (meta.get("analysis_focus") or [""])[0] if meta.get("analysis_focus") else ""
-    existing = {e.get("evidence_id") for e in evidence}
-    added: list[dict] = []
-    questions: list[dict] = []
-    personas: set[str] = set()
-    with CtxThreadPoolExecutor(max_workers=max(1, len(products))) as ex:
-        futs = {ex.submit(sk.execute, [], product=p, focus=focus): p for p in products}
-        for fut in as_completed(futs):
-            try:
-                evs, m = fut.result()
-            except Exception as e:  # noqa: BLE001
-                print(f"[analyzer] survey '{futs[fut]}' failed: {type(e).__name__}: {e}")
-                continue
-            if not questions and m.get("questionnaire"):
-                questions = m["questionnaire"]
-            for e in evs:
-                eid = e.get("evidence_id")
-                if eid and eid not in existing:
-                    existing.add(eid)
-                    added.append(e)
-                    persona = (e.get("metadata") or {}).get("persona")
-                    if persona:
-                        personas.add(persona)
-    if not added:
-        return evidence, None
-    # 访谈回答原文:从合成证据里还原 persona/问题/反馈/期望,供报告「调研方法」卡逐条展示
-    findings_list: list[dict] = []
-    for e in added:
-        md = e.get("metadata") or {}
-        finding_text = (e.get("claim") or "").replace("[模拟访谈]", "").strip()
-        if not finding_text:
-            continue
-        findings_list.append({
-            "product": e.get("product") or "",
-            "persona": md.get("persona") or "匿名受访者",
-            "question_id": md.get("question_id") or "",
-            "claim_type": e.get("claim_type") or "",
-            "finding": finding_text,
-            "expectation": md.get("expectation") or "",
-            "evidence_id": e.get("evidence_id") or "",
-        })
-    research_method = {
-        "method": "LLM 模拟问卷调研 + 用户访谈(合成数据,非真实用户,已脱敏)",
-        "synthetic": True,
-        "questions": [{"id": q.get("id"), "text": q.get("text")} for q in questions if q.get("text")][:6],
-        "n_findings": len(added),
-        "personas": sorted(personas)[:8],
-        "findings": findings_list[:16],  # 控量:逐条访谈回答,前端可展开
-    }
-    return evidence + added, research_method
