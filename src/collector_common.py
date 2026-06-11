@@ -469,6 +469,12 @@ _CT_KEYWORDS = {
 _PRICE_SIGNAL_WORDS = ("per month", "per user", "per year", "/mo", "/user", "/yr")
 
 
+def is_pricing_url(url: str) -> bool:
+    """定价页 URL 判定(出处规则的单一口径,adapter / 收尾精分类共用)。"""
+    u = (url or "").lower()
+    return "pric" in u or "plan" in u
+
+
 def infer_claim_type(snippet: str, default: str, price_re) -> str:
     """加权关键词打分推断 claim_type(LLM 不可用时的兜底)。pricing 须有真实价格信号兜底,
     避免把含 'plan'/'free' 的功能段误判成定价。无任何信号 → 回退 default。"""
@@ -526,7 +532,11 @@ def _reclassify_official_claim_types(evidence: list[dict]) -> int:
     返回被修正的条数。"""
     if not _claim_llm_enabled():
         return 0
-    idxs = [i for i, e in enumerate(evidence) if e.get("source_type") == "official_page"]
+    # 定价页证据不送 LLM:claim_type 由出处锚定(档位权益全是功能词,LLM 只看文本必改判,
+    # 改没了定价证据 → analyzer 端 pricing 假缺口 → 整轮无效补采)。顺带省分类调用量。
+    idxs = [i for i, e in enumerate(evidence)
+            if e.get("source_type") == "official_page"
+            and not is_pricing_url(e.get("source_url") or "")]
     if not idxs:
         return 0
     changed = 0

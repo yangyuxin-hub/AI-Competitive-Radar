@@ -35,6 +35,7 @@ from .collector_common import (  # noqa: F401
     dump_evidence_debug,
     generate_evidence_id,
     infer_claim_type,
+    is_pricing_url,
     patch_by_requirements,
     reset_debug_file,
     runtime_settings,

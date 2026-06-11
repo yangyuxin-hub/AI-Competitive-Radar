@@ -31,6 +31,7 @@ from .collector_common import (
     discover_all_urls,
     generate_evidence_id,
     infer_claim_type,
+    is_pricing_url,
     runtime_settings,
 )
 
@@ -108,8 +109,7 @@ class OfficialPageAdapter(SourceAdapter):
 
     @staticmethod
     def _is_pricing_url(url: str) -> bool:
-        u = url.lower()
-        return "pric" in u or "plan" in u
+        return is_pricing_url(url)
 
     @classmethod
     def _has_price_evidence(cls, evidences: list[dict]) -> bool:
@@ -348,7 +348,13 @@ class OfficialPageAdapter(SourceAdapter):
             # 加入 idx 避免同一页面内相同文本段产生相同 evidence_id
             eid = generate_evidence_id(product, f"{url}#{idx}", claim)
 
-            claim_type = infer_claim_type(snippet, default_claim_type, OfficialPageAdapter._PRICE_RE)
+            # 定价页出处锚定:档位权益描述满是功能词,关键词打分会把 pricing 改判成
+            # feature_existence → analyzer 端 pricing 假缺口 → 无效补采。出处规则 > 文本规则
+            # (analyzer prompt 同口径:档位/配额/权益属于定价范畴)。
+            if default_claim_type == "pricing":
+                claim_type = "pricing"
+            else:
+                claim_type = infer_claim_type(snippet, default_claim_type, OfficialPageAdapter._PRICE_RE)
 
             # 根据片段长度和信息量调整置信度
             conf = 0.60
