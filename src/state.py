@@ -22,7 +22,11 @@ class AgentState(TypedDict):
     # 导致 api 读不到 → 无 stage_report SSE 事件(前端交付清单不推进、token 计数为 0)。
     _stage_report: Optional[dict]
 
-    # 打回信息
+    # v3 M4:Guard 一次修订的产出(修订计数/消费的 Auditor 发现数),guard_revise 节点写入
+    guard_revision: Optional[dict]
+
+    # 打回信息(M4 后图内无消费者——打回循环已删;reviewer 仍写入,
+    # 供 checklist/stage_report 的缺口归因消费。字段删除留 M4b 收尾)
     reject_target: Optional[Literal["collector", "analyzer", "writer"]]
     reject_requirements: Optional[list[dict]]
 
@@ -71,6 +75,7 @@ def build_initial_state(
         "quality_report": None,
         "collection_meta": None,
         "_stage_report": None,
+        "guard_revision": None,
         "reject_target": None,
         "reject_requirements": None,
         "retry_count": {"collector": 0, "analyzer": 0, "writer": 0},

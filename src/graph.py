@@ -23,7 +23,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 from .analyzer import analyzer_node  # noqa: E402
 from .collector import collector_node  # noqa: E402
 from .evidence_plan import evidence_planner_node  # noqa: E402
-from .reviewer import degraded_writer_node, make_reviewer_node  # noqa: E402
+from .guard import guard_revise_node  # noqa: E402
+from .reviewer import make_reviewer_node  # noqa: E402
 from .state import AgentState, build_initial_state  # noqa: E402
 from .writer import writer_node  # noqa: E402
 
@@ -86,33 +87,18 @@ def build_app(llm: Optional[object] = None, reviewer_mode: Optional[str] = None)
     graph.add_node("analyzer", _instrument("analyzer", analyzer_node))
     graph.add_node("writer", _instrument("writer", writer_node))
     graph.add_node("reviewer", _instrument("reviewer", reviewer_node))
-    graph.add_node("degraded_writer", _instrument("degraded_writer", degraded_writer_node))
+    graph.add_node("guard_revise", _instrument("guard_revise", guard_revise_node))
 
+    # v3 M4:一条直线 + 一次修订。打回路由/retry 配额/degraded_writer 已删
+    # (54 run 仅 1 次触发打回,真实修复全在节点内自愈;Auditor 发现走前向回灌:
+    # reviewer 定位清单 → guard_revise 确定性修订 → Reporter 重渲染 → 出货)。
     graph.set_entry_point("evidence_planner")
     graph.add_edge("evidence_planner", "collector")
     graph.add_edge("collector", "analyzer")
     graph.add_edge("analyzer", "writer")
     graph.add_edge("writer", "reviewer")
-
-    def route_after_review(state: AgentState) -> str:
-        if state.get("status") == "passed":
-            return "end"
-        if state.get("status") == "degraded":
-            return "degraded_writer"
-        return state.get("reject_target") or "analyzer"
-
-    graph.add_conditional_edges(
-        "reviewer",
-        route_after_review,
-        {
-            "collector": "collector",
-            "analyzer": "analyzer",
-            "writer": "writer",
-            "degraded_writer": "degraded_writer",
-            "end": END,
-        },
-    )
-    graph.add_edge("degraded_writer", END)
+    graph.add_edge("reviewer", "guard_revise")
+    graph.add_edge("guard_revise", END)
 
     return graph.compile()
 

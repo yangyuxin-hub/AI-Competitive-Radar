@@ -305,14 +305,15 @@ _PARTS = {
     "collector": _collector_parts,
     "analyzer": _analyzer_parts,
     "writer": _writer_parts,
-    "degraded_writer": _writer_parts,
+    "degraded_writer": _writer_parts,   # 旧档案回放兼容(节点已删)
+    "guard_revise": _writer_parts,      # M4:修订后重渲染,产物口径同 writer
     "reviewer": _reviewer_parts,
 }
 
 
 def _attempt_for(stage: str, state: dict) -> int:
     rc = state.get("retry_count") or {}
-    key = "writer" if stage == "degraded_writer" else stage
+    key = "writer" if stage in ("degraded_writer", "guard_revise") else stage
     return int(rc.get(key, 0)) + 1
 
 

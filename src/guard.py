@@ -103,6 +103,75 @@ def enforce_basis_support(schema: dict, evidence: list[dict]) -> int:
     return changed
 
 
+def _degraded_annex(state: dict) -> str:
+    """degraded 出货的分层说明(原 degraded_writer_node 的渲染,M4 收编为 Guard 降级措辞):
+    质检状态 + 建议动作 + 不建议直接采纳清单,包在正常报告外层。诚实标注,不藏分。"""
+    qr = state.get("quality_report") or {}
+    ms = qr.get("module_status", {})
+    passed = [m for m, s in ms.items() if s == "passed"]
+    warning = [m for m, s in ms.items() if s == "warning"]
+    failed = [m for m, s in ms.items() if s == "failed"]
+    actions = {
+        "collector": "补充用户侧证据来源(Reddit / ProductHunt)",
+        "analyzer": "修正证据引用关系与结论推理链",
+        "writer": "修正报告格式与引用标注",
+    }
+    needed = list({i.get("reject_target") for i in qr.get("errors", [])})
+    action_lines = "\n".join(f"- {actions[t]}" for t in needed if t in actions)
+    error_lines = "\n".join(
+        f"- [{i.get('location')}] {i.get('issue_type')}: {i.get('detail', '')}"
+        for i in qr.get("errors", [])
+    )
+    return (
+        f"# 竞品分析报告(部分置信)\n\n"
+        f"> 质检评分: {qr.get('quality_score', '?')}/100 · "
+        f"Auditor 发现未能全部由确定性修订消化,分层降级输出\n\n"
+        f"## 质检状态\n"
+        f"- ✅ 通过: {', '.join(passed) or '无'}\n"
+        f"- ⚠️ 存疑: {', '.join(warning) or '无'}\n"
+        f"- ❌ 失败: {', '.join(failed) or '无'}\n\n"
+        f"## 建议补充动作\n{action_lines or '- 无'}\n\n---\n\n"
+        f"## 可参考结论(通过质检模块)\n\n{state.get('report_draft') or ''}\n\n---\n\n"
+        f"## 不建议直接采纳的结论\n{error_lines or '- 无'}\n"
+    )
+
+
+def guard_revise_node(state: dict) -> dict:
+    """v3 直线控制流的"一次修订"节点(M4):消费 Auditor(reviewer)定位清单 →
+    确定性修订 schema → 有变化则 Reporter 重渲染 → 出货。
+    打回循环与 degraded_writer 已删(54 run 仅 1 次触发),本节点是唯一审后修复路径:
+    无环、无 retry 配额、无路由函数。
+
+    终态规则(诚实出货):
+    - 原 status=running(旧打回信号)且修订有变化 → passed(问题已被确定性修订消化,
+      未消化的发现仍留在 quality_report 供前端徽章/checklist 展示)
+    - 原 status=running 且零修订 → degraded(审出问题但修不了,诚实降级)
+    - passed/degraded 原样保留(degraded 的"分层输出"由 Guard 降级措辞承担)"""
+    qr = state.get("quality_report") or {}
+    findings = list(qr.get("errors") or []) + list(qr.get("warnings") or [])
+    schema = state.get("schema_draft")
+    if not schema:
+        status = "degraded" if state.get("status") == "running" else state.get("status")
+        out = {**state, "status": status}
+        if out.get("status") == "degraded":
+            out["report_draft"] = _degraded_annex(out)
+        return out
+    schema, rep = apply(schema, state.get("raw_evidence") or [], findings=findings)
+    out = {**state, "schema_draft": schema, "guard_revision": rep}
+    if rep["changes_total"]:
+        from .writer import writer_node  # Reporter 重渲染(纯模板,不会失败);懒导入避环
+        out = writer_node(out)
+        out["guard_revision"] = rep
+        print(f"[guard_revise] 修订 {rep['changes_total']} 处并重渲染报告"
+              f"(消费 Auditor 发现 {rep['findings_consumed']} 条)")
+    if out.get("status") == "running":
+        out["status"] = "passed" if rep["changes_total"] else "degraded"
+    if out.get("status") == "degraded":
+        # 降级是正常路径的一种程度:正常报告外层包质检状态/不建议采纳清单(原 degraded_writer 渲染)
+        out["report_draft"] = _degraded_annex(out)
+    return out
+
+
 def apply(schema: dict, evidence: list[dict],
           findings: Optional[list] = None) -> tuple[dict, dict]:
     """Guard 终门:幻觉引用清理 → G1/G2 对账降级 → 过度泛化收敛。幂等(二次套用零变化)。

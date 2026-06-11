@@ -46,10 +46,11 @@ _NODE_META = {
     "analyzer": ("🧠", "分析结论"),
     "writer": ("✍️", "生成报告"),
     "reviewer": ("🧪", "规则质检"),
-    "degraded_writer": ("⚠️", "降级输出"),
+    "guard_revise": ("🛡️", "修订出货"),
+    "degraded_writer": ("⚠️", "降级输出"),  # 旧档案回放兼容(节点已删)
 }
 
-_PIPELINE = ["evidence_planner", "collector", "analyzer", "writer", "reviewer"]
+_PIPELINE = ["evidence_planner", "collector", "analyzer", "writer", "reviewer", "guard_revise"]
 _STATUS_COPY = {
     "evidence_planner": [
         "识别分析意图，生成本轮证据计划",
@@ -76,6 +77,9 @@ _STATUS_COPY = {
     "degraded_writer": [
         "质量门禁未完全通过，正在生成分层降级报告",
     ],
+    "guard_revise": [
+        "按质检定位清单做确定性修订，重渲染报告",
+    ],
 }
 
 # 长间隙(LLM 调用中)的稳定等待文案 — 单句不轮播，配合计时表明仍在工作
@@ -86,6 +90,7 @@ _WAIT_MESSAGE = {
     "writer": "正在把结构化结论整理成报告",
     "reviewer": "正在逐条核查质检规则",
     "degraded_writer": "正在生成分层降级报告",
+    "guard_revise": "正在按质检结果修订并重渲染报告",
 }
 
 # 各节点典型耗时(秒)— 用于给前端算 ETA(预计剩余),让长等待可预期。
@@ -97,6 +102,7 @@ _NODE_TYPICAL_SEC_DEFAULT = {
     "writer": 2,
     "reviewer": 6,
     "degraded_writer": 4,
+    "guard_revise": 2,
 }
 
 app = FastAPI(title="AI Competitive Radar API")
@@ -334,6 +340,10 @@ def _result_summary(node_name: str, state: dict) -> Optional[str]:
     if node_name in ("writer", "degraded_writer"):
         md = state.get("report_draft") or ""
         return f"生成报告约 {len(md)} 字" if md else None
+    if node_name == "guard_revise":
+        rev = state.get("guard_revision") or {}
+        n = rev.get("changes_total") or 0
+        return f"确定性修订 {n} 处并重渲染" if n else "无需修订,直接出货"
     if node_name == "reviewer":
         qr = state.get("quality_report") or {}
         if qr.get("quality_score") is not None:
@@ -359,7 +369,7 @@ def _progress_event(node_name: str, state: dict) -> dict:
         "result": _result_summary(node_name, state),
         "detail": _node_detail(node_name, state),
     }
-    if node_name in ("reviewer", "degraded_writer") and qr:
+    if node_name in ("reviewer", "degraded_writer", "guard_revise") and qr:
         event["quality"] = {
             "quality_score": qr.get("quality_score"),
             "passed_rules": qr.get("passed_rules"),
@@ -383,11 +393,7 @@ def _progress_event(node_name: str, state: dict) -> dict:
 
 
 def _next_node_after(node_name: Optional[str], state: dict) -> str:
-    if node_name == "reviewer":
-        if state.get("status") == "degraded":
-            return "degraded_writer"
-        if state.get("status") == "running":
-            return state.get("reject_target") or "analyzer"
+    # M4 直线控制流:reviewer 后恒为 guard_revise(打回/degraded_writer 路由已删)
     if node_name in _PIPELINE:
         idx = _PIPELINE.index(node_name)
         if idx + 1 < len(_PIPELINE):
@@ -844,7 +850,7 @@ def api_stage_quality(limit: int = 300):
             rows.append(json.loads(line))
         except Exception:  # noqa: BLE001
             pass
-    order = ["evidence_planner", "collector", "analyzer", "writer", "degraded_writer", "reviewer"]
+    order = ["evidence_planner", "collector", "analyzer", "writer", "degraded_writer", "reviewer", "guard_revise"]
     agg: dict = {}
     for r in rows:
         s = r.get("stage") or "?"
