@@ -1101,12 +1101,17 @@ def analyzer_node(state: AgentState) -> AgentState:
     }
     if research_method:
         schema_draft["research_method"] = research_method  # 供报告「调研方法」卡展示
-    # 收尾确定性安全网(幂等):清掉任何不存在的 evidence 引用。覆盖新模块
-    # competitor_landscape / positioning_map / praise_points —— 它们不在 collect_all_evidence_refs
-    # 校验范围内,live 模式下靠这层兜住,杜绝幻觉 ID 漏进 writer chip。
-    schema_draft, dropped = sanitize_schema_evidence_refs(schema_draft, evidence)
-    if dropped:
-        print(f"[analyzer] schema sanitize dropped {dropped} invalid evidence refs")
+    # 收尾确定性安全网(幂等):Guard 终门(M2)——幻觉引用清理 + G1 强对比对账 +
+    # G2 basis 声称对账 + 过度泛化收敛。覆盖新模块 competitor_landscape /
+    # positioning_map / praise_points,杜绝幻觉 ID / 超证据强度的结论漏进 writer chip。
+    from .guard import apply as _guard_apply
+    schema_draft, guard_rep = _guard_apply(schema_draft, evidence)
+    if guard_rep["changes_total"]:
+        print(f"[analyzer] guard: -{guard_rep['dropped_refs']} 幻觉引用, "
+              f"降级强对比 {guard_rep['comparison_downgraded']} 条, "
+              f"basis 改 unknown {guard_rep['basis_unknowned']} 格, "
+              f"软化措辞 {guard_rep['softened']} 处")
+        schema_draft["_guard_report"] = guard_rep  # 供 stage_report 观测
     # B2: 记录 per-product fill 尝计数到 schema_draft metadata（供 stage_report 观测）
     fill_attempts = _FILL_ATTEMPTS_VAR.get() or {}
     if fill_attempts:
