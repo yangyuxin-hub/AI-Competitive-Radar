@@ -2,7 +2,10 @@
 
 > 状态:**草案**(答辩后启动,不影响 v2.2 演示)
 > 依据:2026-06-11 全链路实测(run `trace_20260611053755_a192` vs `trace_20260611052958_4a54`)+ 54 次历史 run 的 `logs/stage_quality.jsonl` 聚合
-> 上游文档:`docs/design-v2.2.md`(现行架构)
+> 上游文档:`docs/design-v2.2.md`(现行架构)+ `docs/design-v3.md`(控制平面)
+> **与 design-v3.md 的关系**:承接其已落地的 M0(StageReport 统一契约 `src/stage_report.py`)与 M1(`/api/timeline` + `checklist.py` 交付验收清单),**取代其 M2-M4**——
+> M2 要做的"统一控制环 + task_key 级打回预算"被本文 §四的实测数据判死刑(54 run 打回触发率 1/54,外环名存实亡,删环优于修环);
+> M3 的"Collection 真接缝"结论保留,下沉为 EvidenceService 内部结构(见 §三)。
 
 ---
 
@@ -59,6 +62,7 @@ R6 单次产出 9 条精确到字段的定位(location+detail),状态 passed+war
 2. 兜底必须有唯一 owner——每类失败有且只有一个模块负责
 3. 审查产出必须有消费者——没有消费者的检查是装饰
 4. 最优配置即默认配置——env 只用来往回退,不用来开启正确行为
+   (落地:已 A/B 验证的推荐配置 `LLM_THINKING=disabled` + `LLM_THINKING_DEEP=enabled` + `ANALYZER_PROMPT_SLIM=1` 翻转为代码默认值,这是 env ≤8 目标的主要来源)
 
 ---
 
@@ -68,10 +72,13 @@ R6 单次产出 9 条精确到字段的定位(location+detail),状态 passed+war
 |------|-----------|------------|------|---------|
 | **Intake** | 把人话变成分析契约 | 用户输入 → AnalysisContract(target/竞品/焦点/意图/必需证据类型) | 不碰证据 | 启发式兜底,但必须**显式标注降级**(不允许静默) |
 | **EvidenceService** | 系统里**唯一**碰外部世界的模块 | 契约或缺口请求 → 证据池 | 不下结论 | 三层降级(live→cache→mock),内部消化 |
-| **Analyst** | 证据 → 结构化结论,纯推理 | 证据池 → schema | 不抓数据;缺证据只能**声明缺口**交给 EvidenceService | 骨架兜底 |
+| **Analyst** | 证据 → 结构化结论,纯推理 | 证据池 → schema | 不抓数据;缺证据只能**声明缺口**交给 EvidenceService(缺口协议直接复用 `stage_report.Gap`:owner_node × product × claim_type + fix 处方 + fixable + task_key,不另起一套) | 骨架兜底 |
 | **Guard** | 保证每条结论强度 ≤ 证据强度;确定性、幂等、零 LLM | schema → 修订后 schema | 不新增内容,只能降级/删除 | 不会失败(纯函数) |
 | **Reporter** | schema → Markdown,纯模板 | schema → 报告 | 不改数据 | 不会失败 |
-| **Auditor** | 只审不修,每条发现必须有消费者 | schema+报告 → 定位清单 | 不修改任何产物 | 审不了如实标 unavailable |
+| **Auditor** | 只审不修,每条发现必须有消费者 | schema+报告 → StageReport(`Check[]`/`Gap[]`,M0 已落地的契约,不重新发明) | 不修改任何产物 | 审不了如实标 unavailable |
+
+Auditor 的两个消费者:机器侧 → Guard 修订(见 §四);用户侧 → 已落地的 `checklist.py` 交付验收清单
+("该交付的齐没齐 + 谁去补"的决策视角,v3 M1 用户反馈的核心教训,不是遥测时间线)。
 
 两个新角色都是**收编**,不是新建:
 
@@ -84,7 +91,10 @@ R6 单次产出 9 条精确到字段的定位(location+detail),状态 passed+war
 - 缺口处理顺序:**先回捞池内被 compact/cap 截断的证据(零成本)→ 不足再外搜**。
   治假性缺口:R6 报的"证据不足"有一部分证据明明在 `raw_evidence` 里,
   只是被 top-K(8/5 条)和片段截断(180/140 字符)挡在 prompt 视野外
-- 单一缺口口径:合并 `audit_coverage` 与 `_coverage_gaps`
+- 单一缺口口径:合并 `audit_coverage` 与 `_coverage_gaps`,reviewer 侧 intent-aware 口径
+  (design-v3.md M3 诊断的 quality.py 与 reviewer.py 口径分裂)一并收口;统一产出 `stage_report.Gap`
+- 内部保留 `discover → {fetch_official, fetch_community} → merge_gate` 结构
+  (design-v3.md 的真接缝结论:官网/社区失败模式、修复策略、bias 标注各不同;缺社区证据只重跑 fetch_community)
 
 ### Guard(收编结论强度控制)
 
@@ -145,15 +155,12 @@ Intake → EvidenceService → Analyst ⇄(缺口声明/补证据) → Guard →
 - 大部分 kill-switch env(保留:profile、mock、LLM 凭据;删:各 refill/heal/claim 开关,
   行为由模块内默认策略决定)
 
-### 顺带修复(并发与归因,v2.2 已知问题)
+### 顺带修复(并发与归因,v2.2 已知问题)——✅ 已全部完成(2026-06-11,Phase 0,先于 M1-M4 落地)
 
-- `source_planner._discovered_domains` 模块级全局 → ContextVar 或随 registry 显式传参
-  (API server 单进程并发 run 互相覆盖域名锚定,静默退化全网搜)
-- `_collector_run_count`、`_FILL_ATTEMPTS` 全局 → run 级
-- `.env` 加载从 graph.py/api 入口前移到 `src/__init__.py`
-  (实测踩坑:trace_run.py 先 import intake → 静默降级启发式 → 竞品候选混入
-  "For Every"/"Dev Workflow" 解析垃圾)
-- intake LLM 调用补 run_id 归因(现为 None);trace 工具按 run_id 过滤
+- [x] `source_planner._discovered_domains` 模块级全局 → ContextVar(跨线程由 `CtxThreadPoolExecutor` 快照传播,双线程隔离冒烟通过)
+- [x] `_collector_run_count` 删除(run 标签改用 `agent_trace_id`)、`_FILL_ATTEMPTS` → ContextVar + 锁(每 run 换新 dict)
+- [x] `.env` 加载前移到 `src/__init__.py`(包导入即生效,graph.py 冗余加载已删)
+- [x] intake LLM 调用补归因:api 两个 intake 入口设 `intake_<ts>` run 标签,LLM worker 走 `CtxThreadPoolExecutor`
 
 ---
 
@@ -163,13 +170,14 @@ Intake → EvidenceService → Analyst ⇄(缺口声明/补证据) → Guard →
 
 | 步骤 | 内容 | 验证 |
 |------|------|------|
-| M1 | 合并缺口判定口径(最疼的):`audit_coverage` 与 `_coverage_gaps` 统一,补"先回捞池内"逻辑 | 同输入下缺口判定结果与两套旧逻辑的并集一致;refill 外搜轮次下降 |
+| M0 ✅ | (design-v3.md 已完成)StageReport 契约 `src/stage_report.py` + timeline/checklist 观测面 | 已合入,本草案直接复用 Gap/Check,不重做 |
+| M1 | 合并缺口判定口径(最疼的):`audit_coverage` 与 `_coverage_gaps` 统一(含 reviewer intent-aware 口径),产出 `stage_report.Gap`,补"先回捞池内"逻辑 | 同输入下缺口判定结果与两套旧逻辑的并集一致;refill 外搜轮次下降 |
 | M2 | 收编 Guard:sanitize/soften/anchors 迁入单模块 + R6 对账规则 | R6 warning 9→≤3 条;quality_score 73→80+;幂等性测试 |
-| M3 | 拆 EvidenceService:`analyzer_augment` 执行逻辑迁入,Analyst 只留缺口声明接口 | analyzer 节点零网络调用;端到端耗时不升 |
-| M4 | 删打回机器 + degraded_writer,控制流改直线+一次修订 | 147 测试全过;DEMO_LOOP 场景改由 Guard 修订路径覆盖 |
+| M3 | 拆 EvidenceService:`analyzer_augment` 执行逻辑迁入,Analyst 只留缺口声明接口(`Gap[]`) | analyzer 节点零网络调用;端到端耗时不升 |
+| M4 | 删打回机器 + degraded_writer,控制流改直线+一次修订 | 全量测试基线零回归(测试数随迭代增长,不写死);DEMO_LOOP 场景改由 Guard 修订路径覆盖 |
 
 **教训保留原则**:10 层兜底是 54 次真实运行换来的,删机制不能删教训——
-每个兜底对应的事故场景沉淀为回归测试(大部分已在 147 个测试中,迁移时逐一核对归属新 owner)。
+每个兜底对应的事故场景沉淀为回归测试(大部分已在现有测试集中,迁移时逐一核对归属新 owner)。
 
 ---
 

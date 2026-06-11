@@ -355,7 +355,7 @@ def reset_debug_file() -> None:
     _debug_file_path = None
 
 
-def dump_evidence_debug(evidences: list[dict], path: Optional[Path] = None, run_id: int = 0) -> Path:
+def dump_evidence_debug(evidences: list[dict], path: Optional[Path] = None, run_id: "int | str" = 0) -> Path:
     """将 evidence 输出到 data/debug/ 下的 debug 文件，按产品分组，跨 run 追加"""
     global _debug_file_path
 

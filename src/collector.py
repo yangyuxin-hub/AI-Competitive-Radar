@@ -124,9 +124,6 @@ def acceptance_gate_and_heal(merged: list[dict], meta: dict, focus: str,
 # Node
 # ────────────────────────────────────────────────────────────────────────────
 
-_collector_run_count = 0
-
-
 def _collector_failure_meta(status: str, reason: str) -> dict:
     return {
         "adapter_events": [{"status": status, "reason": reason}],
@@ -155,12 +152,11 @@ def _collector_harvest_rounds() -> tuple[int, int]:
 
 def collector_node(state: AgentState) -> AgentState:
     """v2.2.1: 多产品并发 + wall-clock timeout 兜底 + URL Discovery"""
-    global _collector_run_count
-    _collector_run_count += 1
-    run_id = _collector_run_count
-    print(f"\n[collector_node] ====== RUN #{run_id} ======")
-
     meta = state["analysis_meta"]
+    # run 标签直接用 trace id(进程级计数器在并发 run 下无归因意义,已删)
+    run_id = meta.get("agent_trace_id") or "?"
+    print(f"\n[collector_node] ====== RUN {run_id} ======")
+
     products = [meta["target_product"]] + list(meta["competitors"])
     focus = meta["analysis_focus"][0] if meta.get("analysis_focus") else ""
     runtime_profile = meta.get("runtime_profile") or "deep"

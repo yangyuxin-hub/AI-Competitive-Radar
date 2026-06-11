@@ -9,6 +9,7 @@ prompts/source_discovery.md 的 LLM 规划，失败回退 config 启发式。
 """
 from __future__ import annotations
 
+import contextvars
 from pathlib import Path
 from typing import Optional
 
@@ -128,15 +129,18 @@ _PRODUCTS_YAML = _ROOT / "config" / "products.yaml"
 _official_domains_cache: Optional[dict] = None
 
 
-# LLM/URL 发现注入的官网域名(让未在 products.yaml 配置的产品也能锚定官网检索)
-_discovered_domains: dict[str, list[str]] = {}
+# LLM/URL 发现注入的官网域名(让未在 products.yaml 配置的产品也能锚定官网检索)。
+# ContextVar 按 run 隔离:此前是模块级全局,API server 单进程并发 run 互相覆盖域名锚定,
+# 静默退化全网搜(design-v3-draft §五)。跨线程池传播由 progress.CtxThreadPoolExecutor
+# 在 submit 时快照 context 保证(与 llm._TOKEN_ACC 同模式)。
+_discovered_domains: contextvars.ContextVar[dict] = contextvars.ContextVar(
+    "discovered_domains", default={})
 
 
 def set_discovered_domains(mapping: dict[str, list[str]]) -> None:
     """由 collector 在 URL 发现后注入 {product: [官网域名]}。每轮重置。
     解决:未配置产品的 feature/pricing 检索丢官网 site 锚定 → 走全网,和已配置产品不一致。"""
-    global _discovered_domains
-    _discovered_domains = {k: list(v) for k, v in (mapping or {}).items() if v}
+    _discovered_domains.set({k: list(v) for k, v in (mapping or {}).items() if v})
 
 
 def _product_official_domains(product: str) -> list[str]:
@@ -159,7 +163,7 @@ def _product_official_domains(product: str) -> list[str]:
         except Exception:  # noqa: BLE001
             _official_domains_cache = {}
     return list(dict.fromkeys([*_official_domains_cache.get(product, []),
-                               *_discovered_domains.get(product, [])]))
+                               *_discovered_domains.get().get(product, [])]))
 
 
 def _sites_for_claim(product: str, ct: str, by_ct: dict, category: Optional[str] = None) -> list[tuple]:

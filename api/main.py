@@ -12,7 +12,7 @@ import os
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import TimeoutError
 from queue import Empty, Queue
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,7 +33,9 @@ except ImportError:
     pass
 
 from src import intake  # noqa: E402
+from src import llm as _llm  # noqa: E402
 from src.graph import run_demo_streaming  # noqa: E402
+from src.progress import CtxThreadPoolExecutor  # noqa: E402
 
 _REPORTS_DIR = _ROOT / "out" / "reports"
 _INDEX = _REPORTS_DIR / "index.json"
@@ -148,7 +150,11 @@ def _propose_with_timeout(req: ProposeReq, timeout_sec: Optional[float] = None) 
 
     # 现为后台刷新(用户已有秒开的启发式页,不阻塞)→ 给足时间让 LLM 完成精修
     timeout_sec = timeout_sec or float(os.environ.get("INTAKE_TIMEOUT", "45"))
-    pool = ThreadPoolExecutor(max_workers=1)
+    # intake 发生在 run 创建之前,无 agent_trace_id → 造一个 intake_<ts> 标签做 LLM 调用归因
+    # (此前 llm_calls.jsonl 里 intake 调用 run_id=None,trace 工具按 run_id 过滤会漏)。
+    # CtxThreadPoolExecutor 把该归因快照传进 worker 线程。
+    _llm.set_run_stage(f"intake_{int(time.time() * 1000)}", "intake")
+    pool = CtxThreadPoolExecutor(max_workers=1)
     fut = pool.submit(intake.propose, req.user_input, req.domain_hint)
     try:
         return fut.result(timeout=timeout_sec)
@@ -186,6 +192,8 @@ def api_intake_stream(req: ProposeReq):
     def gen():
         final_draft: dict = {}
         try:
+            # 同 _propose_with_timeout:补 intake 阶段 LLM 调用归因(gen 在本请求线程内执行)
+            _llm.set_run_stage(f"intake_{int(time.time() * 1000)}", "intake")
             for kind, payload in intake.propose_stream(req.user_input, req.domain_hint):
                 if kind == "status":
                     yield _sse({"type": "status", "text": payload})

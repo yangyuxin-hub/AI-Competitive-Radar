@@ -7,10 +7,12 @@ Step 2: derivations (swot + recommendations)
 """
 from __future__ import annotations
 
+import contextvars
 import copy
 import json
 import os
 import re
+import threading
 from concurrent.futures import as_completed
 
 from .progress import CtxThreadPoolExecutor
@@ -70,9 +72,23 @@ from .analyzer_fallback import (  # noqa: F401 — 骨架兜底构建器,re-expo
 from .llm import deep_thinking_mode, get_llm, is_mock_mode, load_sample_report
 from .state import AgentState
 
-# B2: per-product feature_fill 调用计数（跨 gap_refill 轮次累加），超阈值走骨架兜底
-_FILL_ATTEMPTS: dict[str, int] = {}
+# B2: per-product feature_fill 调用计数（跨 gap_refill 轮次累加），超阈值走骨架兜底。
+# ContextVar 按 run 隔离(此前是模块级全局,并发 run 共享计数:一方 clear 抹掉另一方,熔断失效/误熔断)。
+# 跨线程池传播由 CtxThreadPoolExecutor submit 时快照保证,子线程拿到同一 dict 引用,自增用锁保护
+# (与 llm._TOKEN_ACC 同模式)。
+_FILL_ATTEMPTS_VAR: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "analyzer_fill_attempts", default=None)
+_FILL_ATTEMPTS_LOCK = threading.Lock()
 _FILL_ATTEMPTS_MAX = int(os.environ.get("FEATURE_FILL_MAX_ATTEMPTS", "3"))
+
+
+def _fill_attempts() -> dict:
+    """本 run 的 fill 计数 dict;直接调用(测试/不经 analyzer_node)时懒初始化。"""
+    d = _FILL_ATTEMPTS_VAR.get()
+    if d is None:
+        d = {}
+        _FILL_ATTEMPTS_VAR.set(d)
+    return d
 
 
 def collect_all_evidence_refs(
@@ -487,8 +503,11 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
 
     def _fill(product: str) -> tuple[str, dict]:
         # B2: 超阈值直接走骨架兜底，不再反复调 LLM
-        _FILL_ATTEMPTS[product] = _FILL_ATTEMPTS.get(product, 0) + 1
-        if _FILL_ATTEMPTS[product] > _FILL_ATTEMPTS_MAX:
+        with _FILL_ATTEMPTS_LOCK:
+            attempts = _fill_attempts()
+            attempts[product] = attempts.get(product, 0) + 1
+            n_attempts = attempts[product]
+        if n_attempts > _FILL_ATTEMPTS_MAX:
             print(f"[analyzer] feature_fill '{product}' 已达 {_FILL_ATTEMPTS_MAX} 次上限，用骨架兜底")
             return product, {}
         prod_ev = _compact_evidence(
@@ -896,7 +915,7 @@ def _unanchored_recs(derivations: dict, facts: dict) -> list[dict]:
 
 def analyzer_node(state: AgentState) -> AgentState:
     evidence = state["raw_evidence"] or []
-    _FILL_ATTEMPTS.clear()  # B2: 每次 analyzer 运行重置计数
+    _FILL_ATTEMPTS_VAR.set({})  # B2: 每 run 换新 dict(不 clear 共享对象,僵尸 run 持旧引用也污染不到本轮)
     print(f"\n[analyzer] received {len(evidence)} raw_evidence")
     if evidence:
         by_source = {}
@@ -1079,9 +1098,10 @@ def analyzer_node(state: AgentState) -> AgentState:
     if dropped:
         print(f"[analyzer] schema sanitize dropped {dropped} invalid evidence refs")
     # B2: 记录 per-product fill 尝计数到 schema_draft metadata（供 stage_report 观测）
-    if _FILL_ATTEMPTS:
-        schema_draft["_fill_attempts"] = dict(_FILL_ATTEMPTS)
-        _exceeded = {p: n for p, n in _FILL_ATTEMPTS.items() if n > _FILL_ATTEMPTS_MAX}
+    fill_attempts = _FILL_ATTEMPTS_VAR.get() or {}
+    if fill_attempts:
+        schema_draft["_fill_attempts"] = dict(fill_attempts)
+        _exceeded = {p: n for p, n in fill_attempts.items() if n > _FILL_ATTEMPTS_MAX}
         if _exceeded:
             print(f"[analyzer] feature_fill 超限产品(用骨架兜底): {_exceeded}")
     # 补采可能扩充了 evidence → 写回 state,保证 writer/reviewer 看到的引用都真实存在

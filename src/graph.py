@@ -18,12 +18,7 @@ from typing import Optional
 
 _ROOT = Path(__file__).resolve().parent.parent
 
-# 加载 .env(若存在),允许通过 .env 注入 ARK_API_KEY / ARK_EP / ANALYZER_MOCK
-try:
-    from dotenv import load_dotenv
-    load_dotenv(_ROOT / ".env")
-except ImportError:
-    pass
+# .env 加载已前移到 src/__init__.py(包导入即生效,所有入口统一),此处不再重复。
 
 from .analyzer import analyzer_node  # noqa: E402
 from .collector import collector_node  # noqa: E402
