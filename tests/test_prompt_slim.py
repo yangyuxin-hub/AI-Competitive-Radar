@@ -38,7 +38,10 @@ def _ev(eid, product, ct, text="某证据片段" * 40):
             "extracted_snippet": text, "quality_score": 0.8}
 
 
-def test_flag_off_meta_passthrough():
+def test_default_on_and_explicit_off_passthrough(monkeypatch):
+    # M4b 最优即默认:未设置 → 瘦身开启;=0 显式退回旧全量 payload
+    assert prompt_slim_enabled()
+    monkeypatch.setenv("ANALYZER_PROMPT_SLIM", "0")
     assert not prompt_slim_enabled()
     assert llm_meta(_META) is _META  # 原对象原样透传
 

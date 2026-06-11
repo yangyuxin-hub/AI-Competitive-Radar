@@ -902,78 +902,16 @@ def make_reviewer_node(llm=None, mode: Optional[str] = None):
             "warnings": warnings,
         }
 
-        if not errors:
-            return {**state, "quality_report": quality_report,
-                    "status": "passed", "reject_target": None}
-
-        # 选打回 target
-        target_counts = Counter(i["reject_target"] for i in errors)
-        priority = {"collector": 2, "analyzer": 1, "writer": 0}
-        target = max(target_counts, key=lambda t: (target_counts[t], priority.get(t, 0)))
-
-        retry_count = state["retry_count"]
-        max_per = state["max_retries_per_target"]
-        if retry_count.get(target, 0) >= max_per.get(target, 0):
-            return {**state, "quality_report": quality_report,
-                    "status": "degraded", "reject_target": None}
-
-        new_retry = {**retry_count, target: retry_count.get(target, 0) + 1}
-        reject_requirements = [
-            {
-                "rule": i["rule"], "issue_type": i["issue_type"],
-                "location": i["location"],
-                "required_claim_types": i.get("required_claim_types", []),
-                "reject_target": i["reject_target"],
-            }
-            for i in errors if i["reject_target"] == "collector"
-        ]
-
-        return {
-            **state,
-            "quality_report": quality_report,
-            "retry_count": new_retry,
-            "reject_target": target,
-            "reject_requirements": reject_requirements or None,
-            "status": "running",
-        }
+        # v3 M4b:Reviewer 只审不修——打回 target 选择/retry 配额/reject_requirements
+        # state 写回全部删除(直线控制流无消费者)。issue 级 reject_target 归因保留在
+        # quality_report.errors 里,由 checklist/stage_report.gap_owner/guard 降级附录消费。
+        # errors 非空 → status=running,交给 guard_revise 一次确定性修订定终态
+        # (有修订→passed / 零修订→degraded)。
+        status = "passed" if not errors else "running"
+        return {**state, "quality_report": quality_report, "status": status}
 
     return reviewer_node
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# 降级 Writer
-# ────────────────────────────────────────────────────────────────────────────
-
-def degraded_writer_node(state: AgentState) -> AgentState:
-    qr = state.get("quality_report") or {}
-    ms = qr.get("module_status", {})
-    passed = [m for m, s in ms.items() if s == "passed"]
-    warning = [m for m, s in ms.items() if s == "warning"]
-    failed = [m for m, s in ms.items() if s == "failed"]
-
-    actions = {
-        "collector": "补充用户侧证据来源(Reddit / ProductHunt)",
-        "analyzer": "修正证据引用关系与结论推理链",
-        "writer": "修正报告格式与引用标注",
-    }
-    needed = list({i["reject_target"] for i in qr.get("errors", [])})
-    action_lines = "\n".join(f"- {actions[t]}" for t in needed if t in actions)
-    error_lines = "\n".join(
-        f"- [{i['location']}] {i['issue_type']}: {i.get('detail', '')}"
-        for i in qr.get("errors", [])
-    )
-
-    report = (
-        f"# 竞品分析报告(部分置信)\n\n"
-        f"> 质检评分: {qr.get('quality_score', '?')}/100 · "
-        f"按 target 分桶配额耗尽后降级输出\n"
-        f"> 重试明细: {state.get('retry_count')}\n\n"
-        f"## 质检状态\n"
-        f"- ✅ 通过: {', '.join(passed) or '无'}\n"
-        f"- ⚠️ 存疑: {', '.join(warning) or '无'}\n"
-        f"- ❌ 失败: {', '.join(failed) or '无'}\n\n"
-        f"## 建议补充动作\n{action_lines or '- 无'}\n\n---\n\n"
-        f"## 可参考结论(通过质检模块)\n\n{state.get('report_draft') or ''}\n\n---\n\n"
-        f"## 不建议直接采纳的结论\n{error_lines or '- 无'}\n"
-    )
-    return {**state, "report_draft": report, "status": "degraded"}
+# 降级 Writer(degraded_writer_node)已删——v3 M4 收编为 guard._degraded_annex
+# (降级是 guard_revise 出货的一种程度,不再是独立图节点)。

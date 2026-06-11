@@ -1,9 +1,10 @@
-"""Reviewer 打回路由测试(minimal 模式)。
+"""Reviewer(Auditor)判定测试(minimal 模式)。
 
-保护点:打回/降级的状态机是性能重构最易回归的地方。
-- 无 error → status=passed,reject_target=None
-- 有 hard_gate error 且未超配额 → status=running,reject_target 命中,retry_count 自增
-- 配额用尽 → status=degraded,不再打回
+v3 M4b 后 Reviewer 只审不修:打回 target 选择/retry 配额/reject_requirements 写回已删。
+保护点:
+- 无 error → status=passed
+- 有 hard_gate error → status=running(交给 guard_revise 一次修订定终态),
+  issue 级 reject_target 归因保留在 quality_report.errors(checklist/gap_owner 消费)
 """
 import copy
 import os
@@ -13,7 +14,7 @@ from src.reviewer import make_reviewer_node
 from src.state import build_initial_state
 
 
-def _state_with(schema: dict, evidence: list[dict], retry_count=None):
+def _state_with(schema: dict, evidence: list[dict]):
     st = build_initial_state(
         user_input="x",
         target_product="Cursor",
@@ -22,8 +23,6 @@ def _state_with(schema: dict, evidence: list[dict], retry_count=None):
     )
     st["schema_draft"] = schema
     st["raw_evidence"] = evidence
-    if retry_count is not None:
-        st["retry_count"] = retry_count
     return st
 
 
@@ -99,29 +98,31 @@ def _bad_schema() -> dict:
     return schema
 
 
-class ReviewerRoutingTest(unittest.TestCase):
+class ReviewerVerdictTest(unittest.TestCase):
     def setUp(self):
         self.review = make_reviewer_node(mode="minimal")
 
     def test_passed_when_no_errors(self):
         out = self.review(_state_with(_GOOD_SCHEMA, _EVIDENCE))
         self.assertEqual(out["status"], "passed")
-        self.assertIsNone(out["reject_target"])
 
-    def test_running_and_increments_retry(self):
+    def test_running_with_issue_level_attribution(self):
         out = self.review(_state_with(_bad_schema(), _EVIDENCE))
-        self.assertEqual(out["status"], "running")
-        self.assertEqual(out["reject_target"], "collector")
-        self.assertEqual(out["retry_count"]["collector"], 1)
+        self.assertEqual(out["status"], "running",
+                         "有 error → running,终态由 guard_revise 决定")
         self.assertIn("R1", out["quality_report"]["failed_rules"])
+        # issue 级 reject_target 归因必须保留(checklist/stage_report.gap_owner 消费)
+        errors = out["quality_report"]["errors"]
+        self.assertTrue(errors)
+        for e in errors:
+            self.assertIn(e.get("reject_target"), ("collector", "analyzer", "writer"))
 
-    def test_degraded_when_quota_exhausted(self):
-        # collector 配额默认 1,先把 retry_count 顶到上限
-        out = self.review(
-            _state_with(_bad_schema(), _EVIDENCE, retry_count={"collector": 1, "analyzer": 0, "writer": 0})
-        )
-        self.assertEqual(out["status"], "degraded")
-        self.assertIsNone(out["reject_target"])
+    def test_no_state_level_reject_machinery(self):
+        """M4b:state 级打回字段不再写回(直线控制流无消费者)。"""
+        out = self.review(_state_with(_bad_schema(), _EVIDENCE))
+        for key in ("reject_target", "reject_requirements", "retry_count",
+                    "max_retries_per_target"):
+            self.assertNotIn(key, out, f"state 级 {key} 应已随打回机器删除")
 
 
 class _DummyLLM:

@@ -925,7 +925,8 @@ def analyzer_node(state: AgentState) -> AgentState:
             by_source[s] = by_source.get(s, 0) + 1
         print(f"[analyzer] by source_type: {by_source}")
     meta = state["analysis_meta"]
-    analyzer_retry = (state.get("retry_count") or {}).get("analyzer", 0)
+    # v3 M4b:打回循环已删,retry 恒为 0(参数保留:DEMO_LOOP 注入与 prompt 收紧逻辑按 0 走首轮路径)
+    analyzer_retry = 0
 
     _emit_progress(
         step="overview",

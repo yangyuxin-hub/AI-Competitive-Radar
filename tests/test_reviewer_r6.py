@@ -209,10 +209,12 @@ class ReviewerR6Test(unittest.TestCase):
 
         out = make_reviewer_node(llm=llm, mode="full")(state)
 
+        # M4b:state 级打回字段已删;R6 error 仍判 running,issue 级归因到 analyzer
         self.assertEqual(out["status"], "running")
-        self.assertEqual(out["reject_target"], "analyzer")
-        self.assertEqual(out["retry_count"]["analyzer"], 1)
         self.assertIn("R6", out["quality_report"]["failed_rules"])
+        r6_errors = [e for e in out["quality_report"]["errors"] if e.get("rule") == "R6"]
+        self.assertTrue(r6_errors)
+        self.assertEqual(r6_errors[0].get("reject_target"), "analyzer")
 
     def test_full_reviewer_marks_r6_skipped_when_structural_errors_exist(self):
         schema = _schema()

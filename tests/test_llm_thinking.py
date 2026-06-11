@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """thinking 档位开关的优先级语义(纯本地,不打网络)。
 
-设计契约:
-- _thinking_extra_body(mode): 显式 mode > 环境变量 LLM_THINKING > 不传(None)
-- deep_thinking_mode(): LLM_THINKING_DEEP 优先;未设置返回 None(调用方回退全局档位)
-- 无效值一律视同未设置 → 不向 Ark 透传任何参数(零行为变化)
+设计契约(v3 M4b 最优即默认):
+- _thinking_extra_body(mode): 显式 mode > LLM_THINKING > **默认 disabled**;
+  LLM_THINKING=passthrough 显式退回"不传参数"旧行为
+- deep_thinking_mode(): LLM_THINKING_DEEP 优先;未设置 → **默认 enabled**;
+  =inherit 退回"回退全局档位"旧行为(返回 None)
+- 无效值视同未设置 → 走新默认 disabled
 """
 import pytest
 
@@ -17,7 +19,13 @@ def _clean_env(monkeypatch):
     monkeypatch.delenv("LLM_THINKING_DEEP", raising=False)
 
 
-def test_default_no_extra_body():
+def test_default_is_disabled():
+    # M4b 最优即默认:未设置 → disabled(机械任务砍 3-10 倍延迟,已 A/B 验证)
+    assert _thinking_extra_body() == {"thinking": {"type": "disabled"}}
+
+
+def test_passthrough_restores_legacy_no_param(monkeypatch):
+    monkeypatch.setenv("LLM_THINKING", "passthrough")
     assert _thinking_extra_body() is None
 
 
@@ -31,10 +39,10 @@ def test_explicit_overrides_env(monkeypatch):
     assert _thinking_extra_body("enabled") == {"thinking": {"type": "enabled"}}
 
 
-def test_invalid_value_means_not_sent(monkeypatch):
+def test_invalid_value_falls_to_default_disabled(monkeypatch):
     monkeypatch.setenv("LLM_THINKING", "yes-please")
-    assert _thinking_extra_body() is None
-    assert _thinking_extra_body("nonsense") is None
+    assert _thinking_extra_body() == {"thinking": {"type": "disabled"}}
+    assert _thinking_extra_body("nonsense") == {"thinking": {"type": "disabled"}}
 
 
 def test_case_and_whitespace_tolerant(monkeypatch):
@@ -42,10 +50,17 @@ def test_case_and_whitespace_tolerant(monkeypatch):
     assert _thinking_extra_body() == {"thinking": {"type": "auto"}}
 
 
-def test_deep_mode_unset_falls_back_to_global(monkeypatch):
+def test_deep_mode_default_enabled(monkeypatch):
+    # M4b 最优即默认:深度推理未设置 → enabled(保质量;judge 盲评零掉分)
     monkeypatch.setenv("LLM_THINKING", "disabled")
+    assert deep_thinking_mode() == "enabled"
+    assert _thinking_extra_body(deep_thinking_mode()) == {"thinking": {"type": "enabled"}}
+
+
+def test_deep_mode_inherit_restores_global_fallback(monkeypatch):
+    monkeypatch.setenv("LLM_THINKING", "disabled")
+    monkeypatch.setenv("LLM_THINKING_DEEP", "inherit")
     assert deep_thinking_mode() is None  # None → call_json 内回退全局
-    assert _thinking_extra_body(deep_thinking_mode()) == {"thinking": {"type": "disabled"}}
 
 
 def test_deep_mode_overrides_global(monkeypatch):

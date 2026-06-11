@@ -231,14 +231,18 @@ def is_mock_mode() -> bool:
 def _thinking_extra_body(mode: Optional[str] = None) -> Optional[dict]:
     """thinking 档位 → 透传 Ark thinking 参数;无效/未设置 → 不传(零行为变化)。
 
-    优先级:显式 mode 参数 > 环境变量 LLM_THINKING。
+    优先级:显式 mode 参数 > 环境变量 LLM_THINKING > **默认 disabled**(v3 M4b:最优即默认,
+    已 A/B 验证;LLM_THINKING=passthrough 显式退回"不传参数"旧行为)。
     背景:Doubao-Seed-2.0 系思考模型,默认每次调用先吐数千 token 思维链
     (llm_calls.jsonl 实测 43%-91% 的 completion_tokens 是不可见 reasoning,
-    吞吐 ~70 tok/s 下即 20-40s/次纯思考)。机械抽取/分类任务关掉可砍大头延迟。"""
+    吞吐 ~70 tok/s 下即 20-40s/次纯思考)。机械抽取/分类任务关掉可砍大头延迟。
+    不支持 thinking 参数的模型由 call 侧"被拒自动去参重试"兜底。"""
     m = (mode or os.environ.get("LLM_THINKING", "")).strip().lower()
     if m in ("disabled", "enabled", "auto"):
         return {"thinking": {"type": m}}
-    return None
+    if m in ("passthrough", "none", "unset"):
+        return None  # 显式回退:不传 thinking 参数(翻转默认前的旧行为)
+    return {"thinking": {"type": "disabled"}}
 
 
 def _is_thinking_rejected(e: Exception) -> bool:
@@ -254,10 +258,14 @@ def _is_thinking_rejected(e: Exception) -> bool:
 def deep_thinking_mode() -> Optional[str]:
     """深度推理类调用(swot/recommendations/reviewer R6/judge/intake 流式)的 thinking 档位。
 
-    LLM_THINKING_DEEP 优先;未设置返回 None → call_json 内回退全局 LLM_THINKING。
-    推荐 Demo 配置:LLM_THINKING=disabled + LLM_THINKING_DEEP=enabled
-    (机械抽取砍延迟,深度推理保质量)。"""
-    return os.environ.get("LLM_THINKING_DEEP", "").strip().lower() or None
+    LLM_THINKING_DEEP 优先;未设置 → **默认 enabled**(v3 M4b:最优即默认——
+    机械抽取砍延迟、深度推理保质量,已 A/B 验证 judge 盲评零掉分)。
+    LLM_THINKING_DEEP=inherit 显式退回"回退全局档位"旧行为(返回 None)。
+    注意:Seed-2.0-lite 只支持 enabled/disabled,auto 报 400(call 侧有去参重试兜底)。"""
+    v = os.environ.get("LLM_THINKING_DEEP", "").strip().lower()
+    if v == "inherit":
+        return None
+    return v or "enabled"
 
 
 def load_sample_report() -> dict:

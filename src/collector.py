@@ -301,19 +301,10 @@ def collector_node(state: AgentState) -> AgentState:
     finally:
         pool.shutdown(wait=not pending, cancel_futures=bool(pending))
 
-    # 打回时:按 requirements 精准追加
-    print(f"\n[collector_node] fetched={len(fetched)}, reject_requirements={state.get('reject_requirements')}")
-    if state.get("reject_requirements"):
-        merged = patch_by_requirements(
-            existing=state.get("raw_evidence") or [],
-            new=fetched,
-            requirements=state["reject_requirements"],
-        )
-        print(f"[collector_node] after patch: {len(merged)}")
-    else:
-        merged = fetched
-
-    merged = dedupe_evidence(merged)
+    # v3 M4b:打回循环已删,reject_requirements state 分支移除
+    # (patch_by_requirements 保留为 EvidenceService 定向补采的工具函数)
+    print(f"\n[collector_node] fetched={len(fetched)}")
+    merged = dedupe_evidence(fetched)
     print(f"[collector_node] after dedupe: {len(merged)}")
 
     if os.environ.get("DUMP_FULL_EVIDENCE", "").strip() in ("1", "true", "True"):
@@ -378,6 +369,4 @@ def collector_node(state: AgentState) -> AgentState:
         **state,
         "raw_evidence": merged,
         "collection_meta": collection_meta,
-        "reject_requirements": None,
-        "reject_target": None,
     }

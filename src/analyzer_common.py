@@ -229,12 +229,13 @@ def _near_dup(a: set, b: set, thresh: float = 0.82) -> bool:
 
 
 def prompt_slim_enabled() -> bool:
-    """ANALYZER_PROMPT_SLIM=1 → 启用 payload 瘦身(meta 白名单 + derivations 按 section 过滤证据)。
+    """payload 瘦身(meta 白名单 + derivations 按 section 过滤证据)。
 
-    未设置=完全沿用旧 payload(零行为变化)。实测旧口径下全 run prompt 21.6 万 token,
-    其中 derivations 四 section 各带逐字节相同的 45.5k 字符证据(~35%),meta 的
-    evidence_plan(采集规划)对 Analyzer LLM 无用却全员搭车。"""
-    return os.environ.get("ANALYZER_PROMPT_SLIM", "").strip() in ("1", "true", "True")
+    v3 M4b 起**默认开启**(最优即默认,已 A/B 验证:derivations prompt −23~38%,
+    chip 不减、R 规则零新增 failed);ANALYZER_PROMPT_SLIM=0 显式退回旧全量 payload。
+    实测旧口径下全 run prompt 21.6 万 token,其中 derivations 四 section 各带
+    逐字节相同的 45.5k 字符证据(~35%),meta 的 evidence_plan 对 Analyzer LLM 无用却全员搭车。"""
+    return os.environ.get("ANALYZER_PROMPT_SLIM", "1").strip() not in ("0", "false", "False")
 
 
 # LLM 真正用得上的 meta 字段;evidence_plan/trace 类是 Collector/可观测性的内务,不进 prompt
