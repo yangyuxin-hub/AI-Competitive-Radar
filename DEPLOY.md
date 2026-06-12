@@ -16,7 +16,7 @@
 2. Dashboard → **New +** → **Blueprint** → 选中本仓库 → Render 会自动读取根目录的 `render.yaml`。
 3. 点 **Apply**，进入服务后到 **Environment** 标签，填入标了 `sync:false` 的密钥：
    - `LLM_API_KEY` = 你的火山豆包 key（**必填**）
-   - `BRAVE_API_KEY` = Brave 搜索 key（可选；不填会自动用免费 DuckDuckGo 兜底）
+   - `BRAVE_API_KEY` = Brave 搜索 key（推荐；不填则 Render 默认禁用 DuckDuckGo，避免免费搜索在云端超时拖慢采集）
    - `API_CORS_ORIGINS` 先**留空**，等第 2 步拿到前端域名再回填。
 4. 等首次构建完成（约 3-5 分钟），拿到后端地址，形如
    `https://ai-competitive-radar-api.onrender.com`
@@ -57,10 +57,12 @@
 | 第一次请求很久没动静 | Render 免费档冷启动；先打开 `<后端>/api/reports` 预热 |
 | 分析跑一半断了 | 多为 LLM key 失效/额度耗尽，看 Render 服务的 **Logs** 标签 |
 | 报告/缓存重启后丢了 | 免费档文件系统是临时的，属正常；Demo 无需持久化，要持久化需在 Render 加 Disk 卷 |
+| `Executable doesn't exist ... ms-playwright ... chromium` | 后端没有按最新 `render.yaml` 重新构建，或服务不是 Blueprint 创建的；Build Command 应包含 `python -m playwright install --with-deps chromium`，并设置 `PLAYWRIGHT_BROWSERS_PATH=0` 后 Clear build cache 再 redeploy |
+| 日志里 DuckDuckGo/DDG 一直 `ConnectTimeout` | Render 出站网络访问免费搜索不稳定；保持 `DISABLE_DDG_SEARCH=1`，并优先配置 `BRAVE_API_KEY` |
 | 国内访问慢 | Render/Vercel 是海外节点；要国内稳定走「云服务器+Docker」方案（另说） |
 
 ## 本地变量对照（部署时设到平台环境变量里）
 
 - 后端必填：`LLM_API_KEY`
-- 后端可选：`LLM_BASE_URL`、`LLM_MODEL`、`BRAVE_API_KEY`、`API_CORS_ORIGINS`
+- 后端可选：`LLM_BASE_URL`、`LLM_MODEL`、`BRAVE_API_KEY`、`TAVILY_API_KEY`、`API_CORS_ORIGINS`、`DISABLE_DDG_SEARCH`
 - 前端必填：`NEXT_PUBLIC_API_BASE`

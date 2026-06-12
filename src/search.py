@@ -237,6 +237,8 @@ def _tavily_key() -> str:
 
 
 def _ddg_installed() -> bool:
+    if os.environ.get("DISABLE_DDG_SEARCH", "").strip() in ("1", "true", "True"):
+        return False
     import importlib.util
     return (importlib.util.find_spec("ddgs") is not None
             or importlib.util.find_spec("duckduckgo_search") is not None)
@@ -330,7 +332,10 @@ _PROVIDERS = {"brave": _brave_search, "tavily": _tavily_search, "ddg": _ddg_sear
 def _provider_chain() -> list[str]:
     explicit = os.environ.get("SEARCH_PROVIDER", "").strip().lower()
     if explicit and explicit != "auto":
-        return [x.strip() for x in explicit.split(",") if x.strip() in _PROVIDERS]
+        chain = [x.strip() for x in explicit.split(",") if x.strip() in _PROVIDERS]
+        if os.environ.get("DISABLE_DDG_SEARCH", "").strip() in ("1", "true", "True"):
+            chain = [x for x in chain if x != "ddg"]
+        return chain
     chain: list[str] = []
     if _brave_key():
         chain.append("brave")

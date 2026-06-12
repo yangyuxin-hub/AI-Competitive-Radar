@@ -61,11 +61,11 @@ class TavilyCacheTest(unittest.TestCase):
 
 class ProviderChainTest(unittest.TestCase):
     def setUp(self):
-        for k in ("BRAVE_API_KEY", "BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "SEARCH_PROVIDER"):
+        for k in ("BRAVE_API_KEY", "BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "SEARCH_PROVIDER", "DISABLE_DDG_SEARCH"):
             os.environ.pop(k, None)
 
     def tearDown(self):
-        for k in ("BRAVE_API_KEY", "TAVILY_API_KEY", "SEARCH_PROVIDER"):
+        for k in ("BRAVE_API_KEY", "TAVILY_API_KEY", "SEARCH_PROVIDER", "DISABLE_DDG_SEARCH"):
             os.environ.pop(k, None)
 
     def test_brave_first_then_tavily_then_ddg(self):
@@ -83,6 +83,11 @@ class ProviderChainTest(unittest.TestCase):
     def test_available_true_when_only_ddg(self):
         # 无任何 key,只要 ddgs 装了(本仓库已装)就可用
         self.assertTrue(search.search_available())
+
+    def test_disable_ddg_removes_free_fallback(self):
+        os.environ["DISABLE_DDG_SEARCH"] = "1"
+        self.assertEqual(search._provider_chain(), [])
+        self.assertFalse(search.search_available())
 
 
 class WebSearchFallbackTest(unittest.TestCase):

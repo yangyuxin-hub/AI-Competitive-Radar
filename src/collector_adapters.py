@@ -64,6 +64,8 @@ class OfficialPageAdapter(SourceAdapter):
     - 高频抓取应加 rate limit + Etag/If-Modified-Since
     """
 
+    _playwright_unavailable_reason: Optional[str] = None
+
     def __init__(self, products_config_path: Optional[Path] = None,
                  dynamic_urls: Optional[dict[str, list[str]]] = None) -> None:
         """初始化。
@@ -140,6 +142,10 @@ class OfficialPageAdapter(SourceAdapter):
         )
         if needs_render:
             reason = "0 evidence" if not result else "定价页无价格信号"
+            skip_reason = self._skip_playwright_reason()
+            if skip_reason:
+                print(f"  [OfficialPageAdapter] {reason}, skip Playwright: {skip_reason}")
+                return result
             print(f"  [OfficialPageAdapter] {reason}, retrying with Playwright ...")
             try:
                 html_pw = self._read_playwright(url)
@@ -150,9 +156,22 @@ class OfficialPageAdapter(SourceAdapter):
                 if rendered and (self._has_price_evidence(rendered) or len(rendered) >= len(result)):
                     result = rendered
             except Exception as e:
+                if self._is_missing_playwright_browser(e):
+                    OfficialPageAdapter._playwright_unavailable_reason = "browser executable missing; run python -m playwright install chromium"
                 print(f"  [OfficialPageAdapter] Playwright fallback FAILED: {type(e).__name__}: {e}")
 
         return result
+
+    @classmethod
+    def _skip_playwright_reason(cls) -> str:
+        if os.environ.get("DISABLE_PLAYWRIGHT_RENDER", "").strip() in ("1", "true", "True"):
+            return "DISABLE_PLAYWRIGHT_RENDER=1"
+        return cls._playwright_unavailable_reason or ""
+
+    @staticmethod
+    def _is_missing_playwright_browser(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "executable doesn't exist" in msg and "playwright install" in msg
 
     def _read(self, url: str) -> str:
         if url.startswith("file://") or url.startswith(("/", ".")) or len(url) >= 2 and url[1] == ":":

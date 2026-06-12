@@ -7,12 +7,15 @@ services:
     runtime: python
     plan: free                 # 免费档;空闲约 15 分钟后休眠,下次访问冷启动数十秒
     region: singapore          # Render 里离中国最近的区
-    buildCommand: pip install -r requirements.txt && playwright install chromium
+    buildCommand: pip install -r requirements.txt && python -m playwright install --with-deps chromium
     # SSE 长连接 + 单 worker(流水线内部已自带线程池);超时给足
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 75
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.7
+      # 把浏览器安装进应用 slug,避免 Render cache 与 Playwright 版本错位后运行时找不到 chromium
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: "0"
       # —— LLM(豆包 Doubao)——
       - key: LLM_API_KEY
         sync: false            # ← 在 Render 网页填你的 key
@@ -23,6 +26,9 @@ services:
       # —— Web 搜索(主力 Brave;不填则自动降级到免费 DuckDuckGo)——
       - key: BRAVE_API_KEY
         sync: false            # ← 可选,在 Render 网页填
+      # Render 免费档/DDG 出站链路经常超时;没有 Brave/Tavily key 时直接走官网/cache/mock 兜底
+      - key: DISABLE_DDG_SEARCH
+        value: "1"
       # —— 跨域:填你的前端 Vercel 域名(逗号分隔多个),部署完前端后回填 ——
       - key: API_CORS_ORIGINS
         sync: false            # 例: https://your-app.vercel.app
