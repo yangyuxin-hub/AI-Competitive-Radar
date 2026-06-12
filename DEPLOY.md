@@ -57,7 +57,7 @@
 | 第一次请求很久没动静 | Render 免费档冷启动；先打开 `<后端>/api/reports` 预热 |
 | 分析跑一半断了 | 多为 LLM key 失效/额度耗尽，看 Render 服务的 **Logs** 标签 |
 | 报告/缓存重启后丢了 | 免费档文件系统是临时的，属正常；Demo 无需持久化，要持久化需在 Render 加 Disk 卷 |
-| `Executable doesn't exist ... ms-playwright ... chromium` | 后端没有按最新 `render.yaml` 重新构建，或服务不是 Blueprint 创建的；Build Command 应包含 `python -m playwright install --with-deps chromium`，并设置 `PLAYWRIGHT_BROWSERS_PATH=0` 后 Clear build cache 再 redeploy |
+| `Executable doesn't exist ... ms-playwright ... chromium` | 后端没有按最新 `render.yaml` 重新构建，或服务不是 Blueprint 创建的；Build Command 应包含 `python -m playwright install chromium`（**不要加 `--with-deps`**，它需要 root 权限，Render 上 build 必失败），并设置 `PLAYWRIGHT_BROWSERS_PATH=0` 后 Clear build cache 再 redeploy |
 | 日志里 DuckDuckGo/DDG 一直 `ConnectTimeout` | Render 出站网络访问免费搜索不稳定；保持 `DISABLE_DDG_SEARCH=1`，并优先配置 `BRAVE_API_KEY` |
 | 国内访问慢 | Render/Vercel 是海外节点；要国内稳定走「云服务器+Docker」方案（另说） |
 
