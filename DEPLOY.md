@@ -57,7 +57,8 @@
 | 第一次请求很久没动静 | Render 免费档冷启动；先打开 `<后端>/api/reports` 预热 |
 | 分析跑一半断了 | 多为 LLM key 失效/额度耗尽，看 Render 服务的 **Logs** 标签 |
 | 报告/缓存重启后丢了 | 免费档文件系统是临时的，属正常；Demo 无需持久化，要持久化需在 Render 加 Disk 卷 |
-| `Executable doesn't exist ... ms-playwright ... chromium` | 后端没有按最新 `render.yaml` 重新构建，或服务不是 Blueprint 创建的；Build Command 应包含 `python -m playwright install chromium`（**不要加 `--with-deps`**，它需要 root 权限，Render 上 build 必失败），并设置 `PLAYWRIGHT_BROWSERS_PATH=0` 后 Clear build cache 再 redeploy |
+| `Executable doesn't exist ... ms-playwright ... chromium` | 免费档**有意不装** Chromium（见下一条 OOM）；设 `DISABLE_PLAYWRIGHT_RENDER=1` 即可优雅跳过。升级 Starter 后想启用：Build Command 加 `python -m playwright install chromium`（**不要加 `--with-deps`**，需要 root，build 必失败）+ `PLAYWRIGHT_BROWSERS_PATH=0`，Clear build cache 再 redeploy |
+| `Ran out of memory (used over 512MB)` 实例被杀 | 免费档 512MB 跑不起 Chromium（单实例 200-400MB，collector 还有并发）；确认 `DISABLE_PLAYWRIGHT_RENDER=1` 且 Build Command **没有** playwright install。要 JS 渲染采集需升级 Starter（2GB，$7/月） | |
 | 日志里 DuckDuckGo/DDG 一直 `ConnectTimeout` | Render 出站网络访问免费搜索不稳定；保持 `DISABLE_DDG_SEARCH=1`，并优先配置 `BRAVE_API_KEY` |
 | 国内访问慢 | Render/Vercel 是海外节点；要国内稳定走「云服务器+Docker」方案（另说） |
 
