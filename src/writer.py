@@ -9,6 +9,7 @@ import re
 from collections import Counter
 from typing import Optional
 
+from .pricing_model import regular_monthly_price
 from .state import AgentState
 
 
@@ -657,14 +658,39 @@ def _native_price_label(product: dict) -> Optional[str]:
     for tier in product.get("tiers") or []:
         price = tier.get("price") or {}
         amount = price.get("amount")
-        if not isinstance(amount, (int, float)) or amount <= 0:
-            continue
         currency = (price.get("currency") or "").upper()
+        if not isinstance(amount, (int, float)) or amount <= 0:
+            for opt in tier.get("billing_options") or []:
+                if opt.get("is_promo") or opt.get("cycle") not in ("monthly", "single_month"):
+                    continue
+                opt_price = opt.get("price") or {}
+                opt_amount = opt_price.get("amount")
+                if isinstance(opt_amount, (int, float)) and opt_amount > 0:
+                    amount = opt_amount
+                    currency = (opt_price.get("currency") or "").upper()
+                    break
+            else:
+                continue
         symbol = {"CNY": "¥", "RMB": "¥", "USD": "$", "EUR": "€", "GBP": "£"}.get(currency)
         prices.append((float(amount), f"{symbol or currency or ''}{amount}"))
     if not prices:
         return None
     return min(prices, key=lambda x: x[0])[1]
+
+
+def _regular_monthly_label(tier: dict) -> Optional[str]:
+    monthly = regular_monthly_price(tier)
+    if monthly is None:
+        return None
+    currency = ""
+    for opt in tier.get("billing_options") or []:
+        if opt.get("is_promo") or opt.get("cycle") not in ("monthly", "single_month"):
+            continue
+        currency = ((opt.get("price") or {}).get("currency") or "").upper()
+        break
+    symbol = {"CNY": "¥", "RMB": "¥", "USD": "$", "EUR": "€", "GBP": "£"}.get(currency)
+    amount = f"{monthly:g}"
+    return f"{symbol or currency or ''}{amount}"
 
 
 def _render_pricing(pricing_model: dict, feature_tree: dict, products: list[str]) -> str:
@@ -689,22 +715,17 @@ def _render_pricing(pricing_model: dict, feature_tree: dict, products: list[str]
                 symbol = {"CNY": "¥", "RMB": "¥", "USD": "$", "EUR": "€", "GBP": "£"}.get(currency)
                 amount_text = f"{symbol or currency or ''}{native_amount}"
             else:
-                amount_text = "—"
+                amount_text = _regular_monthly_label(tier) or "—"
             limits = tier.get("display_limits", "")
             ev = cite(tier.get("evidence_ids") or [])
             lines.append(f"| {name} | {tname} | {seg} | {amount_text} | {limits} | {ev} |")
     lines.append("")
 
-    engine_rows = []
     unit_rows = []
     for p in pricing_model.get("products", []):
         engine = p.get("pricing_engine") or {}
         if not engine:
             continue
-        engine_rows.append(
-            f"| {p.get('name', '?')} | {engine.get('archetype', 'Unknown')} | "
-            f"{engine.get('comparison_axis', 'unknown')} |"
-        )
         for tier in engine.get("tiers") or []:
             costs = tier.get("unit_costs") or []
             if not costs and tier.get("price_per_credit") is None:
@@ -718,13 +739,8 @@ def _render_pricing(pricing_model: dict, feature_tree: dict, products: list[str]
             unit_rows.append(
                 f"| {p.get('name', '?')} | {tier.get('tier_name', '?')} | {ppc_text} | {cost_text} |"
             )
-    if engine_rows:
-        lines.append("### 定价模型归一化\n")
-        lines.append("| 产品 | 商业模式 | 比较轴 |")
-        lines.append("|------|----------|--------|")
-        lines.extend(engine_rows)
-        lines.append("")
     if unit_rows:
+        lines.append("### 单位成本归一化\n")
         lines.append("| 产品 | 档位 | 单位积分成本 | 派生单位成本 |")
         lines.append("|------|------|--------------:|--------------|")
         lines.extend(unit_rows)
@@ -740,43 +756,7 @@ def _render_pricing(pricing_model: dict, feature_tree: dict, products: list[str]
         if comparison.get("insights") or comparison.get("gaps"):
             lines.append("")
     strategy = pricing_model.get("pricing_strategy_analysis") or {}
-    model_analysis = strategy.get("pricing_model_analysis") or {}
     value_analysis = strategy.get("value_for_money_analysis") or {}
-    if model_analysis:
-        lines.append("### 定价模型:商业逻辑\n")
-        summary = model_analysis.get("summary")
-        if summary:
-            lines.append(f"> {summary}\n")
-        lines.append("| 产品 | 模型 | 转化杠杆 | 权益设计 | 商业意图 |")
-        lines.append("|------|------|----------|----------|----------|")
-        for item in model_analysis.get("products") or []:
-            levers = "；".join(item.get("conversion_levers") or [])
-            ent = item.get("entitlement_design") or {}
-            ent_parts = []
-            if ent.get("free_layer"):
-                ent_parts.append("免费层:" + "、".join(ent.get("free_layer")[:2]))
-            if ent.get("subscription_entitlements"):
-                ent_parts.append("会员层:" + "、".join(ent.get("subscription_entitlements")[:2]))
-            if ent.get("premium_capabilities"):
-                ent_parts.append("高阶权益:" + "、".join(ent.get("premium_capabilities")[:4]))
-            if ent.get("topup_rules"):
-                ent_parts.append("增购层:" + "、".join(ent.get("topup_rules")[:1]))
-            if ent.get("promotional_rewards"):
-                ent_parts.append("活动奖励:" + "、".join(ent.get("promotional_rewards")[:2]))
-            hypothesis = item.get("monetization_hypothesis") or {}
-            intent_parts = []
-            if hypothesis.get("target_paid_user"):
-                intent_parts.append(f"目标:{hypothesis.get('target_paid_user')}")
-            if hypothesis.get("upsell_path"):
-                intent_parts.append(f"路径:{hypothesis.get('upsell_path')}")
-            if hypothesis.get("revenue_expansion"):
-                intent_parts.append(f"扩张:{hypothesis.get('revenue_expansion')}")
-            lines.append(
-                f"| {item.get('product', '?')} | {item.get('archetype', 'Unknown')} | "
-                f"{levers or '—'} | {'；'.join(ent_parts) or item.get('business_logic', '—')} | "
-                f"{'；'.join(intent_parts) or '—'} |"
-            )
-        lines.append("")
     if value_analysis:
         lines.append("### 价格与性价比:场景判断\n")
         lines.append("| 场景 | 预算 | 需求 | 所需能力 | 结论 |")

@@ -2,7 +2,7 @@
 import unittest
 
 from src.reviewer import check_report_chip_traceability, check_report_no_score_leak
-from src.writer import _render_data_availability, _render_pricing
+from src.writer import _render_business_model, _render_data_availability, _render_pricing
 
 _EV = [{"evidence_id": "S1234ABC"}, {"evidence_id": "SABCDEF1"}]
 
@@ -123,25 +123,26 @@ class PricingEngineRenderTest(unittest.TestCase):
 
         md = _render_pricing(pricing, {"features": []}, ["即梦AI"])
 
-        self.assertIn("定价模型归一化", md)
-        self.assertIn("Freemium + Subscription + Credits", md)
-        self.assertIn("unit_cost", md)
+        self.assertIn("单位成本归一化", md)
+        self.assertNotIn("Freemium + Subscription + Credits", md)
         self.assertIn("标准会员", md)
         self.assertIn("0.09", md)
         self.assertIn("0.72", md)
         self.assertIn("¥", md)
         self.assertIn("最低积分单价", md)
         self.assertIn("不能直接比较", md)
-        self.assertIn("定价模型:商业逻辑", md)
         self.assertIn("价格与性价比:场景判断", md)
         self.assertIn("稳定短视频产出", md)
-        self.assertIn("权益设计", md)
-        self.assertIn("邀请好友送额度", md)
-        self.assertIn("商业意图", md)
         self.assertIn("100-300 CNY", md)
         self.assertIn("标准视频消耗率", md)
         self.assertIn("不能等同", md)
         self.assertNotIn("未抓到付费档价格数值", md)
+
+        biz = _render_business_model(pricing)
+        self.assertIn("商业模式逻辑", biz)
+        self.assertIn("Freemium + Subscription + Credits", biz)
+        self.assertIn("定价应拆成免费获客", biz)
+        self.assertIn("用免费额度拉新", biz)
 
 
 if __name__ == "__main__":

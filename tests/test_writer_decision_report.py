@@ -1,6 +1,11 @@
 import unittest
 
-from src.writer import _render_business_model, _render_decision_summary, _render_tech_capability
+from src.writer import (
+    _render_business_model,
+    _render_decision_summary,
+    _render_pricing,
+    _render_tech_capability,
+)
 
 
 class DecisionSummaryTest(unittest.TestCase):
@@ -53,6 +58,17 @@ class TechAndBizTest(unittest.TestCase):
         out = _render_business_model(pm)
         self.assertIn("商业模式逻辑", out)
         self.assertIn("Freemium + Subscription + Credits", out)
+
+
+class PricingTopTableTest(unittest.TestCase):
+    def test_new_schema_tier_shows_regular_monthly_not_dash(self):
+        pm = {"products": [{"name": "即梦AI", "tiers": [
+            {"tier_name": "标准会员", "billing_options": [
+                {"cycle": "monthly", "is_promo": False,
+                 "price": {"amount": 199, "currency": "CNY"}}]}]}]}
+        out = _render_pricing(pm, {}, ["即梦AI"])
+        self.assertIn("199", out)
+        self.assertNotIn("archetype", out.lower())
 
 
 if __name__ == "__main__":
