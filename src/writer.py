@@ -207,6 +207,31 @@ def _render_header(meta: dict, target: str, competitors: list[str], focus: list[
     )
 
 
+_DECISION_QUESTIONS = [
+    ("why_success", "为什么成功"),
+    ("how_monetize", "靠什么赚钱"),
+    ("moat", "护城河是什么"),
+    ("what_to_learn", "我们该学什么"),
+    ("what_to_avoid", "我们该避开什么"),
+]
+_CONF_CN = {"high": "高", "medium": "中", "low": "低"}
+
+
+def _render_decision_summary(schema: dict, meta: dict) -> str:
+    ds = schema.get("decision_summary") or {}
+    lines = ["## 决策摘要", "", "> 只读一页:5 个终极问题,每条结论标注置信度。", ""]
+    for key, label in _DECISION_QUESTIONS:
+        item = ds.get(key) or {}
+        answer = item.get("answer")
+        if not answer:
+            lines.append(f"- **{label}？** 证据不足（置信度低）")
+            continue
+        conf = _CONF_CN.get(item.get("confidence", "low"), "低")
+        chips = cite(item.get("refs") or [])
+        lines.append(f"- **{label}？** {answer}（置信度{conf}）{chips}")
+    return "\n".join(lines)
+
+
 def _products(meta: dict) -> list[str]:
     return [p for p in [meta.get("target_product"), *list(meta.get("competitors") or [])] if p]
 
