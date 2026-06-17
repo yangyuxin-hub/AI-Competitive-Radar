@@ -477,13 +477,18 @@ def _normalize_leaf(legacy_pdata: dict) -> dict:
     """旧叶子(support_status + quality_score.score) → 新叶子 schema(depth_score 等)。"""
     pdata = legacy_pdata or {}
     qs = pdata.get("quality_score") or {}
-    score = qs.get("score")
-    depth = int(score) if isinstance(score, (int, float)) and int(score) >= 1 else None
+    raw_depth = pdata.get("depth_score")
+    if raw_depth is None:
+        raw_depth = qs.get("score")
+    depth = int(raw_depth) if isinstance(raw_depth, (int, float)) and 1 <= int(raw_depth) <= 5 else None
     refs = list(pdata.get("support_evidence_ids") or [])
+    level = pdata.get("evidence_level")
+    if level not in {"official", "third_party", "user_review", "inferred"}:
+        level = "official" if refs else "inferred"
     return {
         "support_status": normalize_status(pdata.get("support_status", "unknown")),
         "depth_score": depth,
-        "evidence_level": "official" if refs else "inferred",
+        "evidence_level": level,
         "differentiator": bool(pdata.get("differentiator")),
         "source_refs": refs,
     }
@@ -559,31 +564,42 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
         fill_instruct = (
             pain_note
             + f"对产品「{product}」,针对下面 feature_list 中每个功能逐一评估其支持度与质量。\n"
-            '只输出 JSON: {"products":{"F001":{"support_status":"supported|partially_supported|'
-            'not_supported|unknown","support_evidence_ids":["..."],"quality_score":{"score":0-5,'
-            '"scale":5,"basis":"一句话依据","evidence_ids":["..."]}}}}。\n'
+            '只输出 JSON: {"products":{"F001":{"support_status":"supported|partial|'
+            'unsupported|unknown","support_evidence_ids":["..."],'
+            '"depth_score":1-5或null,"evidence_level":"official|third_party|user_review|inferred",'
+            '"differentiator":true/false,'
+            '"quality_score":{"score":0-5,"scale":5,"basis":"一句话依据","evidence_ids":["..."]}}}}。\n'
             "support_evidence_ids 只能用 feature_existence 证据;quality_score.evidence_ids 只能用 "
             "performance_quality / user_pain 证据。\n"
             "## 关键:支持度 与 质量分 分开判,各用各的证据(不要绑死)\n"
             "### support_status —— 该产品**是否具备**这个能力(优先用 feature_existence / 官网 vendor_claim 证据)\n"
-            "- supported=官网功能页/产品介绍明确描述了该能力;partially_supported=只部分具备或明显受限;\n"
-            "- not_supported=证据明确表明没有;unknown=**连官网都没有任何相关介绍**(真的一点线索都没有时才用)。\n"
+            "- supported=官网功能页/产品介绍明确描述了该能力;partial=只部分具备或明显受限;\n"
+            "- unsupported=证据明确表明没有;unknown=**连官网都没有任何相关介绍**(真的一点线索都没有时才用)。\n"
             "- **核心:官网产品介绍能证明『具备』,就给 supported,哪怕完全没有用户体验数据**——"
             "绝不要因为缺质量证据,就把本可由官网确认的支持度也写成 unknown。这是矩阵不塌方的关键。\n"
             "### quality_score —— 该能力**好不好**(只用 performance_quality / user_pain 证据,严禁用官网营销话术补分)\n"
             "- 5=多条用户/第三方证据一致称业界领先;4=明确优于同类;3=可用/评价不一;2=明显短板;1=几乎不可用;\n"
             "- 0=**没有任何质量证据** → score 0,basis 写『仅确认具备,无质量证据』;"
             "**这条只代表没评分,不要因此改动上面的 support_status**。\n"
+            "## depth_score 评分口径(强制,无证据写 null,绝不编分)\n"
+            "1=仅入口/基础能力; 2=可用但限制明显; 3=主流可用效果稳定; "
+            "4=质量/可控性明显优于多数竞品; 5=专业级,形成明显工作流优势。\n"
+            "**仅当存在 官方说明/实测结果/第三方评测/用户案例 之一才给分,否则 depth_score=null。**\n"
+            "evidence_level 取你给 depth_score 所依据证据的最高等级;differentiator=该能力是否"
+            "在本次样本产品中明显仅此一家做到位(宁缺毋滥,不确定填 false)。\n"
             "## 纪律\n"
             "- support_status 可采信官网/feature_existence;quality_score **只**采信 user_generated/third_party;\n"
             "- basis 写成**可对比**的一句话(点出快/慢、准/糙),或在无质量证据时如实写『仅确认具备』;\n"
             "- 严禁编造 evidence_id。\n"
             "## 微示例\n"
             '有官网无评价(常见,务必照此填): {"support_status":"supported","support_evidence_ids":["SAAA1111"],'
+            '"depth_score":null,"evidence_level":"official","differentiator":false,'
             '"quality_score":{"score":0,"scale":5,"basis":"官网功能页确认具备该能力,但无用户质量证据","evidence_ids":[]}}\n'
             '有评价: {"support_status":"supported","support_evidence_ids":["SAAA1111"],'
+            '"depth_score":4,"evidence_level":"third_party","differentiator":false,'
             '"quality_score":{"score":4,"scale":5,"basis":"第三方实测延迟100-200ms,优于多数同类","evidence_ids":["SBBB2222"]}}\n'
             '真无任何线索: {"support_status":"unknown","support_evidence_ids":[],'
+            '"depth_score":null,"evidence_level":"inferred","differentiator":false,'
             '"quality_score":{"score":0,"scale":5,"basis":"未检索到该能力的任何证据","evidence_ids":[]}}'
         )
         out = get_llm().call_json(

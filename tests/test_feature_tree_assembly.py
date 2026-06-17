@@ -19,6 +19,17 @@ class NormalizeLeafTest(unittest.TestCase):
         self.assertEqual(out["evidence_level"], "inferred")
         self.assertFalse(out["differentiator"])
 
+    def test_new_leaf_fields_take_precedence_over_quality_score_fallback(self):
+        out = _normalize_leaf({"support_status": "supported",
+                               "support_evidence_ids": ["S1234567"],
+                               "depth_score": 5,
+                               "evidence_level": "third_party",
+                               "differentiator": True,
+                               "quality_score": {"score": 2, "scale": 5}})
+        self.assertEqual(out["depth_score"], 5)
+        self.assertEqual(out["evidence_level"], "third_party")
+        self.assertTrue(out["differentiator"])
+
 
 class SkeletonTest(unittest.TestCase):
     def test_wraps_flat_features_into_domains(self):
