@@ -1,0 +1,16 @@
+# config/feature_weights.yaml — 能力域权重 × analysis_focus（带 version，可复现）
+version: demo-v1
+default_focus: "视频生成质量与可控性"
+focuses:
+  "视频生成质量与可控性":
+    - {id: A, name: 视频生成能力, weight: 0.30, role: core}
+    - {id: B, name: 可控性, weight: 0.25, role: core}
+    - {id: C, name: 编辑与后处理, weight: 0.15, role: core}
+    - {id: D, name: 模板与素材生态, weight: 0.15, role: ecosystem}
+    - {id: E, name: 商业化与协作导出, weight: 0.15, role: commercial}
+  "小红书内容生产效率":
+    - {id: A, name: 模板与素材生态, weight: 0.30, role: ecosystem}
+    - {id: B, name: 一键成片与批量, weight: 0.25, role: core}
+    - {id: C, name: 文案与脚本辅助, weight: 0.20, role: core}
+    - {id: D, name: 视频质量, weight: 0.15, role: core}
+    - {id: E, name: 商业化与发布链路, weight: 0.10, role: commercial}
