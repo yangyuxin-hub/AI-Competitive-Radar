@@ -153,3 +153,59 @@ def feature_winner(point: dict, products: list[str]) -> dict:
     confidence = "high" if margin >= _HIGH_MARGIN else "medium"
     return {"winner": top_p, "reason": f"{top_p} 综合分领先次优 {margin:.2f}",
             "confidence": confidence}
+
+
+_STRONG = 0.7
+_BREADTH_BROAD = 0.8
+
+
+def differentiation_matrix(tree: dict, products: list[str]) -> list[dict]:
+    """样本内差异点:某能力上仅一个产品做到位(differentiator 或独家 supported)。
+    措辞强制带「样本内 N 个产品中」,不绝对化为「独占」。"""
+    n = len(products)
+    rows = []
+    for domain in tree.get("domains") or []:
+        for leaf in _leaves_of_domain(domain):
+            prods = leaf.get("products") or {}
+            flagged = [p for p in products if (prods.get(p) or {}).get("differentiator")]
+            if len(flagged) != 1:
+                # 退一步:仅一个产品 supported、其余非 supported,也算样本内差异点
+                supported = [p for p in products
+                             if support_score((prods.get(p) or {}).get("support_status", "unknown")) == 1.0]
+                if len(supported) != 1:
+                    continue
+                flagged = supported
+            p = flagged[0]
+            rows.append({
+                "feature_id": leaf.get("id"), "name": leaf.get("name"), "product": p,
+                "note": f"样本内 {n} 个产品中,仅 {p} 在「{leaf.get('name')}」做到位",
+            })
+    return rows
+
+
+def product_archetype(tree: dict, product: str) -> str:
+    """产品原型分类。
+
+    原型 ∈ {全能型, 专精型, 工具型, 平台型, 数据不足}
+    - 全能型：覆盖广 + 强度强（breadth >= 0.8 && strong_ratio >= 0.7）、无平台域强项
+    - 平台型：同全能 + 有平台/生态域强项（role in ["platform", "ecosystem"]）
+    - 专精型：覆盖小 + 仅 1-2 个强项、强项占比 <= 50%
+    - 工具型：其他
+    - 数据不足：所有域都无数据(all unknown)
+    """
+    domains = tree.get("domains") or []
+    covs = [(d, domain_coverage(d, product)) for d in domains]
+    present = [(d, c) for d, c in covs if c["score"] is not None]
+    if not present:
+        return "数据不足"
+    strong = [(d, c) for d, c in present if c["score"] >= _STRONG]
+    breadth = len(present) / len(domains) if domains else 0.0
+    strong_ratio = len(strong) / len(present) if present else 0.0
+    # 平台型:生态/平台域强 + 覆盖较广
+    has_platform = any(d.get("role") in ("platform", "ecosystem") and c["score"] >= _STRONG
+                       for d, c in present)
+    if breadth >= _BREADTH_BROAD and strong_ratio >= _STRONG:
+        return "平台型" if has_platform else "全能型"
+    if strong and len(strong) <= 2 and strong_ratio <= 0.5:
+        return "专精型"
+    return "工具型"

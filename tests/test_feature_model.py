@@ -118,3 +118,46 @@ class WinnerTest(unittest.TestCase):
         pt = _leaf("x", Jimeng=_p("supported", 4), Kling=_p("supported", 4))
         out = feature_winner(pt, ["Jimeng", "Kling"])
         self.assertEqual(out["winner"], "tie")
+
+
+class DiffMatrixTest(unittest.TestCase):
+    def test_only_one_product_supported_is_differentiator(self):
+        from src.feature_model import differentiation_matrix
+        tree = {"domains": [{"id": "A", "name": "a", "weight": 1.0, "modules": [
+            {"id": "A1", "name": "a", "points": [
+                _leaf("多镜头", Jimeng=_p("unsupported"), Kling=_p("partial"),
+                      Runway=_p("supported", 4, diff=True)),
+            ]}]}]}
+        rows = differentiation_matrix(tree, ["Jimeng", "Kling", "Runway"])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["product"], "Runway")
+        self.assertIn("样本内 3 个产品中", rows[0]["note"])
+        self.assertNotIn("独占", rows[0]["note"])
+
+
+class ArchetypeTest(unittest.TestCase):
+    def test_broad_and_strong_is_allrounder(self):
+        from src.feature_model import product_archetype
+        tree = {"domains": [
+            {"id": "A", "name": "a", "weight": 0.5, "modules": [{"id": "A1", "name": "a",
+                "points": [_leaf("x", P=_p("supported", 5))]}]},
+            {"id": "B", "name": "b", "weight": 0.5, "modules": [{"id": "B1", "name": "b",
+                "points": [_leaf("y", P=_p("supported", 4))]}]},
+        ]}
+        self.assertEqual(product_archetype(tree, "P"), "全能型")
+
+    def test_narrow_strong_is_specialist(self):
+        from src.feature_model import product_archetype
+        tree = {"domains": [
+            {"id": "A", "name": "a", "weight": 0.5, "role": "core", "modules": [{"id": "A1",
+                "name": "a", "points": [_leaf("x", P=_p("supported", 5))]}]},
+            {"id": "B", "name": "b", "weight": 0.5, "role": "core", "modules": [{"id": "B1",
+                "name": "b", "points": [_leaf("y", P=_p("unsupported"))]}]},
+        ]}
+        self.assertEqual(product_archetype(tree, "P"), "专精型")
+
+    def test_all_unknown_is_insufficient(self):
+        from src.feature_model import product_archetype
+        tree = {"domains": [{"id": "A", "name": "a", "weight": 1.0, "modules": [{"id": "A1",
+            "name": "a", "points": [_leaf("x", P=_p("unknown"))]}]}]}
+        self.assertEqual(product_archetype(tree, "P"), "数据不足")
