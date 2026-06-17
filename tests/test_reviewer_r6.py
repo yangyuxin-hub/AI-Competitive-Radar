@@ -1,6 +1,6 @@
 import unittest
 
-from src.reviewer import check_semantic_grounding, make_reviewer_node
+from src.reviewer import _collect_semantic_claims, check_semantic_grounding, make_reviewer_node
 
 
 class FakeLLM:
@@ -151,6 +151,45 @@ def _evidence():
 
 
 class ReviewerR6Test(unittest.TestCase):
+    def test_semantic_claim_collection_skips_unrated_quality_basis(self):
+        schema = {
+            "feature_tree": {"features": [{
+                "feature_id": "F001",
+                "name": "文本驱动视频生成",
+                "products": {
+                    "即梦AI": {
+                        "support_status": "supported",
+                        "support_evidence_ids": ["SABC001"],
+                        "quality_score": {
+                            "score": 0,
+                            "scale": 5,
+                            "basis": "无用户/第三方质量评价证据，暂不评分",
+                            "evidence_ids": [],
+                        },
+                    }
+                },
+                "gap": {},
+            }]},
+        }
+
+        claims = _collect_semantic_claims(schema)
+
+        self.assertEqual(claims, [])
+
+    def test_semantic_claim_collection_uses_recommendation_evidence_refs(self):
+        schema = {"recommendations": [{
+            "rec_id": "R001",
+            "action": "补齐高清输出",
+            "rationale": "对标竞品公开规格",
+            "evidence_refs": ["SABC002"],
+        }]}
+
+        claims = _collect_semantic_claims(schema)
+
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0]["location"], "recommendations.R001")
+        self.assertEqual(claims[0]["evidence_ids"], ["SABC002"])
+
     def test_semantic_grounding_converts_llm_issue(self):
         llm = FakeLLM({
             "issues": [

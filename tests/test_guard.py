@@ -63,6 +63,22 @@ class ComparisonEvidenceTest(unittest.TestCase):
         self.assertEqual(gap["gap_type"], "insufficient_evidence")
         self.assertIn("暂不作强对比", gap["reason"])
 
+    def test_downgrades_when_any_supported_competitor_lacks_quality_evidence(self):
+        schema = _schema(STRONG_GAP, ["SQQQ0001"], ["SQQQ0002"])
+        products = schema["feature_tree"]["features"][0]["products"]
+        products["Gamma"] = {
+            "support_status": "supported",
+            "support_evidence_ids": ["SCCC0001"],
+            "quality_score": {"score": 0, "scale": 5, "basis": "无质量证据", "evidence_ids": []},
+        }
+        evidence = POOL + [_ev("SCCC0001", "Gamma", "feature_existence")]
+
+        self.assertEqual(enforce_comparison_evidence(schema, evidence), 1)
+
+        gap = schema["feature_tree"]["features"][0]["gap"]
+        self.assertEqual(gap["winner"], "unknown")
+        self.assertIn("部分产品缺少质量证据", gap["reason"])
+
     def test_downgrades_when_winner_cites_only_feature_evidence(self):
         """winner 的质量分引用全是 feature_existence(非 quality/pain)→ 同样降级。"""
         schema = _schema(STRONG_GAP, ["SAAA0001"], ["SQQQ0002"])
@@ -97,6 +113,24 @@ class BasisSupportTest(unittest.TestCase):
     def test_normal_basis_untouched(self):
         schema = _schema(STRONG_GAP, ["SQQQ0001"], ["SQQQ0002"])
         self.assertEqual(enforce_basis_support(schema, POOL), 0)
+
+    def test_quality_basis_without_quality_evidence_is_neutralized_but_support_kept(self):
+        schema = _schema(
+            STRONG_GAP,
+            [],
+            ["SQQQ0002"],
+            alpha_basis="仅确认具备文本驱动视频生成能力，无有效质量评价证据",
+            alpha_support_ids=("SAAA0001",),
+        )
+        out, rep = apply(copy.deepcopy(schema), POOL)
+        pdata = out["feature_tree"]["features"][0]["products"]["Alpha"]
+        qs = pdata["quality_score"]
+        self.assertEqual(pdata["support_status"], "supported")
+        self.assertEqual(qs["score"], 0)
+        self.assertEqual(qs["evidence_ids"], [])
+        self.assertIn("无用户/第三方质量评价证据", qs["basis"])
+        self.assertNotIn("确认具备", qs["basis"])
+        self.assertGreaterEqual(rep["quality_basis_neutralized"], 1)
 
 
 class ApplyIdempotencyTest(unittest.TestCase):

@@ -144,7 +144,12 @@ def _grant_amount(tier: PricingTier) -> Optional[float]:
     if not grant:
         return None
     amount = grant.get("default") if grant.get("adjustable") else grant.get("amount")
-    return float(amount) if amount is not None else None
+    if amount is None:
+        return None
+    try:
+        return float(amount)
+    except (TypeError, ValueError):
+        return None
 
 
 def price_per_credit(tier: PricingTier) -> Optional[float]:

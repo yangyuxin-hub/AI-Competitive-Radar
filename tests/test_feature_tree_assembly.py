@@ -30,6 +30,26 @@ class NormalizeLeafTest(unittest.TestCase):
         self.assertEqual(out["evidence_level"], "third_party")
         self.assertTrue(out["differentiator"])
 
+    def test_quality_refs_become_source_refs_for_depth_honesty(self):
+        out = _normalize_leaf({"support_status": "supported",
+                               "support_evidence_ids": [],
+                               "depth_score": 3,
+                               "evidence_level": "user_review",
+                               "quality_score": {"score": 3, "scale": 5,
+                                                 "evidence_ids": ["S7654321"]}})
+        self.assertEqual(out["depth_score"], 3)
+        self.assertEqual(out["source_refs"], ["S7654321"])
+
+    def test_depth_score_without_refs_is_cleared(self):
+        out = _normalize_leaf({"support_status": "supported",
+                               "support_evidence_ids": [],
+                               "depth_score": 3,
+                               "evidence_level": "official",
+                               "quality_score": {"score": 0, "scale": 5,
+                                                 "evidence_ids": []}})
+        self.assertIsNone(out["depth_score"])
+        self.assertEqual(out["source_refs"], [])
+
 
 class SkeletonTest(unittest.TestCase):
     def test_wraps_flat_features_into_domains(self):

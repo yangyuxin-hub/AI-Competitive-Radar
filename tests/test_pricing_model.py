@@ -66,6 +66,13 @@ class PricePerCreditTest(unittest.TestCase):
                 "credit_grant": {"amount": 725, "unit": "积分"}}
         self.assertIsNone(price_per_credit(tier))
 
+    def test_range_credit_grant_returns_none(self):
+        # LLM 有时会把额度抽成 "60-100" 这类范围；确定性引擎不能估算。
+        tier = {"billing_options": [{"cycle": "monthly", "is_promo": False,
+                                     "price": {"amount": 99, "currency": "CNY"}}],
+                "credit_grant": {"amount": "60-100", "unit": "积分"}}
+        self.assertIsNone(price_per_credit(tier))
+
 
 class UnitCostTest(unittest.TestCase):
     def setUp(self):

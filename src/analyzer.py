@@ -162,7 +162,7 @@ def collect_all_evidence_refs(
     for r in schema.get("recommendations", []):
         refs.append((
             f"recommendations.{r.get('rec_id', '?')}.evidence_ids",
-            r.get("evidence_ids") or [],
+            r.get("evidence_ids") or r.get("evidence_refs") or [],
             ["feature_existence", "user_pain", "performance_quality", "pricing", "market_signal"],
         ))
 
@@ -481,7 +481,13 @@ def _normalize_leaf(legacy_pdata: dict) -> dict:
     if raw_depth is None:
         raw_depth = qs.get("score")
     depth = int(raw_depth) if isinstance(raw_depth, (int, float)) and 1 <= int(raw_depth) <= 5 else None
-    refs = list(pdata.get("support_evidence_ids") or [])
+    refs = list(dict.fromkeys(
+        list(pdata.get("source_refs") or [])
+        + list(pdata.get("support_evidence_ids") or [])
+        + list(qs.get("evidence_ids") or [])
+    ))
+    if depth is not None and not refs:
+        depth = None
     level = pdata.get("evidence_level")
     if level not in {"official", "third_party", "user_review", "inferred"}:
         level = "official" if refs else "inferred"
@@ -693,6 +699,51 @@ def _normalize_pricing_tiers(facts: dict) -> int:
         deduped.sort(key=lambda t: (_month(t) is None, _month(t) if _month(t) is not None else 0))
         prod["tiers"] = deduped
     return removed
+
+
+def _backfill_unknown_pricing_tiers(facts: dict, evidence: list[dict], products: list[str]) -> int:
+    """有 pricing 证据但 LLM 未结构化出 tiers 时,补一个 unknown tier 防整段缺失。
+
+    只引用真实 pricing evidence,不估算价格、不编套餐名；后续 pricing_engine 会把单位成本算成 None。
+    """
+    pm = facts.setdefault("pricing_model", {})
+    pm_products = pm.setdefault("products", [])
+    by_name = {p.get("name"): p for p in pm_products if p.get("name")}
+    pricing_ids_by_product: dict[str, list[str]] = {}
+    for ev in evidence:
+        product = ev.get("product")
+        eid = ev.get("evidence_id")
+        if ev.get("claim_type") == "pricing" and product and eid:
+            pricing_ids_by_product.setdefault(product, []).append(eid)
+
+    filled = 0
+    for product in products:
+        ids = list(dict.fromkeys(pricing_ids_by_product.get(product) or []))[:5]
+        if not ids:
+            continue
+        prod = by_name.get(product)
+        if prod is None:
+            prod = {"name": product, "tiers": []}
+            pm_products.append(prod)
+            by_name[product] = prod
+        if prod.get("tiers"):
+            continue
+        prod["tiers"] = [{
+            "tier_name": "定价信息待结构化",
+            "billing_options": [{
+                "cycle": "monthly",
+                "amount_status": "unknown",
+                "is_promo": False,
+            }],
+            "evidence_ids": ids,
+        }]
+        prod.setdefault("gaps", []).append({
+            "kind": "pricing_tier_unstructured",
+            "field": "pricing_model.products[].tiers",
+            "fix": "已有定价证据但未抽出明确档位/金额,报告中按 unknown 展示并保留证据",
+        })
+        filled += 1
+    return filled
 
 
 def _pricing_text_for_product(product: str, evidence: list[dict]) -> str:
@@ -1110,6 +1161,9 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0,
 
     # 确定性整理定价档位(去重同价档 + 升序),纯本地不调 LLM。
     if "pricing_model" in facts:
+        backfilled = _backfill_unknown_pricing_tiers(facts, evidence, _target_products(meta))
+        if backfilled:
+            print(f"[analyzer] pricing unknown tier backfilled {backfilled} product(s)")
         n = _normalize_pricing_tiers(facts)
         if n:
             print(f"[analyzer] pricing 去重 {n} 个重复档位")
@@ -1425,6 +1479,7 @@ def analyzer_node(state: AgentState) -> AgentState:
         print(f"[analyzer] guard: -{guard_rep['dropped_refs']} 幻觉引用, "
               f"降级强对比 {guard_rep['comparison_downgraded']} 条, "
               f"basis 改 unknown {guard_rep['basis_unknowned']} 格, "
+              f"质量 basis 暂不评分 {guard_rep.get('quality_basis_neutralized', 0)} 格, "
               f"软化措辞 {guard_rep['softened']} 处")
         schema_draft["_guard_report"] = guard_rep  # 供 stage_report 观测
     # B2: 记录 per-product fill 尝计数到 schema_draft metadata（供 stage_report 观测）

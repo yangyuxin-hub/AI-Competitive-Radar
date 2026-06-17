@@ -31,7 +31,7 @@ def sanitize_schema_evidence_refs(schema: dict, evidence: list[dict]) -> tuple[d
     """Remove evidence IDs that do not exist in the current raw_evidence packet."""
     valid_ids = {e["evidence_id"] for e in evidence if e.get("evidence_id")}
     dropped = 0
-    ref_keys = {"evidence_ids", "support_evidence_ids", "representative_evidence_ids"}
+    ref_keys = {"evidence_ids", "evidence_refs", "support_evidence_ids", "representative_evidence_ids"}
 
     def walk(obj) -> None:
         nonlocal dropped
@@ -79,7 +79,12 @@ def sanitize_derivations(derivations: dict, facts: dict, evidence: list[dict]) -
             item["evidence_ids"] = _keep(item.get("evidence_ids"), valid_ids)
 
     for rec in derivations.get("recommendations") or []:
-        rec["evidence_ids"] = _keep(rec.get("evidence_ids"), valid_ids)
+        rec_refs = list(dict.fromkeys(
+            list(rec.get("evidence_ids") or []) + list(rec.get("evidence_refs") or [])
+        ))
+        kept_refs = _keep(rec_refs, valid_ids)
+        rec["evidence_ids"] = kept_refs
+        rec["evidence_refs"] = kept_refs
         rec["source_feature_ids"] = _keep(rec.get("source_feature_ids"), valid_fids)
         rec["source_pain_ids"] = _keep(rec.get("source_pain_ids"), valid_pids)
         ps = rec.get("priority_score") or {}
@@ -229,11 +234,14 @@ def sanitize_facts_evidence_refs(facts: dict, evidence: list[dict]) -> tuple[dic
 _OVERGEN_SUBS = [
     # 量词 + (可夹少量修饰,如"现有Copilot") + 用户/开发者/反馈 → 部分…
     # {0,10}? 非贪婪且仅匹配中英文(遇标点/空格即止,不跨子句),覆盖"大量现有Copilot用户"这类。
-    (re.compile(r"(?:大量|大批|众多|绝大多数|大多数|多数)([一-鿿A-Za-z]{0,10}?)(用户|开发者|反馈)"),
+    (re.compile(r"(?:大量|大批|众多|绝大多数|大多数|多数)([一-鿿A-Za-z]{0,12}?)(用户|开发者|反馈|创作者|爱好者|从业者)"),
      r"部分\1\2"),
     (re.compile(r"(用户|开发者)普遍"), r"部分\1"),
     (re.compile(r"普遍(反馈|认为|抱怨|遇到|存在|觉得|表示)"), r"部分用户\1"),
     (re.compile(r"广泛(反馈|存在|出现|抱怨|使用)"), r"部分场景\1"),
+    (re.compile(r"多次被提及"), r"有证据提及"),
+    (re.compile(r"多次(反馈|提及|表示)"), r"有证据\1"),
+    (re.compile(r"(?:有)?[0-9一二三四五六七八九十]+条以上[^，。；;,.]*?证据支撑"), r"现有证据支撑"),
 ]
 
 
@@ -301,10 +309,9 @@ def soften_overgeneralization(schema: dict) -> int:
                 soft_field(item, "reason")
     soft_field(landscape, "selection_rationale")
 
-    # ⑤ 改进建议:证据 ≤2 时 rationale / action 收敛
+    # ⑤ 改进建议:建议是决策文本,即使引用数量较多也可能混入不相关证据;量词一律保守收敛。
     for rec in schema.get("recommendations") or []:
-        if len(rec.get("evidence_ids") or []) <= 2:
-            soft_field(rec, "rationale")
-            soft_field(rec, "action")
+        soft_field(rec, "rationale")
+        soft_field(rec, "action")
 
     return changes

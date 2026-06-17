@@ -2,10 +2,26 @@ import unittest
 
 from unittest.mock import patch
 
-from src.analyzer import _apply_pricing_engine, _step1_facts
+from src.analyzer import _apply_pricing_engine, _backfill_unknown_pricing_tiers, _step1_facts
 
 
 class AnalyzerPricingEngineTest(unittest.TestCase):
+    def test_backfills_unknown_tier_when_pricing_evidence_exists_but_llm_misses_tiers(self):
+        facts = {"pricing_model": {"products": [{"name": "可灵Kling", "tiers": []}]}}
+        evidence = [
+            {"evidence_id": "SPRICE01", "product": "可灵Kling", "claim_type": "pricing",
+             "extracted_snippet": "会员页展示灵感值与付费计划"},
+            {"evidence_id": "SFEAT001", "product": "可灵Kling", "claim_type": "feature_existence"},
+        ]
+
+        filled = _backfill_unknown_pricing_tiers(facts, evidence, ["可灵Kling"])
+
+        self.assertEqual(filled, 1)
+        tier = facts["pricing_model"]["products"][0]["tiers"][0]
+        self.assertEqual(tier["tier_name"], "定价信息待结构化")
+        self.assertEqual(tier["evidence_ids"], ["SPRICE01"])
+        self.assertEqual(tier["billing_options"][0]["amount_status"], "unknown")
+
     def test_attaches_sparse_seat_subscription_engine_result(self):
         facts = {"pricing_model": {"products": [{
             "name": "Cursor",

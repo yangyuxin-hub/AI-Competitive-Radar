@@ -139,6 +139,28 @@ class OvergeneralizationSoftenTest(unittest.TestCase):
         self.assertIn("部分场景", schema["competitor_landscape"]["alternative"][0]["reason"])
         self.assertIn("部分现有Copilot用户", schema["recommendations"][0]["rationale"])
 
+    def test_recommendation_quantifiers_softened_even_with_many_refs(self):
+        schema = {"recommendations": [{
+            "rationale": (
+                "大量专业影视用户吐槽长内容连贯创作不足，"
+                "高清输出需求在专业用户群体中多次被提及，"
+                "即梦领先优势有3条以上高可信证据支撑"
+            ),
+            "action": "抢占大量普通创作爱好者",
+            "evidence_ids": ["S1", "S2", "S3", "S4"],
+        }]}
+
+        n = analyzer.soften_overgeneralization(schema)
+
+        text = schema["recommendations"][0]["rationale"]
+        self.assertGreaterEqual(n, 2)
+        self.assertNotIn("大量", text)
+        self.assertNotIn("多次", text)
+        self.assertNotIn("3条以上", text)
+        self.assertIn("部分专业影视用户", text)
+        self.assertIn("有证据提及", text)
+        self.assertIn("现有证据支撑", text)
+
     def test_small_sample_pain_softened(self):
         schema = {"user_persona": {"pain_points": [
             {"description": "大量用户反馈补全卡顿",

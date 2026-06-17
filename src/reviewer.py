@@ -492,12 +492,15 @@ def _collect_semantic_claims(schema: dict) -> list[dict]:
         for pname, pdata in (feat.get("products") or {}).items():
             qs = pdata.get("quality_score") or {}
             basis = qs.get("basis")
+            q_eids = qs.get("evidence_ids") or []
+            if not q_eids and qs.get("score") in (0, None):
+                continue
             if basis:
                 add(
                     f"feature_tree.{fid}.{pname}.quality_score.basis",
                     "feature_quality",
                     f"{pname} / {fname}: {basis}",
-                    qs.get("evidence_ids") or [],
+                    q_eids,
                 )
         gap = feat.get("gap") or {}
         if gap.get("reason"):
@@ -554,7 +557,7 @@ def _collect_semantic_claims(schema: dict) -> list[dict]:
             f"recommendations.{rid}",
             "recommendation",
             f"action={rec.get('action', '')}; rationale={rec.get('rationale', '')}",
-            rec.get("evidence_ids") or [],
+            rec.get("evidence_ids") or rec.get("evidence_refs") or [],
         )
 
     # SWOT.
