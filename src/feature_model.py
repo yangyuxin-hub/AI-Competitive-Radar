@@ -48,3 +48,53 @@ def depth_norm(depth_score: Optional[int]) -> Optional[float]:
 
 def evidence_level_score(level: str) -> float:
     return _EVIDENCE_SCORE.get(level, 0.3)
+
+
+def _leaves_of_domain(domain: dict) -> list[dict]:
+    """展平 modules→points;无 modules 时退回 domain['points']。"""
+    if domain.get("modules"):
+        out = []
+        for m in domain["modules"]:
+            out.extend(m.get("points") or [])
+        return out
+    return domain.get("points") or []
+
+
+def domain_coverage(domain: dict, product: str) -> dict:
+    leaves = _leaves_of_domain(domain)
+    total = len(leaves)
+    scores = []
+    for leaf in leaves:
+        pdata = (leaf.get("products") or {}).get(product) or {}
+        s = support_score(pdata.get("support_status", "unknown"))
+        if s is not None:
+            scores.append(s)
+    known = len(scores)
+    return {
+        "score": round(sum(scores) / known, 4) if known else None,
+        "evidence_rate": round(known / total, 4) if total else 0.0,
+        "known": known,
+        "total": total,
+    }
+
+
+def weighted_coverage(tree: dict, product: str) -> dict:
+    """加权覆盖率。unknown 不进 known_only 的分子/分母,单独进 evidence_coverage_rate。"""
+    by_domain = []
+    num_known = den_known = 0.0
+    num_evi = den_evi = 0.0
+    for domain in tree.get("domains") or []:
+        w = float(domain.get("weight", 0.0))
+        cov = domain_coverage(domain, product)
+        by_domain.append({"id": domain.get("id"), "name": domain.get("name"),
+                          "weight": w, **cov})
+        den_evi += w
+        num_evi += w * cov["evidence_rate"]
+        if cov["score"] is not None:        # 全 unknown 的域整域排除出 known_only
+            den_known += w
+            num_known += w * cov["score"]
+    return {
+        "coverage_known_only": round(num_known / den_known, 4) if den_known else None,
+        "evidence_coverage_rate": round(num_evi / den_evi, 4) if den_evi else 0.0,
+        "by_domain": by_domain,
+    }
