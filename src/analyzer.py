@@ -75,6 +75,8 @@ from .pricing_compare import compare_pricing_products
 from .pricing_model import compute_product
 from .pricing_strategy import build_pricing_strategy_analysis
 from .state import AgentState
+from . import feature_weights
+from .feature_model import normalize_status, compute_feature_analysis
 
 # B2: per-product feature_fill 调用计数（跨 gap_refill 轮次累加），超阈值走骨架兜底。
 # ContextVar 按 run 隔离(此前是模块级全局,并发 run 共享计数:一方 clear 抹掉另一方,熔断失效/误熔断)。
@@ -469,6 +471,43 @@ def _enrich_evidence_by_features(
     _emit_progress(step="facts", phase="enrich_done",
                    summary=f"[分析阶段] 定向补采完成，新增 {len(added)} 条证据")
     return evidence + added, spine
+
+
+def _normalize_leaf(legacy_pdata: dict) -> dict:
+    """旧叶子(support_status + quality_score.score) → 新叶子 schema(depth_score 等)。"""
+    pdata = legacy_pdata or {}
+    qs = pdata.get("quality_score") or {}
+    score = qs.get("score")
+    depth = int(score) if isinstance(score, (int, float)) and int(score) >= 1 else None
+    refs = list(pdata.get("support_evidence_ids") or [])
+    return {
+        "support_status": normalize_status(pdata.get("support_status", "unknown")),
+        "depth_score": depth,
+        "evidence_level": "official" if refs else "inferred",
+        "differentiator": bool(pdata.get("differentiator")),
+        "source_refs": refs,
+    }
+
+
+def _build_feature_skeleton(meta: dict, flat_features: list[dict]) -> dict:
+    """把扁平 feature_spine 包成加权三层 skeleton(叶子先空,后续填)。
+    无法精确归类时,功能均匀落入各 domain 的『其它』module —— 装配确定、可复现。
+    域权重优先用 meta['feature_weights'](Phase 7 intake 自适应产出),缺则回退 config 种子。"""
+    focus = (meta.get("analysis_focus") or [""])[0]
+    domains_cfg = meta.get("feature_weights") or feature_weights.domains_for_focus(focus)
+    version = meta.get("feature_weight_version") or feature_weights.version()
+    domains = [{"id": d["id"], "name": d["name"], "weight": d["weight"],
+                "role": d.get("role", "core"),
+                "modules": [{"id": f"{d['id']}0", "name": "其它", "points": []}]}
+               for d in domains_cfg]
+    # 简单确定性分配:按出现顺序轮转进各 domain(真实归类后续由 LLM/规则细化)
+    for i, f in enumerate(flat_features or []):
+        target = domains[i % len(domains)] if domains else None
+        if target is None:
+            continue
+        target["modules"][0]["points"].append(
+            {"id": f.get("feature_id"), "name": f.get("name"), "products": {}})
+    return {"feature_weight_version": version, "domains": domains}
 
 
 def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
