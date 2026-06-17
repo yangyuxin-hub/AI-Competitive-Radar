@@ -3,6 +3,7 @@ import unittest
 from src.writer import (
     _render_business_model,
     _render_decision_summary,
+    _render_feature_coverage,
     _render_pricing,
     _render_tech_capability,
 )
@@ -69,6 +70,29 @@ class PricingTopTableTest(unittest.TestCase):
         out = _render_pricing(pm, {}, ["即梦AI"])
         self.assertIn("199", out)
         self.assertNotIn("archetype", out.lower())
+
+
+class FeatureCoverageTest(unittest.TestCase):
+    def test_renders_two_coverage_numbers_and_winner(self):
+        ft = {"analysis": {
+            "coverage": {"Jimeng": {"coverage_known_only": 0.62,
+                                    "evidence_coverage_rate": 0.76,
+                                    "by_domain": []}},
+            "winners": [{"feature_id": "F1", "name": "运镜控制", "winner": "Runway",
+                         "reason": "领先", "confidence": "high"},
+                        {"feature_id": "F2", "name": "文生视频", "winner": "tie",
+                         "reason": "无深度", "confidence": "low"}],
+            "differentiation_matrix": [{"feature_id": "F3", "name": "多镜头",
+                                        "product": "Runway",
+                                        "note": "样本内 3 个产品中,仅 Runway 做到位"}]}}
+        out = _render_feature_coverage(ft, ["Jimeng"])
+        self.assertIn("功能覆盖率", out)
+        self.assertIn("62%", out)
+        self.assertIn("证据覆盖率", out)
+        self.assertIn("76%", out)
+        self.assertIn("Runway", out)
+        self.assertIn("样本内 3 个产品中", out)
+        self.assertNotIn("独占", out)
 
 
 if __name__ == "__main__":

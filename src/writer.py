@@ -282,6 +282,34 @@ def _render_business_model(pricing_model: dict) -> str:
     return "\n".join(lines)
 
 
+def _render_feature_coverage(feature_tree: dict, products: list[str]) -> str:
+    analysis = feature_tree.get("analysis") or {}
+    coverage = analysis.get("coverage") or {}
+    lines = ["## 功能覆盖与差距", ""]
+    for product in products:
+        item = coverage.get(product) or {}
+        known = item.get("coverage_known_only")
+        evidence = item.get("evidence_coverage_rate")
+        known_text = f"{known * 100:.0f}%" if known is not None else "?"
+        evidence_text = f"{evidence * 100:.0f}%" if evidence is not None else "?"
+        lines.append(f"- **{product}**：功能覆盖率 {known_text}，证据覆盖率 {evidence_text}")
+    lines += ["", "### 单项胜负（缺深度证据时如实判 tie/unclear）", ""]
+    for winner in analysis.get("winners") or []:
+        conf = _CONF_CN.get(winner.get("confidence", "low"), "低")
+        lines.append(
+            f"- {winner.get('name')}：**{winner.get('winner')}**"
+            f"（置信度{conf}）— {winner.get('reason')}"
+        )
+    diff_rows = analysis.get("differentiation_matrix") or []
+    if diff_rows:
+        lines += ["", "### 样本内差异点", ""]
+        for row in diff_rows:
+            note = row.get("note")
+            if note:
+                lines.append(f"- {note}")
+    return "\n".join(lines)
+
+
 def _products(meta: dict) -> list[str]:
     return [p for p in [meta.get("target_product"), *list(meta.get("competitors") or [])] if p]
 
