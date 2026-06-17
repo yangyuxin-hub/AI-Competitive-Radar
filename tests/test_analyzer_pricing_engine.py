@@ -69,6 +69,31 @@ class AnalyzerPricingEngineTest(unittest.TestCase):
         self.assertAlmostEqual(costs["image"], 0.09, places=3)
         self.assertAlmostEqual(costs["video"], 0.72, places=2)
 
+    def test_pricing_engine_exposes_archetype_for_section10(self):
+        facts = {"pricing_model": {"products": [{
+            "name": "即梦AI",
+            "pricing_structure": {"layers": [
+                {"mechanism": "freemium", "present": True},
+                {"mechanism": "subscription", "present": True},
+                {"mechanism": "credits", "present": True},
+            ]},
+            "tiers": [{
+                "tier_name": "标准",
+                "billing_options": [{
+                    "cycle": "monthly",
+                    "is_promo": False,
+                    "price": {"amount": 199, "currency": "CNY"},
+                }],
+                "credit_grant": {"amount": 2210, "unit": "积分"},
+            }],
+            "consumption": [],
+        }]}}
+
+        _apply_pricing_engine(facts, [])
+
+        eng = facts["pricing_model"]["products"][0]["pricing_engine"]
+        self.assertEqual(eng["archetype"], "Freemium + Subscription + Credits")
+
     def test_preserves_referral_promotions_in_engine_input(self):
         facts = {"pricing_model": {"products": [{
             "name": "即梦AI",
