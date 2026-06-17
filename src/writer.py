@@ -1157,28 +1157,37 @@ def writer_node(state: AgentState) -> AgentState:
     evidence = state.get("raw_evidence") or []
     quality_audit = (state.get("collection_meta") or {}).get("quality_audit") or {}
 
-    # 章节顺序对齐 8 模块框架:概览 → 竞品格局 → 定位地图 → 功能对比(评分+差距) →
-    # 定价 → 用户之声 → 竞争洞察(SWOT) → 建议;证据覆盖/不确定性作为支撑章节收尾。
     feature_tree = schema.get("feature_tree") or {}
+    pricing_model = schema.get("pricing_model") or {}
+    target = meta.get("target_product", "")
     sections = [
         _render_header(
             meta,
-            target=meta.get("target_product", ""),
+            target=target,
             competitors=list(meta.get("competitors") or []),
             focus=list(meta.get("analysis_focus") or []),
         ),
-        _render_executive_summary(schema, meta),
+        _render_decision_summary(schema, meta),
+        # 事实层 FACTS
         _render_competitor_landscape(schema.get("competitor_landscape") or {}),
-        _render_positioning_map(schema.get("positioning_map") or {}),
         _render_score_overview(feature_tree, products, evidence),
-        _render_feature_gaps(feature_tree, evidence),
-        _render_pricing(schema.get("pricing_model") or {}, feature_tree, products),
-        _render_data_availability(quality_audit),
+        _render_pricing(pricing_model, feature_tree, products),
         _render_personas(schema.get("user_persona") or {}, evidence),
+        _render_tech_capability(schema, products, meta),
+        # 比较层 COMPARISON
+        _render_positioning_map(schema.get("positioning_map") or {}),
+        _render_feature_coverage(feature_tree, products),
+        # 洞察层 INSIGHTS
+        _render_feature_insights(feature_tree, target),
+        _render_business_model(pricing_model),
         _render_swot(schema.get("swot") or {}),
+        # 决策层 DECISIONS
         _render_recommendations(schema.get("recommendations") or [], schema),
+        # 支撑 APPENDIX
+        _render_data_availability(quality_audit),
         _render_evidence_coverage(evidence),
         _render_uncertainty(evidence, schema),
+        _render_caliber_lock(schema, meta),
     ]
     sections = _renumber_sections(sections)
     report = "\n\n".join(s for s in sections if s.strip())

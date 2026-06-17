@@ -8,6 +8,7 @@ from src.writer import (
     _render_feature_insights,
     _render_pricing,
     _render_tech_capability,
+    writer_node,
 )
 
 
@@ -119,6 +120,51 @@ class InsightsAndLockTest(unittest.TestCase):
         out = _render_caliber_lock(schema, meta)
         for kw in ("口径锁定", "demo-v1", "unknown", "元/积分", "Kling"):
             self.assertIn(kw, out)
+
+
+class FourLayerOrderTest(unittest.TestCase):
+    def test_section_order_matches_decision_layers(self):
+        state = {
+            "schema_draft": {
+                "decision_summary": {},
+                "competitor_landscape": {},
+                "positioning_map": {},
+                "feature_tree": {"features": [{
+                    "feature_id": "F1",
+                    "name": "文生视频",
+                    "products": {
+                        "Jimeng": {"support_status": "supported",
+                                   "quality_score": {"score": 3, "scale": 5, "evidence_ids": []}},
+                        "Kling": {"support_status": "supported",
+                                  "quality_score": {"score": 3, "scale": 5, "evidence_ids": []}},
+                    },
+                }], "analysis": {
+                    "coverage": {},
+                    "winners": [],
+                    "differentiation_matrix": [],
+                    "archetypes": {},
+                    "moat_candidates": [],
+                    "whitespace": [],
+                    "feature_weight_version": "demo-v1",
+                }},
+                "pricing_model": {"products": []},
+                "user_persona": {},
+                "tech_capability": {"products": {}},
+                "swot": {},
+                "recommendations": [],
+            },
+            "analysis_meta": {"target_product": "Jimeng", "competitors": ["Kling"],
+                              "analysis_focus": ["视频质量"], "generated_at": "2026-06-17"},
+            "raw_evidence": [],
+            "collection_meta": {},
+        }
+        out = writer_node(state)["report_draft"]
+        i_summary = out.find("决策摘要")
+        i_facts = out.find("多维度评分总览")
+        i_coverage = out.find("功能覆盖与差距")
+        i_insights = out.find("功能定位 + 护城河 + 蓝海")
+        i_lock = out.find("口径锁定表")
+        self.assertTrue(0 <= i_summary < i_facts < i_coverage < i_insights < i_lock)
 
 
 if __name__ == "__main__":
