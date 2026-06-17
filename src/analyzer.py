@@ -71,6 +71,9 @@ from .analyzer_fallback import (  # noqa: F401 — 骨架兜底构建器,re-expo
 )
 from .evidence_service import fill as _evidence_fill  # M3:缺口声明 → EvidenceService 补证据
 from .llm import deep_thinking_mode, get_llm, is_mock_mode, load_sample_report
+from .pricing_compare import compare_pricing_products
+from .pricing_model import compute_product
+from .pricing_strategy import build_pricing_strategy_analysis
 from .state import AgentState
 
 # B2: per-product feature_fill 调用计数（跨 gap_refill 轮次累加），超阈值走骨架兜底。
@@ -637,6 +640,123 @@ def _normalize_pricing_tiers(facts: dict) -> int:
     return removed
 
 
+def _pricing_text_for_product(product: str, evidence: list[dict]) -> str:
+    chunks = []
+    for ev in evidence:
+        if ev.get("product") != product or ev.get("claim_type") != "pricing":
+            continue
+        chunks.append(ev.get("extracted_snippet") or ev.get("claim") or "")
+    return "\n".join(chunks).lower()
+
+
+def _infer_pricing_structure(product: dict, evidence: list[dict]) -> dict:
+    explicit = product.get("pricing_structure")
+    if isinstance(explicit, dict) and explicit.get("layers"):
+        return explicit
+
+    tiers = product.get("tiers") or []
+    text = _pricing_text_for_product(product.get("name") or product.get("product") or "", evidence)
+
+    def _tier_amount(tier: dict) -> Optional[float]:
+        price = tier.get("price") or {}
+        value = price.get("amount", price.get("normalized_usd_month"))
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    has_free = any(
+        (_tier_amount(t) == 0)
+        or "free" in (t.get("tier_name") or "").lower()
+        or "免费" in (t.get("tier_name") or "")
+        for t in tiers
+    )
+    has_subscription = bool(tiers)
+    has_credits = any(t.get("credit_grant") for t in tiers) or any(
+        word in text for word in ("积分", "灵感值", "credits", "credit pack")
+    )
+    has_usage = any(word in text for word in ("per token", "每百万", "元/秒", "按量", "按时长"))
+    unit = "seat" if any(
+        word in text for word in ("per user", "/user", "seat", "席位", "每用户", "按人")
+    ) else None
+
+    return {"layers": [
+        {"mechanism": "freemium", "present": has_free},
+        {"mechanism": "subscription", "present": has_subscription, "unit": unit},
+        {"mechanism": "credits", "present": has_credits},
+        {"mechanism": "usage", "present": has_usage},
+    ]}
+
+
+def _tier_to_engine_tier(tier: dict) -> dict:
+    out = {
+        "tier_name": tier.get("tier_name") or tier.get("name") or "Unknown",
+        "is_free": tier.get("is_free"),
+        "pricing_mode": tier.get("pricing_mode"),
+        "segment": tier.get("segment"),
+        "credit_grant": tier.get("credit_grant"),
+    }
+    billing_options = tier.get("billing_options")
+    if isinstance(billing_options, list) and billing_options:
+        out["billing_options"] = billing_options
+    else:
+        price = tier.get("price") or {}
+        amount = price.get("amount")
+        if amount is None:
+            amount = price.get("normalized_usd_month")
+        if amount is not None:
+            out["billing_options"] = [{
+                "cycle": tier.get("billing_cycle") or "monthly",
+                "is_promo": bool(tier.get("is_promo")),
+                "price": {
+                    "amount": amount,
+                    "currency": price.get("currency") or "USD",
+                },
+            }]
+        else:
+            out["billing_options"] = []
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def _product_to_engine_input(product: dict, evidence: list[dict]) -> dict:
+    name = product.get("name") or product.get("product") or "Unknown"
+    return {
+        "product": name,
+        "pricing_structure": _infer_pricing_structure(product, evidence),
+        "tiers": [_tier_to_engine_tier(t) for t in (product.get("tiers") or [])],
+        "consumption": product.get("consumption") or [],
+        "promotions": product.get("promotions") or product.get("promotion_rules") or [],
+        "raw_billing_items": product.get("raw_billing_items") or [],
+        "gaps": product.get("gaps") or [],
+    }
+
+
+def _apply_pricing_engine(facts: dict, evidence: list[dict]) -> int:
+    """把 Analyzer 抽到的定价事实接入确定性定价引擎。
+
+    兼容旧 schema:保留 products[].tiers[].price 给 Writer/Reviewer 使用,额外挂
+    products[].pricing_engine 作为统一稀疏 schema 的派生结果。
+    """
+    changed = 0
+    pm = facts.get("pricing_model") or {}
+    for product in pm.get("products") or []:
+        if not product.get("tiers") and not product.get("pricing_structure"):
+            continue
+        engine_input = _product_to_engine_input(product, evidence)
+        product["pricing_engine"] = compute_product(engine_input)
+        changed += 1
+    comparison = {}
+    if changed >= 2:
+        pm["engine_comparison"] = compare_pricing_products(pm.get("products") or [])
+        comparison = pm["engine_comparison"]
+    if changed >= 1:
+        pm["pricing_strategy_analysis"] = build_pricing_strategy_analysis(
+            pm.get("products") or [],
+            comparison,
+        )
+    return changed
+
+
 def _facts_section_call(section: str, system_base: str, evidence: list[dict], meta: dict,
                         spine: Optional[list[dict]] = None,
                         only_products: Optional[list[str]] = None,
@@ -799,6 +919,9 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0,
         n = _normalize_pricing_tiers(facts)
         if n:
             print(f"[analyzer] pricing 去重 {n} 个重复档位")
+        enriched = _apply_pricing_engine(facts, evidence)
+        if enriched:
+            print(f"[analyzer] pricing engine enriched {enriched} product(s)")
 
     # 拆分后不再走 LLM 重跑(那会退回大调用);引用问题统一用确定性 sanitize(秒级)。
     issues = quick_validate_facts(facts, evidence, meta)

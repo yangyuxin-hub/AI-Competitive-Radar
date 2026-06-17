@@ -43,3 +43,25 @@ products:
       - https://linear.app/features
     pricing_pages:
       - https://linear.app/pricing
+
+  # ─── 新增:答辩预设刷新(2026-06) ──────────────────────────────
+  ClaudeCode:
+    aliases: ["Claude Code", "Anthropic Claude Code"]
+    official_pages:
+      - https://www.anthropic.com/claude-code
+    pricing_pages:
+      - https://www.anthropic.com/pricing
+
+  Trae:
+    aliases: ["Trae", "Trae AI", "Trae IDE", "字节 Trae"]
+    official_pages:
+      - https://www.trae.ai/
+    pricing_pages:
+      - https://www.trae.ai/pricing
+
+  飞书项目:
+    aliases: ["飞书项目", "Feishu Project", "Lark Project", "Meego"]
+    official_pages:
+      - https://www.feishu.cn/product/development_management
+    pricing_pages:
+      - https://www.feishu.cn/price

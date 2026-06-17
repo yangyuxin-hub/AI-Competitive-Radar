@@ -55,10 +55,11 @@ class QualityIntentTest(unittest.TestCase):
 
     def test_pain_intent_uses_pain_focused_coverage(self):
         ev = [{"product": "Notion", "claim_type": "user_pain"},
-              {"product": "Notion", "claim_type": "performance_quality"}]
+              {"product": "Notion", "claim_type": "performance_quality"},
+              {"product": "Notion", "claim_type": "pricing"}]
         meta = {"target_product": "Notion", "competitors": [], "analysis_intent": "pain_attribution"}
         dims, _ = reviewer._quality_dimensions(self._schema(), ev, {}, meta, [], [])
-        # 痛点+体验都覆盖 → 满分;若用功能/定价四类口径则会被拉低
+        # 痛点分析也内化定价:痛点+体验+定价都覆盖 → 满分
         self.assertEqual(dims["evidence_coverage"]["score"], 100)
         self.assertIn("痛点", dims["evidence_coverage"]["note"])
 

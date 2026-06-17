@@ -10,7 +10,7 @@ from typing import Iterable, Optional
 
 
 BASE_CLAIM_TYPES = ("feature_existence", "performance_quality", "pricing", "user_pain")
-PAIN_CLAIM_TYPES = ("user_pain", "performance_quality")
+PAIN_CLAIM_TYPES = ("user_pain", "performance_quality", "pricing")
 PRICING_CLAIM_TYPES = ("pricing", "feature_existence")
 MARKET_ENTRY_CLAIM_TYPES = (
     "feature_existence",

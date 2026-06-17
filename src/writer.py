@@ -578,11 +578,26 @@ def _lowest_price(product: dict) -> Optional[float]:
     return min(prices) if prices else None
 
 
+def _native_price_label(product: dict) -> Optional[str]:
+    prices = []
+    for tier in product.get("tiers") or []:
+        price = tier.get("price") or {}
+        amount = price.get("amount")
+        if not isinstance(amount, (int, float)) or amount <= 0:
+            continue
+        currency = (price.get("currency") or "").upper()
+        symbol = {"CNY": "¥", "RMB": "¥", "USD": "$", "EUR": "€", "GBP": "£"}.get(currency)
+        prices.append((float(amount), f"{symbol or currency or ''}{amount}"))
+    if not prices:
+        return None
+    return min(prices, key=lambda x: x[0])[1]
+
+
 def _render_pricing(pricing_model: dict, feature_tree: dict, products: list[str]) -> str:
     if not pricing_model:
         return ""
     lines = ["## 六、定价对比\n"]
-    lines.append("| 产品 | 档位 | 面向用户 | 价格(USD/月) | 限制 | 证据 |")
+    lines.append("| 产品 | 档位 | 面向用户 | 价格(月费/原币) | 限制 | 证据 |")
     lines.append("|------|------|----------|---------------|------|------|")
     for p in pricing_model.get("products", []):
         name = p.get("name", "?")
@@ -591,12 +606,121 @@ def _render_pricing(pricing_model: dict, feature_tree: dict, products: list[str]
             seg = tier.get("segment") or "—"
             price = tier.get("price") or {}
             amount = price.get("normalized_usd_month")
-            # 0/None 都按「未获取价格」渲染为「—」(Analyzer 抽不到数值时填 0,显示 $0 会误导)
-            amount_text = f"${amount}" if isinstance(amount, (int, float)) and amount > 0 else "—"
+            native_amount = price.get("amount")
+            currency = (price.get("currency") or "").upper()
+            # 0/None 都按「未获取价格」处理;若无 USD 归一价,保留原币金额,避免中文产品整表显示空价。
+            if isinstance(amount, (int, float)) and amount > 0:
+                amount_text = f"${amount}"
+            elif isinstance(native_amount, (int, float)) and native_amount > 0:
+                symbol = {"CNY": "¥", "RMB": "¥", "USD": "$", "EUR": "€", "GBP": "£"}.get(currency)
+                amount_text = f"{symbol or currency or ''}{native_amount}"
+            else:
+                amount_text = "—"
             limits = tier.get("display_limits", "")
             ev = cite(tier.get("evidence_ids") or [])
             lines.append(f"| {name} | {tname} | {seg} | {amount_text} | {limits} | {ev} |")
     lines.append("")
+
+    engine_rows = []
+    unit_rows = []
+    for p in pricing_model.get("products", []):
+        engine = p.get("pricing_engine") or {}
+        if not engine:
+            continue
+        engine_rows.append(
+            f"| {p.get('name', '?')} | {engine.get('archetype', 'Unknown')} | "
+            f"{engine.get('comparison_axis', 'unknown')} |"
+        )
+        for tier in engine.get("tiers") or []:
+            costs = tier.get("unit_costs") or []
+            if not costs and tier.get("price_per_credit") is None:
+                continue
+            cost_text = "；".join(
+                f"{c.get('capability', 'unit')}={c.get('value')} ({c.get('unit') or '单位成本'})"
+                for c in costs
+            ) or "—"
+            ppc = tier.get("price_per_credit")
+            ppc_text = f"{ppc}" if isinstance(ppc, (int, float)) else "—"
+            unit_rows.append(
+                f"| {p.get('name', '?')} | {tier.get('tier_name', '?')} | {ppc_text} | {cost_text} |"
+            )
+    if engine_rows:
+        lines.append("### 定价模型归一化\n")
+        lines.append("| 产品 | 商业模式 | 比较轴 |")
+        lines.append("|------|----------|--------|")
+        lines.extend(engine_rows)
+        lines.append("")
+    if unit_rows:
+        lines.append("| 产品 | 档位 | 单位积分成本 | 派生单位成本 |")
+        lines.append("|------|------|--------------:|--------------|")
+        lines.extend(unit_rows)
+        lines.append("")
+    comparison = pricing_model.get("engine_comparison") or {}
+    if comparison:
+        for insight in comparison.get("insights") or []:
+            lines.append(f"- {insight}")
+        for gap_item in comparison.get("gaps") or []:
+            note = gap_item.get("note")
+            if note:
+                lines.append(f"- 口径限制:{note}")
+        if comparison.get("insights") or comparison.get("gaps"):
+            lines.append("")
+    strategy = pricing_model.get("pricing_strategy_analysis") or {}
+    model_analysis = strategy.get("pricing_model_analysis") or {}
+    value_analysis = strategy.get("value_for_money_analysis") or {}
+    if model_analysis:
+        lines.append("### 定价模型:商业逻辑\n")
+        summary = model_analysis.get("summary")
+        if summary:
+            lines.append(f"> {summary}\n")
+        lines.append("| 产品 | 模型 | 转化杠杆 | 权益设计 | 商业意图 |")
+        lines.append("|------|------|----------|----------|----------|")
+        for item in model_analysis.get("products") or []:
+            levers = "；".join(item.get("conversion_levers") or [])
+            ent = item.get("entitlement_design") or {}
+            ent_parts = []
+            if ent.get("free_layer"):
+                ent_parts.append("免费层:" + "、".join(ent.get("free_layer")[:2]))
+            if ent.get("subscription_entitlements"):
+                ent_parts.append("会员层:" + "、".join(ent.get("subscription_entitlements")[:2]))
+            if ent.get("premium_capabilities"):
+                ent_parts.append("高阶权益:" + "、".join(ent.get("premium_capabilities")[:4]))
+            if ent.get("topup_rules"):
+                ent_parts.append("增购层:" + "、".join(ent.get("topup_rules")[:1]))
+            if ent.get("promotional_rewards"):
+                ent_parts.append("活动奖励:" + "、".join(ent.get("promotional_rewards")[:2]))
+            hypothesis = item.get("monetization_hypothesis") or {}
+            intent_parts = []
+            if hypothesis.get("target_paid_user"):
+                intent_parts.append(f"目标:{hypothesis.get('target_paid_user')}")
+            if hypothesis.get("upsell_path"):
+                intent_parts.append(f"路径:{hypothesis.get('upsell_path')}")
+            if hypothesis.get("revenue_expansion"):
+                intent_parts.append(f"扩张:{hypothesis.get('revenue_expansion')}")
+            lines.append(
+                f"| {item.get('product', '?')} | {item.get('archetype', 'Unknown')} | "
+                f"{levers or '—'} | {'；'.join(ent_parts) or item.get('business_logic', '—')} | "
+                f"{'；'.join(intent_parts) or '—'} |"
+            )
+        lines.append("")
+    if value_analysis:
+        lines.append("### 价格与性价比:场景判断\n")
+        lines.append("| 场景 | 预算 | 需求 | 所需能力 | 结论 |")
+        lines.append("|------|------|------|----------|------|")
+        for scenario in value_analysis.get("scenario_baskets") or []:
+            capabilities = "、".join(scenario.get("required_capabilities") or [])
+            lines.append(
+                f"| {scenario.get('scenario', '?')} | {scenario.get('monthly_budget', '—')} | "
+                f"{scenario.get('expected_outputs', scenario.get('decision_basis', '—'))} | "
+                f"{capabilities or scenario.get('decision_basis', '—')} | "
+                f"{scenario.get('best_for', '—')} |"
+            )
+        caveats = [c for c in (value_analysis.get("caveats") or []) if c]
+        if caveats:
+            lines.append("")
+            caveat_text = "；".join(c.rstrip("。.;；") for c in caveats)
+            lines.append(f"> 注意:{caveat_text}。")
+        lines.append("")
 
     gap = pricing_model.get("pricing_gap") or {}
     if gap:
@@ -623,15 +747,19 @@ def _render_pricing(pricing_model: dict, feature_tree: dict, products: list[str]
             price = _lowest_price(info)
             score = avgs.get(product)
             if price is None:
-                no_price.append(product)
+                if not _native_price_label(info):
+                    no_price.append(product)
             if score is None:
                 no_score.append(product)
-            price_text = f"${price:.0f}" if price is not None else "—"
+            price_text = f"${price:.0f}" if price is not None else (_native_price_label(info) or "—")
             score_text = f"{score:.1f}/5" if score is not None else "—"
             if product == target:
                 # 目标产品本身就是基准(即便自身价格信息不足,也不应被竞品比下去标成别的)
                 value = "基准产品"
                 threat = "—"
+            elif price is None and _native_price_label(info):
+                value = "缺少统一汇率口径"
+                threat = "需先归一币种"
             else:
                 value, threat = _judge_value_threat(price, score, target_price, target_score)
             lines.append(f"| {product} | {price_text} | {score_text} | {value} | {threat} |")

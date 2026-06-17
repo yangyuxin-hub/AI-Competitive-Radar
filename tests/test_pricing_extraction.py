@@ -5,6 +5,7 @@ import unittest
 from bs4 import BeautifulSoup
 
 from src.collector import OfficialPageAdapter
+from src.collector_common import is_pricing_url
 
 
 class PriceSnippetTest(unittest.TestCase):
@@ -34,6 +35,22 @@ class PriceSnippetTest(unittest.TestCase):
         snips = self._snips(html)
         self.assertTrue(any("Business" in s and "18" in s for s in snips),
                         f"未从内嵌 JSON 提到 Business/$18: {snips}")
+
+    def test_embedded_price_array_captured(self):
+        # Kling 等开发者定价页把价格放在 prices/points/specs 并行数组里
+        html = """
+        <script>
+        {"points":["0.6","0.8"],"prices":["$0.084","$0.112"],
+         "specs":["std x 1s","pro x 1s"]}
+        </script>
+        """
+        snips = self._snips(html)
+        joined = " ".join(snips)
+        self.assertIn("$0.084", joined)
+        self.assertIn("std x 1s", joined)
+
+    def test_membership_url_is_pricing_url(self):
+        self.assertTrue(is_pricing_url("https://app.klingai.com/global/membership/spirit-unit"))
 
     def test_extract_pricing_url_prepends_prices(self):
         # 定价 URL → 价格片段应置顶进 pricing 证据

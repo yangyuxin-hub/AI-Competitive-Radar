@@ -20,31 +20,31 @@ const SCENARIOS = [
     domainHint: "ai_coding",
     domain: "AI 编程工具",
     title: "代码补全体验",
-    prompt: "分析 Cursor、Windsurf 和 GitHub Copilot 在代码补全体验上的差距",
+    prompt: "分析 Cursor、Claude Code 和 Trae 在代码补全体验上的差距",
   },
   {
     domainHint: "ai_assistant",
     domain: "AI 对话助手",
     title: "大模型助手对比",
-    prompt: "分析 ChatGPT、Claude 和 Gemini 在通用对话与推理体验上的差距",
+    prompt: "分析 ChatGPT、Gemini 和 DeepSeek 在通用对话与推理体验上的差距",
   },
   {
     domainHint: "ai_video",
     domain: "AI 视频生成",
     title: "文生视频效果",
-    prompt: "分析 Sora、可灵 Kling 和 Runway 在文生视频效果与可控性上的差距",
+    prompt: "分析 Sora、Veo 3 和 即梦 AI 在文生视频效果与可控性上的差距",
   },
   {
     domainHint: "ai_image",
     domain: "AI 图像生成",
     title: "文生图质量",
-    prompt: "分析 Midjourney、Stable Diffusion 和 DALL·E 在图像生成质量与创作体验上的差距",
+    prompt: "分析 Midjourney、Nano Banana 和 即梦 AI 在图像生成质量与创作体验上的差距",
   },
   {
     domainHint: "ai_music",
     domain: "AI 音乐生成",
     title: "AI 作曲体验",
-    prompt: "分析 Suno、Udio 和 Stable Audio 在 AI 音乐生成质量与易用性上的差距",
+    prompt: "分析 Suno、Udio 和 Mureka 在 AI 音乐生成质量与易用性上的差距",
   },
   {
     domainHint: "ai_search",
@@ -56,13 +56,13 @@ const SCENARIOS = [
     domainHint: "pm",
     domain: "项目协作工具",
     title: "团队任务管理",
-    prompt: "分析 Notion、Asana 和 Linear 在团队任务管理体验上的差距",
+    prompt: "分析 Notion、Linear 和 飞书项目 在团队任务管理体验上的差距",
   },
   {
     domainHint: "design",
     domain: "设计协作工具",
     title: "设计协作体验",
-    prompt: "分析 Figma、Sketch 和 Canva 在界面设计协作体验上的差距",
+    prompt: "分析 Figma、Canva 和 即时设计 在界面设计协作体验上的差距",
   },
 ];
 
