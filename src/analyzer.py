@@ -888,7 +888,12 @@ _DERIV_SECTIONS = {
                        "evidence_confidence 各 1-5 整数, weights 用 {0.35,0.30,0.20,0.15}, "
                        "final_score=各项×权重之和(保留两位小数), priority 为 P0/P1/P2}。\n"
                        "另尽量补齐可落地字段(让 PM 能直接立项):`expected_impact`(预期收益)、"
-                       "`success_metric`(验收指标)、`risk`(主要风险)、`time_horizon`(周期)。无把握的字段可省略,不要编造。",
+                       "`success_metric`(验收指标)、`risk`(主要风险)、`time_horizon`(周期)。无把握的字段可省略,不要编造。\n"
+                       "每条建议还必须含: action_type(learn|avoid|attack), action, target_competitor, "
+                       "evidence_refs(只用真实 evidence_id), priority_score_100(0-100), rationale, risk。"
+                       "注意:为兼容 Reviewer,原 `priority_score` 仍按上面的公式对象输出,不要改成数字。"
+                       "Learn=学对手 winner 强项; Avoid=避开对手高权重且领先的能力域; "
+                       "Attack=切入 whitespace 蓝海。证据不足的建议不要编,宁可少出。",
     "competitor_landscape": "本次任务只输出 `competitor_landscape` 一个顶层字段。把 analysis_meta.competitors "
                             "及你从证据中识别到的相关玩家,按竞争关系分三类:direct(直接竞品)/indirect(间接竞品)/"
                             "alternative(替代方案),每类是数组,元素 {name, relation, reason(为何纳入,一句话), "

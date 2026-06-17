@@ -7,6 +7,7 @@ from src.writer import (
     _render_feature_coverage,
     _render_feature_insights,
     _render_pricing,
+    _render_recommendations,
     _render_tech_capability,
     writer_node,
 )
@@ -165,6 +166,23 @@ class FourLayerOrderTest(unittest.TestCase):
         i_insights = out.find("功能定位 + 护城河 + 蓝海")
         i_lock = out.find("口径锁定表")
         self.assertTrue(0 <= i_summary < i_facts < i_coverage < i_insights < i_lock)
+
+
+class RecommendationsTriBlockTest(unittest.TestCase):
+    def test_groups_into_learn_avoid_attack(self):
+        recs = [
+            {"action_type": "learn", "action": "学首尾帧", "target_competitor": "Kling",
+             "evidence_refs": ["S1234567"], "priority_score": 80, "rationale": "高权重", "risk": "投入大"},
+            {"action_type": "attack", "action": "做多镜头小白化", "target_competitor": "Runway",
+             "evidence_refs": [], "priority_score": 65, "rationale": "蓝海", "risk": "教育成本"},
+        ]
+        out = _render_recommendations(recs, {})
+        self.assertIn("Learn", out)
+        self.assertIn("Avoid", out)
+        self.assertIn("Attack", out)
+        self.assertIn("学首尾帧", out)
+        self.assertIn("[S1234567]", out)
+        self.assertIn("风险", out)
 
 
 if __name__ == "__main__":

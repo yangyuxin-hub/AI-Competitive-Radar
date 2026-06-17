@@ -1057,45 +1057,105 @@ def _pricing_logic_warning(r: dict) -> str:
     return ""
 
 
+_ACTION_BLOCKS = [
+    ("learn", "12.1 Learn — 学竞品已验证强项"),
+    ("avoid", "12.2 Avoid — 避开竞品高权重领先区"),
+    ("attack", "12.3 Attack — 切入高价值空白区"),
+]
+
+
+def _priority_value(item: dict) -> object:
+    value = item.get("priority_score_100")
+    if isinstance(value, (int, float)):
+        return value
+    ps = item.get("priority_score")
+    if isinstance(ps, (int, float)):
+        return ps
+    if isinstance(ps, dict) and isinstance(ps.get("final_score"), (int, float)):
+        return round(float(ps["final_score"]) * 20)
+    return "?"
+
+
+def _priority_sort_key(item: dict) -> float:
+    value = _priority_value(item)
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _render_legacy_recommendation(r: dict, schema: dict) -> list[str]:
+    rid = r.get("rec_id", "?")
+    action = r.get("action", "")
+    rationale = r.get("rationale", "")
+    ps = r.get("priority_score") or {}
+    priority = ps.get("priority", "?") if isinstance(ps, dict) else "?"
+    final = ps.get("final_score") if isinstance(ps, dict) else None
+    final_text = f"{final:.2f}" if isinstance(final, (int, float)) else "—"
+    ev = cite(r.get("evidence_ids") or [])
+    fids = ", ".join(r.get("source_feature_ids") or []) or "—"
+    pids = ", ".join(r.get("source_pain_ids") or []) or "—"
+    lines = [f"#### {rid} · **{priority}**(评分 {final_text})", ""]
+    lines.append(f"**建议**:{action}")
+    lines.append(f"**竞品机会**:{_competitive_link_for_rec(r, schema)}")
+    lines.append(f"**依据**:{rationale} {ev}")
+    warning = _pricing_logic_warning(r)
+    if warning:
+        lines.append(f"- 逻辑校验:{warning}")
+    lines.append(f"- 目标收益:{r.get('expected_impact') or '待验证'}")
+    lines.append(f"- 验收指标:{r.get('success_metric') or '待定义'}")
+    lines.append(f"- 风险:{r.get('risk') or '待评估'}")
+    lines.append(f"- 周期:{r.get('time_horizon') or '待估算'}")
+    lines.append(f"- 验证方式:{r.get('validation_method') or '用户访谈 / A/B 测试 / 灰度验证'}")
+    lines.append(f"- 源功能差距:{fids}")
+    lines.append(f"- 源用户痛点:{pids}")
+    if isinstance(ps, dict) and ps:
+        lines.append(
+            f"- 评分明细:痛点频率 {ps.get('pain_frequency', '?')} / "
+            f"商业影响 {ps.get('business_impact', '?')} / "
+            f"实施可行性 {ps.get('implementation_feasibility', '?')} / "
+            f"证据置信 {ps.get('evidence_confidence', '?')}"
+        )
+    lines.append("")
+    return lines
+
+
 def _render_recommendations(recs: list[dict], schema: Optional[dict] = None) -> str:
     if not recs:
         return ""
     schema = schema or {}
-    lines = ["## 八、改进建议(按优先级)\n"]
+    lines = ["## 优先级建议", ""]
+    by_type = {key: [] for key, _ in _ACTION_BLOCKS}
+    other = []
     for r in recs:
-        rid = r.get("rec_id", "?")
-        action = r.get("action", "")
-        rationale = r.get("rationale", "")
-        ps = r.get("priority_score") or {}
-        priority = ps.get("priority", "?")
-        final = ps.get("final_score")
-        final_text = f"{final:.2f}" if isinstance(final, (int, float)) else "—"
-        ev = cite(r.get("evidence_ids") or [])
-        fids = ", ".join(r.get("source_feature_ids") or []) or "—"
-        pids = ", ".join(r.get("source_pain_ids") or []) or "—"
-
-        lines.append(f"### {rid} · **{priority}**(评分 {final_text})\n")
-        lines.append(f"**建议**:{action}\n")
-        lines.append(f"**竞品机会**:{_competitive_link_for_rec(r, schema)}\n")
-        lines.append(f"**依据**:{rationale} {ev}\n")
-        warning = _pricing_logic_warning(r)
-        if warning:
-            lines.append(f"- 逻辑校验:{warning}")
-        lines.append(f"- 目标收益:{r.get('expected_impact') or '待验证'}")
-        lines.append(f"- 验收指标:{r.get('success_metric') or '待定义'}")
-        lines.append(f"- 风险:{r.get('risk') or '待评估'}")
-        lines.append(f"- 周期:{r.get('time_horizon') or '待估算'}")
-        lines.append(f"- 验证方式:{r.get('validation_method') or '用户访谈 / A/B 测试 / 灰度验证'}")
-        lines.append(f"- 源功能差距:{fids}")
-        lines.append(f"- 源用户痛点:{pids}")
-        if ps:
+        action_type = r.get("action_type")
+        if action_type in by_type:
+            by_type[action_type].append(r)
+        else:
+            other.append(r)
+    for key, title in _ACTION_BLOCKS:
+        items = sorted(
+            by_type[key],
+            key=_priority_sort_key,
+            reverse=True,
+        )
+        lines += [f"### {title}", ""]
+        if not items:
+            lines.append("- 暂无")
+            lines.append("")
+            continue
+        for item in items:
+            chips = cite(item.get("evidence_refs") or item.get("evidence_ids") or [])
             lines.append(
-                f"- 评分明细:痛点频率 {ps.get('pain_frequency', '?')} / "
-                f"商业影响 {ps.get('business_impact', '?')} / "
-                f"实施可行性 {ps.get('implementation_feasibility', '?')} / "
-                f"证据置信 {ps.get('evidence_confidence', '?')}"
+                f"- **{item.get('action', '')}**（优先级 {_priority_value(item)}，"
+                f"对标 {item.get('target_competitor', '—')}）{chips}"
             )
+            if item.get("rationale"):
+                lines.append(f"  - 依据：{item['rationale']}")
+            if item.get("risk"):
+                lines.append(f"  - 风险：{item['risk']}")
         lines.append("")
+    if other:
+        lines += ["### 其它建议", ""]
+        for item in other:
+            lines.extend(_render_legacy_recommendation(item, schema))
     return "\n".join(lines)
 
 
