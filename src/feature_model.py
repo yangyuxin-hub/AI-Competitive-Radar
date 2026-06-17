@@ -98,3 +98,58 @@ def weighted_coverage(tree: dict, product: str) -> dict:
         "evidence_coverage_rate": round(num_evi / den_evi, 4) if den_evi else 0.0,
         "by_domain": by_domain,
     }
+
+
+_WINNER_W = {"support": 0.35, "depth": 0.40, "evidence": 0.15}
+_DIFF_BONUS = 0.10
+_TIE_EPS = 0.05
+_HIGH_MARGIN = 0.15
+
+
+def _leaf_product_score(pdata: dict) -> Optional[float]:
+    """unknown 不参与比较。加权 support/depth/evidence + differentiator bonus。"""
+    s = support_score(pdata.get("support_status", "unknown"))
+    if s is None:                      # unknown 不参与比较
+        return None
+    d = depth_norm(pdata.get("depth_score"))
+    e = evidence_level_score(pdata.get("evidence_level", "inferred"))
+    bonus = _DIFF_BONUS if pdata.get("differentiator") else 0.0
+    return (_WINNER_W["support"] * s
+            + _WINNER_W["depth"] * (d if d is not None else 0.0)
+            + _WINNER_W["evidence"] * e
+            + bonus)
+
+
+def feature_winner(point: dict, products: list[str]) -> dict:
+    """比较产品在某个功能点的胜出度。
+
+    保守口径：缺深度 → tie/unclear。
+    - winner ∈ {product_name, "tie", "unclear"}
+    - confidence ∈ {"high", "medium", "low"}
+    """
+    prods = (point.get("products") or {})
+    scored, any_depth = {}, False
+    for p in products:
+        pdata = prods.get(p) or {}
+        sc = _leaf_product_score(pdata)
+        if sc is None:
+            continue
+        scored[p] = sc
+        if depth_norm(pdata.get("depth_score")) is not None:
+            any_depth = True
+    if not scored:
+        return {"winner": "unclear", "reason": "所有产品该能力均无证据(unknown)", "confidence": "low"}
+    if not any_depth:
+        return {"winner": "tie",
+                "reason": "仅有支持度证据、无任何深度评分,不足以强判优劣",
+                "confidence": "low"}
+    ranked = sorted(scored.items(), key=lambda kv: kv[1], reverse=True)
+    top_p, top_s = ranked[0]
+    second_s = ranked[1][1] if len(ranked) > 1 else 0.0
+    margin = top_s - second_s
+    if margin < _TIE_EPS:
+        return {"winner": "tie", "reason": f"{top_p} 与次优分差 {margin:.2f}<{_TIE_EPS},判平",
+                "confidence": "medium"}
+    confidence = "high" if margin >= _HIGH_MARGIN else "medium"
+    return {"winner": top_p, "reason": f"{top_p} 综合分领先次优 {margin:.2f}",
+            "confidence": confidence}

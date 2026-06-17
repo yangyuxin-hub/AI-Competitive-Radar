@@ -1,7 +1,7 @@
 import unittest
 from src.feature_model import (
     normalize_status, support_score, depth_norm, evidence_level_score,
-    domain_coverage, weighted_coverage,
+    domain_coverage, weighted_coverage, feature_winner,
 )
 
 
@@ -93,3 +93,28 @@ class CoverageTest(unittest.TestCase):
         # 域B 全 unknown → 不进 known_only 分母 → coverage=1.0; evidence=(0.5*1+0.5*0)/1=0.5
         self.assertAlmostEqual(out["coverage_known_only"], 1.0, places=4)
         self.assertAlmostEqual(out["evidence_coverage_rate"], 0.5, places=4)
+
+
+class WinnerTest(unittest.TestCase):
+    def test_clear_winner_with_depth(self):
+        pt = _leaf("运镜", Jimeng=_p("partial", 2), Runway=_p("supported", 5))
+        out = feature_winner(pt, ["Jimeng", "Runway"])
+        self.assertEqual(out["winner"], "Runway")
+        self.assertEqual(out["confidence"], "high")
+
+    def test_no_depth_anywhere_forces_tie(self):
+        # 全靠 support_status,无任何 depth → 不允许强判
+        pt = _leaf("文生视频", Jimeng=_p("supported", None), Kling=_p("supported", None))
+        out = feature_winner(pt, ["Jimeng", "Kling"])
+        self.assertIn(out["winner"], ("tie", "unclear"))
+        self.assertEqual(out["confidence"], "low")
+
+    def test_all_unknown_is_unclear(self):
+        pt = _leaf("x", Jimeng=_p("unknown"), Kling=_p("unknown"))
+        out = feature_winner(pt, ["Jimeng", "Kling"])
+        self.assertEqual(out["winner"], "unclear")
+
+    def test_close_scores_is_tie(self):
+        pt = _leaf("x", Jimeng=_p("supported", 4), Kling=_p("supported", 4))
+        out = feature_winner(pt, ["Jimeng", "Kling"])
+        self.assertEqual(out["winner"], "tie")
