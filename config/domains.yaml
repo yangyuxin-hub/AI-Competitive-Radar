@@ -61,6 +61,14 @@ domains:
     analysis_focus: ["文生视频效果与可控性"]
     analysis_purpose: "对比主流文生视频工具的效果与可控性,辅助创作者选型"
 
+  jimeng:
+    name: "即梦 AI 视频生成"
+    en_name: "AI video generation"
+    target_product: "即梦AI"
+    competitors: ["可灵Kling", "Runway"]
+    analysis_focus: ["视频生成质量与可控性"]
+    analysis_purpose: "对比即梦、可灵与 Runway 在视频生成质量、可控性和成本上的差距"
+
   ai_music:
     name: "AI 音乐生成"
     en_name: "AI music generation"

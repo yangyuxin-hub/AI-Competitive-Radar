@@ -65,3 +65,32 @@ products:
       - https://www.feishu.cn/product/development_management
     pricing_pages:
       - https://www.feishu.cn/price
+
+  # ─── AI 视频生成工具 ────────────────────────────────────────
+  即梦AI:
+    aliases: ["即梦", "Jimeng", "Jimeng AI", "Dreamina", "剪映即梦"]
+    official_pages:
+      - https://jimeng.jianying.com/
+      - https://jimeng.jianying.com/ai-tool/home
+      - https://www.volcengine.com/product/jimeng
+    pricing_pages:
+      - https://lf3-cdn-tos.draftstatic.com/obj/ies-hotsoon-draft/dreamina/b966ce40-d931-4397-8def-38fe5d03c729.html
+
+  可灵Kling:
+    aliases: ["可灵", "可灵AI", "Kling", "Kling AI", "Kuaishou Kling"]
+    official_pages:
+      - https://app.klingai.com/global/quickstart
+      - https://app.klingai.com/global/blog
+    pricing_pages:
+      - https://app.klingai.com/global/membership/spirit-unit
+      - https://kling.ai/dev/pricing
+
+  Runway:
+    aliases: ["Runway AI", "Runway ML", "RunwayML", "Gen-4", "Gen-4.5"]
+    official_pages:
+      - https://runwayml.com/
+      - https://runwayml.com/research/introducing-runway-gen-4
+      - https://help.runwayml.com/hc/en-us/articles/37327109429011-Creating-with-Gen-4-Video
+      - https://help.runwayml.com/hc/en-us/articles/46974685288467-Creating-with-Gen-4-5
+    pricing_pages:
+      - https://runwayml.com/pricing
