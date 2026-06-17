@@ -29,17 +29,20 @@ REVIEWER_RULES = {
     "R8": "content_coverage",
     "R9": "report_chip_traceability",
     "R10": "report_no_score_leak",
+    "R11": "feature_depth_honesty",
+    "R12": "differentiator_wording",
+    "R13": "winner_conservatism",
 }
 
 MODE_CONFIG = {
     "minimal": {
-        "hard_gate": {"R1", "R4", "R5", "R9"},     # R9 chip 可溯源是核心,minimal 也硬门
-        "soft": {"R0", "R2", "R3", "R7", "R10"},
+        "hard_gate": {"R1", "R4", "R5", "R9", "R11", "R13"},     # R9 chip 可溯源是核心,minimal 也硬门
+        "soft": {"R0", "R2", "R3", "R7", "R10", "R12"},
         "llm": False,
     },
     "full": {
-        "hard_gate": {"R0", "R1", "R2", "R3", "R4", "R5", "R9", "R10"},
-        "soft": {"R7"},  # R7 的 freshness_stale_pricing 在 full 模式通过 _UPGRADE_TO_HARD 升级
+        "hard_gate": {"R0", "R1", "R2", "R3", "R4", "R5", "R9", "R10", "R11", "R13"},
+        "soft": {"R7", "R12"},  # R7 的 freshness_stale_pricing 在 full 模式通过 _UPGRADE_TO_HARD 升级
         "llm": True,
     },
 }
@@ -63,6 +66,9 @@ ISSUE_TYPE_TO_TARGET = {
     "report_chip_missing": "writer",
     "report_chip_not_found": "writer",
     "report_score_leak": "writer",
+    "feature_depth_fabricated": "analyzer",
+    "differentiator_absolutism": "writer",
+    "winner_overclaim": "analyzer",
 }
 
 
@@ -359,6 +365,74 @@ def check_report_no_score_leak(report: str, evidence: list[dict]) -> list[dict]:
     return []
 
 
+def _iter_tree_leaves(schema: dict):
+    tree = (schema.get("feature_tree") or {}).get("tree") or {}
+    for domain in tree.get("domains") or []:
+        for module in domain.get("modules") or []:
+            for point in module.get("points") or []:
+                yield point
+
+
+def check_feature_depth_honesty(schema: dict, evidence: list[dict]) -> list[dict]:
+    """R11: depth_score 非 null 但无 source_refs = 编分。"""
+    issues = []
+    for point in _iter_tree_leaves(schema):
+        for product, pdata in (point.get("products") or {}).items():
+            depth = pdata.get("depth_score")
+            if depth is not None and not (pdata.get("source_refs") or []):
+                issues.append(_mk_issue(
+                    "R11", "feature_depth_fabricated",
+                    f"feature_tree.tree.{point.get('id')}.{product}.depth_score",
+                    f"{product} 在「{point.get('name')}」给了 depth_score={depth} 但 source_refs 为空(疑似编分)",
+                ))
+    return issues
+
+
+def check_differentiator_wording(schema: dict, evidence: list[dict]) -> list[dict]:
+    """R12: 样本内差异点措辞出现「独占」= 绝对化。"""
+    issues = []
+    diff_rows = (
+        ((schema.get("feature_tree") or {}).get("analysis") or {})
+        .get("differentiation_matrix") or []
+    )
+    for row in diff_rows:
+        if "独占" in (row.get("note") or ""):
+            issues.append(_mk_issue(
+                "R12", "differentiator_absolutism",
+                f"feature_tree.analysis.differentiation_matrix.{row.get('name')}",
+                "差异点措辞含『独占』,应改为『样本内 N 个产品中』",
+            ))
+    return issues
+
+
+def check_winner_conservatism(schema: dict, evidence: list[dict]) -> list[dict]:
+    """R13: winner 判了具体产品,但该 leaf 全员无 depth_score = 违反保守口径。"""
+    issues = []
+    leaves = {point.get("id"): point for point in _iter_tree_leaves(schema)}
+    winners = (
+        ((schema.get("feature_tree") or {}).get("analysis") or {})
+        .get("winners") or []
+    )
+    for winner in winners:
+        product = winner.get("winner")
+        if product in ("tie", "unclear", None):
+            continue
+        point = leaves.get(winner.get("feature_id"))
+        if not point:
+            continue
+        any_depth = any(
+            (pdata or {}).get("depth_score") is not None
+            for pdata in (point.get("products") or {}).values()
+        )
+        if not any_depth:
+            issues.append(_mk_issue(
+                "R13", "winner_overclaim",
+                f"feature_tree.analysis.winners.{winner.get('feature_id')}",
+                f"「{winner.get('name')}」全员无 depth_score 却判 winner={product},应为 tie/unclear",
+            ))
+    return issues
+
+
 RULE_RUNNERS = {
     "R1": check_evidence_reference_integrity,
     "R2": check_claim_type_compatibility,
@@ -366,6 +440,9 @@ RULE_RUNNERS = {
     "R4": check_reasoning_chain,
     "R5": check_structured_contradiction,
     "R7": check_freshness_and_confidence,
+    "R11": check_feature_depth_honesty,
+    "R12": check_differentiator_wording,
+    "R13": check_winner_conservatism,
 }
 
 
