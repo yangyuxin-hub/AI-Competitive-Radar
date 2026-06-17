@@ -1,5 +1,6 @@
 import unittest
 
+from src.analyzer import _fallback_decision_summary
 from src.writer import (
     _render_business_model,
     _render_caliber_lock,
@@ -32,6 +33,35 @@ class DecisionSummaryTest(unittest.TestCase):
     def test_missing_summary_degrades_gracefully(self):
         out = _render_decision_summary({}, {})
         self.assertIn("证据不足", out)
+
+
+class FallbackDecisionSummaryTest(unittest.TestCase):
+    def test_derives_from_analysis(self):
+        schema = {
+            "feature_tree": {"analysis": {
+                "archetypes": {"Jimeng": "工具型"},
+                "moat_candidates": [
+                    {"name": "风格控制", "confidence": "medium", "factors": ["素材生态"]}
+                ],
+            }},
+            "pricing_model": {"products": [{
+                "name": "Jimeng",
+                "pricing_engine": {"archetype": "Freemium + Subscription + Credits"},
+            }]},
+            "recommendations": [
+                {"action_type": "learn", "action": "学习 Kling 的首尾帧控制",
+                 "target_competitor": "Kling", "evidence_refs": ["S1234567"],
+                 "priority_score_100": 86},
+                {"action_type": "avoid", "action": "避免直接硬拼 Runway 专业运镜",
+                 "target_competitor": "Runway", "risk": "证据样本不足"},
+            ],
+        }
+        ds = _fallback_decision_summary(schema, target="Jimeng")
+        self.assertIn("moat", ds)
+        self.assertIn("how_monetize", ds)
+        self.assertIn(ds["moat"]["confidence"], ("high", "medium", "low"))
+        self.assertIn("Kling", ds["what_to_learn"]["answer"])
+        self.assertIn("Runway", ds["what_to_avoid"]["answer"])
 
 
 class TechAndBizTest(unittest.TestCase):

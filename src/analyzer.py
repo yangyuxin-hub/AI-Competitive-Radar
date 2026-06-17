@@ -941,6 +941,102 @@ def _ensure_priority_scores(der: dict) -> int:
     return filled
 
 
+def _fallback_decision_summary(schema: dict, target: str) -> dict:
+    """从已算出的派生结果拼决策摘要。缺数据时只输出低置信的「证据不足」。"""
+    analysis = (schema.get("feature_tree") or {}).get("analysis") or {}
+    archetype = (analysis.get("archetypes") or {}).get(target)
+    moats = analysis.get("moat_candidates") or []
+    pricing_model = schema.get("pricing_model") or {}
+    price_archetype = next(
+        (
+            (product.get("pricing_engine") or {}).get("archetype")
+            for product in pricing_model.get("products") or []
+            if product.get("name") == target
+        ),
+        None,
+    )
+
+    def refs_of(obj: dict | None) -> list[str]:
+        if not isinstance(obj, dict):
+            return []
+        refs = (
+            obj.get("refs")
+            or obj.get("evidence_refs")
+            or obj.get("evidence_ids")
+            or obj.get("source_refs")
+            or obj.get("support_evidence_ids")
+            or []
+        )
+        return [r for r in refs if isinstance(r, str)][:5]
+
+    def confidence(value: object, default: str = "low") -> str:
+        if value in ("high", "medium", "low"):
+            return str(value)
+        if isinstance(value, (int, float)):
+            if value >= 0.75:
+                return "high"
+            if value >= 0.45:
+                return "medium"
+        return default
+
+    def item(answer: str | None, conf: object = "low", refs: list[str] | None = None) -> dict:
+        clean = answer.strip() if isinstance(answer, str) else ""
+        return {
+            "answer": clean or "证据不足",
+            "confidence": confidence(conf) if clean else "low",
+            "refs": refs or [],
+        }
+
+    def rec_score(rec: dict) -> float:
+        score_100 = rec.get("priority_score_100")
+        if isinstance(score_100, (int, float)):
+            return float(score_100)
+        score = rec.get("priority_score")
+        if isinstance(score, (int, float)):
+            return float(score)
+        if isinstance(score, dict):
+            final = score.get("final_score")
+            if isinstance(final, (int, float)):
+                return float(final) * 20
+        return 0.0
+
+    def best_rec(action_type: str) -> dict | None:
+        recs = [
+            rec for rec in schema.get("recommendations") or []
+            if isinstance(rec, dict) and rec.get("action_type") == action_type
+        ]
+        return max(recs, key=rec_score) if recs else None
+
+    def rec_item(action_type: str, verb: str) -> dict:
+        rec = best_rec(action_type)
+        if not rec:
+            return item(None)
+        action = rec.get("action") or rec.get("title") or rec.get("rationale")
+        competitor = rec.get("target_competitor")
+        if competitor and action:
+            answer = f"{verb}{competitor}: {action}"
+        else:
+            answer = action
+        score = rec_score(rec)
+        conf = "high" if score >= 75 else ("medium" if score >= 50 else "low")
+        return item(answer, conf, refs_of(rec))
+
+    moat = moats[0] if moats and isinstance(moats[0], dict) else {}
+    moat_name = moat.get("name")
+    moat_answer = f"{moat_name} 为护城河候选" if moat_name else None
+    target_label = target or "目标产品"
+    return {
+        "why_success": item(f"{target_label} 形态为{archetype}" if archetype else None, "low"),
+        "how_monetize": item(
+            f"定价范式 {price_archetype}" if price_archetype else None,
+            "medium" if price_archetype else "low",
+        ),
+        "moat": item(moat_answer, moat.get("confidence", "low"), refs_of(moat)),
+        "what_to_learn": rec_item("learn", "向"),
+        "what_to_avoid": rec_item("avoid", "避免直接硬拼 "),
+    }
+
+
 def _deriv_section_call(section: str, system_base: str, payload: dict) -> tuple[str, object]:
     system = (
         f"{system_base}\n\n## 本次任务范围(重要)\n{_DERIV_SECTIONS[section]}\n"
@@ -1053,6 +1149,11 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
         if _is_demo_loop() and analyzer_retry == 0:
             print("[analyzer] DEMO_LOOP: 注入 R5/R4 错误到 derivations")
             der = _corrupt_derivations_for_demo(der)
+        if not der.get("decision_summary"):
+            der["decision_summary"] = _fallback_decision_summary(
+                {**facts, **der},
+                target=meta.get("target_product") or "",
+            )
         _emit_progress(step="derivations", phase="done", attempt=1, summary=_der_summary(der), preview=_derivations_preview(der))
         return der
 
@@ -1116,6 +1217,11 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
     softened = soften_overgeneralization(der)
     if softened:
         print(f"[analyzer] swot 过度泛化措辞收敛 {softened} 处(大量/普遍→部分用户)")
+    if not der.get("decision_summary"):
+        der["decision_summary"] = _fallback_decision_summary(
+            {**facts, **der},
+            target=meta.get("target_product") or "",
+        )
     return der
 
 
