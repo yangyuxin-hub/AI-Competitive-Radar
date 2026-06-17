@@ -2,6 +2,7 @@ import unittest
 from src.feature_model import (
     normalize_status, support_score, depth_norm, evidence_level_score,
     domain_coverage, weighted_coverage, feature_winner,
+    moat_candidates, whitespace_opportunities,
 )
 
 
@@ -161,3 +162,55 @@ class ArchetypeTest(unittest.TestCase):
         tree = {"domains": [{"id": "A", "name": "a", "weight": 1.0, "modules": [{"id": "A1",
             "name": "a", "points": [_leaf("x", P=_p("unknown"))]}]}]}
         self.assertEqual(product_archetype(tree, "P"), "数据不足")
+
+
+class MoatTest(unittest.TestCase):
+    def _tree(self):
+        return {"domains": [{"id": "A", "name": "可控性", "weight": 0.3, "modules": [
+            {"id": "A1", "name": "运镜", "points": [
+                {"id": "运镜控制", "name": "运镜控制", "moat_factors": ["专业用户沉淀"],
+                 "products": {"Runway": _p("supported", 5, diff=True),
+                              "Jimeng": _p("partial", 2)}},
+            ]}]}]}
+
+    def test_moat_needs_factor(self):
+        out = moat_candidates(self._tree(), "Runway")
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["confidence"], "high")
+        self.assertIn("专业用户沉淀", out[0]["factors"])
+
+    def test_strong_feature_without_factor_is_low_confidence(self):
+        tree = self._tree()
+        tree["domains"][0]["modules"][0]["points"][0]["moat_factors"] = []
+        out = moat_candidates(tree, "Runway")  # 仍是候选,但需补难复制因素
+        self.assertEqual(out[0]["confidence"], "low")
+        self.assertIn("难复制", out[0]["note"])
+
+    def test_migration_cost_adds_factor(self):
+        tree = self._tree()
+        tree["domains"][0]["modules"][0]["points"][0]["moat_factors"] = []
+        out = moat_candidates(tree, "Runway", migration_cost="high")
+        self.assertIn("用户习惯迁移成本", out[0]["factors"])
+
+    def test_low_depth_is_not_moat(self):
+        tree = self._tree()
+        tree["domains"][0]["modules"][0]["points"][0]["products"]["Runway"]["depth_score"] = 2
+        self.assertEqual(moat_candidates(tree, "Runway"), [])
+
+
+class WhitespaceTest(unittest.TestCase):
+    def test_high_weight_unmet_need_is_whitespace(self):
+        tree = {"domains": [{"id": "A", "name": "可控性", "weight": 0.3, "modules": [
+            {"id": "A1", "name": "多镜头", "points": [
+                {"id": "多镜头小白化", "name": "多镜头小白化", "barrier": "现有方案学习成本高",
+                 "products": {"Jimeng": _p("unsupported"), "Kling": _p("partial", 2)}},
+            ]}]}]}
+        out = whitespace_opportunities(tree, ["Jimeng", "Kling"])
+        self.assertEqual(len(out), 1)
+        self.assertIn("学习成本", out[0]["barrier"])
+
+    def test_well_covered_need_is_not_whitespace(self):
+        tree = {"domains": [{"id": "A", "name": "a", "weight": 0.3, "modules": [
+            {"id": "A1", "name": "x", "points": [
+                {"id": "x", "name": "x", "products": {"P": _p("supported", 4)}}]}]}]}
+        self.assertEqual(whitespace_opportunities(tree, ["P"]), [])

@@ -209,3 +209,60 @@ def product_archetype(tree: dict, product: str) -> str:
     if strong and len(strong) <= 2 and strong_ratio <= 0.5:
         return "专精型"
     return "工具型"
+
+
+_MOAT_WEIGHT_MIN = 0.2
+_MOAT_DEPTH_MIN = 4
+_WHITESPACE_WEIGHT_MIN = 0.2
+_WHITESPACE_MAX_SUPPORT = 0.5
+
+
+def moat_candidates(tree: dict, product: str,
+                    migration_cost: Optional[str] = None) -> list[dict]:
+    """护城河候选 = 高权重能力 × 高深度分 × 样本内差异点 × 难复制因素。
+    无难复制因素时仍列为候选,但 confidence=low + note 提示需补因素(防只凭功能有无推护城河)。"""
+    out = []
+    for domain in tree.get("domains") or []:
+        if float(domain.get("weight", 0.0)) < _MOAT_WEIGHT_MIN:
+            continue
+        for leaf in _leaves_of_domain(domain):
+            pdata = (leaf.get("products") or {}).get(product) or {}
+            depth = pdata.get("depth_score")
+            if depth is None or int(depth) < _MOAT_DEPTH_MIN:
+                continue
+            if not pdata.get("differentiator"):
+                continue
+            factors = list(leaf.get("moat_factors") or [])
+            if migration_cost == "high" and "用户习惯迁移成本" not in factors:
+                factors.append("用户习惯迁移成本")
+            confidence = "high" if factors else "low"
+            note = ("已叠加难复制因素" if factors
+                    else "仅功能领先,缺难复制因素证据,需人工确认护城河成立")
+            out.append({"feature_id": leaf.get("id"), "name": leaf.get("name"),
+                        "domain": domain.get("name"), "depth_score": int(depth),
+                        "factors": factors, "confidence": confidence, "note": note})
+    return out
+
+
+def whitespace_opportunities(tree: dict, products: list[str]) -> list[dict]:
+    """蓝海 = 高权重需求 × 当前覆盖不足 × 门槛高。
+    覆盖不足 = 样本内所有产品 support_score 均 ≤0.5(没人做到位),但至少有据可依(非全 unknown)。"""
+    out = []
+    for domain in tree.get("domains") or []:
+        if float(domain.get("weight", 0.0)) < _WHITESPACE_WEIGHT_MIN:
+            continue
+        for leaf in _leaves_of_domain(domain):
+            prods = leaf.get("products") or {}
+            scores = [support_score((prods.get(p) or {}).get("support_status", "unknown"))
+                      for p in products]
+            known = [s for s in scores if s is not None]
+            if not known:                          # 全 unknown:是未测量,不是蓝海
+                continue
+            if max(known) > _WHITESPACE_MAX_SUPPORT:
+                continue
+            barrier = leaf.get("barrier") or "现有方案门槛/成本/学习成本偏高(需人工确认)"
+            out.append({"feature_id": leaf.get("id"), "name": leaf.get("name"),
+                        "domain": domain.get("name"),
+                        "reason": f"高权重域「{domain.get('name')}」下样本内无人做到位",
+                        "barrier": barrier})
+    return out
