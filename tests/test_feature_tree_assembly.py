@@ -1,5 +1,5 @@
 import unittest
-from src.analyzer import _build_feature_skeleton, _normalize_leaf
+from src.analyzer import _apply_feature_engine, _build_feature_skeleton, _normalize_leaf
 
 
 class NormalizeLeafTest(unittest.TestCase):
@@ -40,3 +40,27 @@ class SkeletonTest(unittest.TestCase):
                 "feature_weight_version": "intake-proposed"}
         tree = _build_feature_skeleton(meta, [{"feature_id": "F001", "name": "x"}])
         self.assertEqual([d["id"] for d in tree["domains"]], ["X"])
+
+
+class ApplyFeatureEngineTest(unittest.TestCase):
+    def test_attaches_tree_and_analysis(self):
+        facts = {"feature_tree": {"features": [
+            {"feature_id": "F001", "name": "文生视频", "products": {
+                "Jimeng": {"support_status": "supported",
+                           "support_evidence_ids": ["S1234567"],
+                           "quality_score": {"score": 3, "scale": 5}},
+                "Kling": {"support_status": "supported",
+                          "support_evidence_ids": ["S7654321"],
+                          "quality_score": {"score": 4, "scale": 5}}}},
+        ]}}
+        meta = {"analysis_focus": ["视频生成质量与可控性"],
+                "target_product": "Jimeng", "competitors": ["Kling"]}
+        n = _apply_feature_engine(facts, meta)
+        self.assertEqual(n, 1)
+        ft = facts["feature_tree"]
+        self.assertIn("tree", ft)
+        self.assertIn("analysis", ft)
+        self.assertIn("Jimeng", ft["analysis"]["coverage"])
+        # 叶子已是新 schema
+        pt = ft["tree"]["domains"][0]["modules"][0]["points"][0]
+        self.assertEqual(pt["products"]["Kling"]["depth_score"], 4)

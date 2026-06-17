@@ -796,6 +796,44 @@ def _apply_pricing_engine(facts: dict, evidence: list[dict]) -> int:
     return changed
 
 
+def _apply_feature_engine(facts: dict, meta: dict) -> int:
+    """把 Analyzer 抽到的功能事实接入确定性功能引擎。
+
+    兼容旧 schema:保留 feature_tree.features 不动;额外挂 feature_tree.tree(三层)
+    与 feature_tree.analysis(派生结果)。
+    """
+    ft = facts.get("feature_tree") or {}
+    flat = ft.get("features") or []
+    if not flat:
+        return 0
+    products = [meta.get("target_product")] + list(meta.get("competitors") or [])
+    products = [p for p in products if p]
+    tree = _build_feature_skeleton(meta, flat)
+    point_by_id = {
+        pt["id"]: pt
+        for domain in tree["domains"]
+        for module in domain["modules"]
+        for pt in module["points"]
+    }
+    for feature in flat:
+        pt = point_by_id.get(feature.get("feature_id"))
+        if pt is None:
+            continue
+        for product, pdata in (feature.get("products") or {}).items():
+            pt["products"][product] = _normalize_leaf(pdata)
+    migration = ((facts.get("user_persona") or {}).get("migration_cost") or {}).get("level")
+    analysis = compute_feature_analysis(
+        tree,
+        products,
+        target=meta.get("target_product") or (products[0] if products else ""),
+        migration_cost=migration,
+    )
+    ft["tree"] = tree
+    ft["analysis"] = analysis
+    facts["feature_tree"] = ft
+    return len(flat)
+
+
 def _facts_section_call(section: str, system_base: str, evidence: list[dict], meta: dict,
                         spine: Optional[list[dict]] = None,
                         only_products: Optional[list[str]] = None,
@@ -961,6 +999,10 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0,
         enriched = _apply_pricing_engine(facts, evidence)
         if enriched:
             print(f"[analyzer] pricing engine enriched {enriched} product(s)")
+    if "feature_tree" in facts:
+        enriched = _apply_feature_engine(facts, meta)
+        if enriched:
+            print(f"[analyzer] feature engine enriched {enriched} feature(s)")
 
     # 拆分后不再走 LLM 重跑(那会退回大调用);引用问题统一用确定性 sanitize(秒级)。
     issues = quick_validate_facts(facts, evidence, meta)
