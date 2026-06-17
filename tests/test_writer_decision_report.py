@@ -1,6 +1,6 @@
 import unittest
 
-from src.writer import _render_decision_summary
+from src.writer import _render_business_model, _render_decision_summary, _render_tech_capability
 
 
 class DecisionSummaryTest(unittest.TestCase):
@@ -22,6 +22,37 @@ class DecisionSummaryTest(unittest.TestCase):
     def test_missing_summary_degrades_gracefully(self):
         out = _render_decision_summary({}, {})
         self.assertIn("证据不足", out)
+
+
+class TechAndBizTest(unittest.TestCase):
+    def test_tech_capability_marks_unknown(self):
+        schema = {"tech_capability": {"products": {
+            "Jimeng": {"max_resolution": "1080p", "max_duration": None,
+                       "gen_speed": "约30s/条", "model_version": None,
+                       "source_refs": ["S1234567"]}}}}
+        out = _render_tech_capability(schema, ["Jimeng"], {})
+        self.assertIn("技术能力", out)
+        self.assertIn("1080p", out)
+        self.assertIn("unknown", out.lower())
+
+    def test_tech_indicators_adapt_to_meta(self):
+        schema = {"tech_capability": {"products": {
+            "Cursor": {"completion_latency": "80ms", "context_window": None}}}}
+        meta = {"tech_indicators": [{"key": "completion_latency", "label": "补全延迟"},
+                                    {"key": "context_window", "label": "上下文窗口"}]}
+        out = _render_tech_capability(schema, ["Cursor"], meta)
+        self.assertIn("补全延迟", out)
+        self.assertIn("80ms", out)
+        self.assertIn("上下文窗口", out)
+
+    def test_business_model_carries_archetype(self):
+        pm = {"products": [{"name": "即梦AI", "pricing_engine": {
+            "archetype": "Freemium + Subscription + Credits"}}],
+            "pricing_strategy_analysis": {"pricing_model_analysis": {
+                "summary": "定价应拆成三层看", "products": []}}}
+        out = _render_business_model(pm)
+        self.assertIn("商业模式逻辑", out)
+        self.assertIn("Freemium + Subscription + Credits", out)
 
 
 if __name__ == "__main__":

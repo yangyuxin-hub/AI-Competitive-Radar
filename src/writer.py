@@ -232,6 +232,55 @@ def _render_decision_summary(schema: dict, meta: dict) -> str:
     return "\n".join(lines)
 
 
+_TECH_FIELDS_DEFAULT = [
+    {"key": "max_resolution", "label": "最大分辨率"},
+    {"key": "max_duration", "label": "最大时长"},
+    {"key": "gen_speed", "label": "生成速度"},
+    {"key": "model_version", "label": "模型版本/benchmark"},
+]
+
+
+def _render_tech_capability(schema: dict, products: list[str], meta: dict) -> str:
+    tc = (schema.get("tech_capability") or {}).get("products") or {}
+    indicators = meta.get("tech_indicators") or _TECH_FIELDS_DEFAULT
+    lines = [
+        "## 技术能力",
+        "",
+        "> 功能树答『能不能做』,本节答『背后的性能/质量/限制到什么水平』。证据不足标 unknown。",
+        "",
+        "| 指标 | " + " | ".join(products) + " |",
+        "|---|" + "|".join(["---"] * len(products)) + "|",
+    ]
+    for ind in indicators:
+        key = ind.get("key")
+        label = ind.get("label", key)
+        cells = []
+        for product in products:
+            value = (tc.get(product) or {}).get(key)
+            cells.append(str(value) if value else "unknown")
+        lines.append(f"| {label} | " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def _render_business_model(pricing_model: dict) -> str:
+    lines = ["## 商业模式逻辑", "", "> 承接定价事实,落到『靠什么赚钱、为什么这么设计』的判断。", ""]
+    for prod in pricing_model.get("products") or []:
+        engine = prod.get("pricing_engine") or {}
+        archetype = engine.get("archetype")
+        if archetype:
+            lines.append(f"- **{prod.get('name')}**：定价范式 `{archetype}`")
+    model_analysis = (
+        (pricing_model.get("pricing_strategy_analysis") or {})
+        .get("pricing_model_analysis") or {}
+    )
+    if model_analysis.get("summary"):
+        lines += ["", model_analysis["summary"]]
+    for product in model_analysis.get("products") or []:
+        if product.get("business_logic"):
+            lines.append(f"- **{product.get('product')}**：{product['business_logic']}")
+    return "\n".join(lines)
+
+
 def _products(meta: dict) -> list[str]:
     return [p for p in [meta.get("target_product"), *list(meta.get("competitors") or [])] if p]
 
