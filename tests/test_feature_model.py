@@ -214,3 +214,17 @@ class WhitespaceTest(unittest.TestCase):
             {"id": "A1", "name": "x", "points": [
                 {"id": "x", "name": "x", "products": {"P": _p("supported", 4)}}]}]}]}
         self.assertEqual(whitespace_opportunities(tree, ["P"]), [])
+
+
+class ComputeFeatureAnalysisTest(unittest.TestCase):
+    def test_end_to_end_shape(self):
+        from src.feature_model import compute_feature_analysis
+        out = compute_feature_analysis(TREE, ["Jimeng", "Kling"], target="Jimeng")
+        self.assertEqual(out["feature_weight_version"], "demo-v1")
+        self.assertIn("Jimeng", out["coverage"])
+        self.assertIn("Kling", out["coverage"])
+        self.assertTrue(all("winner" in w for w in out["winners"]))
+        self.assertIn("Jimeng", out["archetypes"])
+        # 同输入恒同输出
+        out2 = compute_feature_analysis(TREE, ["Jimeng", "Kling"], target="Jimeng")
+        self.assertEqual(out, out2)

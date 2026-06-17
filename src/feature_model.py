@@ -266,3 +266,23 @@ def whitespace_opportunities(tree: dict, products: list[str]) -> list[dict]:
                         "reason": f"高权重域「{domain.get('name')}」下样本内无人做到位",
                         "barrier": barrier})
     return out
+
+
+def compute_feature_analysis(tree: dict, products: list[str], target: str,
+                             migration_cost: Optional[str] = None) -> dict:
+    """功能树派生的对外唯一入口(对偶 pricing_model.compute_product)。
+    同输入恒同输出;缺数据处各派生函数已各自返回 None/空,不估算。"""
+    winners = []
+    for domain in tree.get("domains") or []:
+        for leaf in _leaves_of_domain(domain):
+            w = feature_winner(leaf, products)
+            winners.append({"feature_id": leaf.get("id"), "name": leaf.get("name"), **w})
+    return {
+        "feature_weight_version": tree.get("feature_weight_version", "unversioned"),
+        "coverage": {p: weighted_coverage(tree, p) for p in products},
+        "winners": winners,
+        "differentiation_matrix": differentiation_matrix(tree, products),
+        "archetypes": {p: product_archetype(tree, p) for p in products},
+        "moat_candidates": moat_candidates(tree, target, migration_cost),
+        "whitespace": whitespace_opportunities(tree, products),
+    }
