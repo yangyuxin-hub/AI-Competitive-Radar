@@ -2,8 +2,10 @@ import unittest
 
 from src.writer import (
     _render_business_model,
+    _render_caliber_lock,
     _render_decision_summary,
     _render_feature_coverage,
+    _render_feature_insights,
     _render_pricing,
     _render_tech_capability,
 )
@@ -93,6 +95,30 @@ class FeatureCoverageTest(unittest.TestCase):
         self.assertIn("Runway", out)
         self.assertIn("样本内 3 个产品中", out)
         self.assertNotIn("独占", out)
+
+
+class InsightsAndLockTest(unittest.TestCase):
+    def test_insights_render(self):
+        ft = {"analysis": {
+            "archetypes": {"Jimeng": "工具型", "Runway": "专精型"},
+            "moat_candidates": [{"name": "运镜控制", "domain": "可控性", "depth_score": 5,
+                                 "factors": ["专业用户沉淀"], "confidence": "high",
+                                 "note": "已叠加难复制因素"}],
+            "whitespace": [{"name": "多镜头小白化", "domain": "可控性",
+                            "reason": "样本内无人做到位", "barrier": "学习成本高"}]}}
+        out = _render_feature_insights(ft, "Jimeng")
+        self.assertIn("护城河", out)
+        self.assertIn("蓝海", out)
+        self.assertIn("运镜控制", out)
+        self.assertIn("多镜头小白化", out)
+
+    def test_caliber_lock_has_all_fields(self):
+        schema = {"feature_tree": {"analysis": {"feature_weight_version": "demo-v1"}}}
+        meta = {"analysis_focus": ["视频质量"], "competitors": ["Kling"],
+                "target_product": "Jimeng", "generated_at": "2026-06-17T00:00:00Z"}
+        out = _render_caliber_lock(schema, meta)
+        for kw in ("口径锁定", "demo-v1", "unknown", "元/积分", "Kling"):
+            self.assertIn(kw, out)
 
 
 if __name__ == "__main__":

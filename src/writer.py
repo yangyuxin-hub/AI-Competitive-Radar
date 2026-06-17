@@ -310,6 +310,59 @@ def _render_feature_coverage(feature_tree: dict, products: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _render_feature_insights(feature_tree: dict, target: str) -> str:
+    analysis = feature_tree.get("analysis") or {}
+    lines = ["## 功能定位 + 护城河 + 蓝海", "", "### 产品形态", ""]
+    archetypes = analysis.get("archetypes") or {}
+    if archetypes:
+        for product, archetype in archetypes.items():
+            lines.append(f"- {product}：{archetype}")
+    else:
+        lines.append("- 证据不足")
+    lines += ["", "### 护城河候选（公式：高权重 × 高深度 × 样本内差异点 × 难复制因素）", ""]
+    moats = analysis.get("moat_candidates") or []
+    if moats:
+        for moat in moats:
+            conf = _CONF_CN.get(moat.get("confidence", "low"), "低")
+            factors = "、".join(moat.get("factors") or []) or "（缺难复制因素，需人工确认）"
+            lines.append(
+                f"- {moat.get('name')}（{moat.get('domain')}，深度{moat.get('depth_score')}，"
+                f"置信度{conf}）：{factors}"
+            )
+    else:
+        lines.append(f"- {target or '目标产品'} 暂无满足公式的护城河候选")
+    lines += ["", "### 蓝海机会（公式：高权重需求 × 覆盖不足 × 门槛高）", ""]
+    whitespace = analysis.get("whitespace") or []
+    if whitespace:
+        for item in whitespace:
+            lines.append(
+                f"- {item.get('name')}（{item.get('domain')}）："
+                f"{item.get('reason')}；门槛——{item.get('barrier')}"
+            )
+    else:
+        lines.append("- 暂无满足公式的蓝海机会")
+    return "\n".join(lines)
+
+
+def _render_caliber_lock(schema: dict, meta: dict) -> str:
+    feature_analysis = ((schema.get("feature_tree") or {}).get("analysis") or {})
+    feature_weight_version = feature_analysis.get("feature_weight_version", "unversioned")
+    rows = [
+        ("analysis_focus", " / ".join(meta.get("analysis_focus") or []) or "—"),
+        ("selected_competitors", " / ".join(meta.get("competitors") or []) or "—"),
+        ("comparison_scope", f"target={meta.get('target_product', '—')}"),
+        ("pricing_currency", "CNY（混币时如实标注，不跨币比较）"),
+        ("pricing_period", "归一为月（年付÷12，季付÷3）"),
+        ("unit_cost_formula", "元/积分 = 续费常规月价 ÷ 月积分；单位成本 = 元/积分 × 单位耗分"),
+        ("feature_weight_version", feature_weight_version),
+        ("unknown_handling_rule", "unknown 不进覆盖率分子/分母，单列证据覆盖率"),
+        ("generated_at", meta.get("generated_at", "—")),
+    ]
+    lines = ["## 口径锁定表", "", "| 口径项 | 取值 |", "|---|---|"]
+    lines.extend(f"| {key} | {value} |" for key, value in rows)
+    return "\n".join(lines)
+
+
 def _products(meta: dict) -> list[str]:
     return [p for p in [meta.get("target_product"), *list(meta.get("competitors") or [])] if p]
 
