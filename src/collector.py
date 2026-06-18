@@ -115,10 +115,39 @@ def _targeted_refill(gaps: list[dict], focus: str, max_per_gap: int = 5,
         except Exception as e:  # noqa: BLE001
             print(f"  [self-heal] refill {p}/{ct} 失败: {type(e).__name__}: {e}")
             continue
+        if ct == "pricing":
+            # pricing_no_number 的搜索命中常常只有 SERP 摘要,真正金额在命中的定价页正文里。
+            # 对 pricing URL 再走 OfficialPageAdapter,把明码价片段补进证据池。
+            try:
+                from .quality import has_real_price
+
+                urls: list[str] = []
+                for e in evs:
+                    u = (e.get("source_url") or "").strip()
+                    if not u.startswith("http"):
+                        continue
+                    if e.get("source_type") == "pricing_page" or is_pricing_url(u):
+                        if u not in urls:
+                            urls.append(u)
+                direct: list[dict] = []
+                adapter = OfficialPageAdapter(dynamic_urls={p: urls[:max_per_gap]})
+                for u in urls[:max_per_gap]:
+                    try:
+                        direct.extend(adapter._fetch_one(p, u))
+                    except Exception as e:  # noqa: BLE001
+                        print(f"  [self-heal] pricing page fetch {p} <- {u} 失败: {type(e).__name__}: {e}")
+                if direct:
+                    for e in direct:
+                        e["collection_source"] = "self_heal:official_pricing"
+                    evs = direct + evs
+                    if any(has_real_price(e) for e in direct):
+                        print(f"  [self-heal] pricing page 正文补入 {len(direct)} 条 {p} 定价证据")
+            except Exception as e:  # noqa: BLE001
+                print(f"  [self-heal] pricing page 正文补采跳过: {type(e).__name__}: {e}")
         for e in evs:
             if e.get("evidence_id") not in seen:
                 seen.add(e.get("evidence_id"))
-                e["collection_source"] = "self_heal"
+                e.setdefault("collection_source", "self_heal")
                 patches.append(e)
     return patches
 

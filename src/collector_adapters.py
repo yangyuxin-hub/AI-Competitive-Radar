@@ -694,6 +694,47 @@ class AdapterRegistry:
             print(f"  [cache] patched {len(cache_hits)} evidence")
             adapter_events.append({"adapter": "CacheAdapter", "status": "patched"})
 
+        # 定价证据的"有/无"不够:live/search 可能只抓到 SERP 摘要或免费档,
+        # 而 cache 里已有同日官方定价页的明码价。此时 claim_type 不缺,但 Analyzer
+        # 仍会结构化成 unknown/0。补入官方明码价缓存,再由后续 dedupe/cap 统一裁剪。
+        if (
+            "pricing" in self.required_claim_types
+            and "pricing" not in missing
+            and self.cache.can_fetch(product)
+        ):
+            try:
+                from .quality import has_real_price
+
+                current_pricing = [
+                    e for e in all_evidences
+                    if e.get("claim_type") == "pricing"
+                ]
+                has_official_price = any(
+                    has_real_price(e)
+                    and e.get("source_type") in ("official_page", "pricing_page")
+                    for e in current_pricing
+                )
+                if current_pricing and not has_official_price:
+                    cached = self.cache.fetch(product, focus)
+                    cache_hits = [
+                        e for e in cached
+                        if e.get("claim_type") == "pricing"
+                        and e.get("source_type") in ("official_page", "pricing_page")
+                        and has_real_price(e)
+                    ][:12]
+                    for ev in cache_hits:
+                        ev.setdefault("collection_source", "cache:pricing_substance")
+                    if cache_hits:
+                        all_evidences.extend(cache_hits)
+                        print(f"  [cache] patched {len(cache_hits)} official price evidence")
+                        adapter_events.append({
+                            "adapter": "CacheAdapter",
+                            "status": "pricing_substance_patched",
+                            "count": len(cache_hits),
+                        })
+            except Exception as e:  # noqa: BLE001
+                print(f"  [cache] pricing substance patch skipped: {type(e).__name__}: {e}")
+
         # 第三层:Mock
         still_missing = self.required_claim_types - {e["claim_type"] for e in all_evidences}
         print(f"  missing claim_types after cache: {sorted(still_missing)}")
