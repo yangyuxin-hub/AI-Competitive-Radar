@@ -1,0 +1,304 @@
+<title>竞品雷达 · 答辩汇报</title>
+
+<callout emoji="🎯" background-color="light-blue" border-color="blue">
+<p><b>AI Competitive Radar</b> —— 面向企业 PM / 数据分析师的<b>可观测、可量化、可修复</b>竞品分析 Agent 协作系统。</p>
+<p>Demo：输入「分析 Cursor、Windsurf、GitHub Copilot 在代码补全体验上的差距」→ 输出每条结论可溯源的结构化竞品报告。</p>
+</callout>
+
+<img src="EXXSb8I9BoSTd2x7LUlcojBSnFd" name="ai-competitive-radar-cover.png"/>
+
+<hr/>
+
+<h1>0 · 一页速览（评委导读）</h1>
+
+<callout emoji="💡" background-color="light-yellow" border-color="yellow">
+<p><b>全场主线：</b>搭一个能跑的 Demo 我很快就做好了。真正难、也是大部分精力花的地方，是把<b>最终报告的质量</b>做上去——而这要求我对每一个环节都<b>完全可观测、可控</b>。所以我把竞品分析拆成可审计的阶段，给每个阶段定义清楚该输出什么，再用可观测性检查它实际输出了什么，发现偏差就修。</p>
+<p>👉 <b>这个项目的主角不是大模型，是可观测性。</b></p>
+</callout>
+
+<p>一条直线流水线，所有功能、架构、难点都挂在这条线上：</p>
+
+<whiteboard type="mermaid">
+flowchart LR
+  A["一句分析需求"] --> B["证据规划 Evidence Planner"]
+  B --> C["多源采集 Collector"]
+  C --> D["结构化分析 Analyzer"]
+  D --> E["报告生成 Writer"]
+  E --> F["质量审查 Reviewer"]
+  F --> G["确定修订 Guard"]
+  G --> H["可信报告交付"]
+</whiteboard>
+
+<table>
+<colgroup><col width="120"/><col width="320"/><col width="200"/></colgroup>
+<thead><tr><th background-color="light-blue">主线节点</th><th background-color="light-blue">一句话</th><th background-color="light-blue">对应能力</th></tr></thead>
+<tbody>
+<tr><td>需求进入</td><td>从自然语言抽取目标/竞品/焦点/意图</td><td>Intake / Evidence Planner</td></tr>
+<tr><td>证据成池</td><td>live/cache/mock 多源采集 + 覆盖率/质量审计</td><td>Collector / EvidenceService</td></tr>
+<tr><td>事实成形</td><td>证据抽成 feature/pricing/persona/pain/SWOT/建议</td><td>Analyzer</td></tr>
+<tr><td>报告出稿</td><td>Markdown 报告，关键结论绑 chip</td><td>Writer / ReportView</td></tr>
+<tr><td>质量审查</td><td>R0-R10 发现引用/覆盖/结构/语义风险</td><td>Reviewer</td></tr>
+<tr><td>确定修订</td><td>只降级/删除/清理，不新增无证据内容</td><td>Guard</td></tr>
+<tr><td>可信交付</td><td>报告 + Timeline + StageReport + 证据抽屉</td><td>前端工作台</td></tr>
+</tbody>
+</table>
+
+<p><b>30 秒总括：</b>这个项目不是「让大模型自动写一篇竞品报告」，而是把竞品分析做成一条<b>可信 Agent 流水线</b>——用户看到的不只是报告，还能看到每个 Agent 做了什么、哪些检查通过了、哪里需要人工复核、每条结论对应哪条原始证据。</p>
+
+<hr/>
+
+<h1>1 · 背景与业务价值</h1>
+
+<p>传统竞品分析很痛：一个分析师查约 8 工时、信息源就两三个、不同人格式各异，最要命的是——你问他「这条结论哪来的」，他答不上来。</p>
+
+<callout emoji="📌" background-color="light-purple" border-color="purple">
+<p>本系统有点像面向竞品分析领域的 <b>DeepResearch</b>，但比通用 deep research 多做四件它不做的事：<b>采得更可信、结构更一致、每句可溯源、全程可审计</b>。它不是写得更长，是质量可控。</p>
+</callout>
+
+<table>
+<thead><tr><th background-color="light-green">指标</th><th background-color="light-green">人工分析</th><th background-color="light-green">本系统</th><th background-color="light-green">提升</th></tr></thead>
+<tbody>
+<tr><td>分析耗时</td><td>~8 工时</td><td>~5 分钟</td><td>约 96×</td></tr>
+<tr><td>信息源类型</td><td>2-3 类</td><td>5+ 类</td><td>覆盖更广</td></tr>
+<tr><td>结论溯源率</td><td>弱·不统一</td><td>85%+</td><td>每条可溯源</td></tr>
+<tr><td>输出结构一致性</td><td>因人而异</td><td>100% 符合 Schema</td><td>强一致</td></tr>
+<tr><td>失败处理</td><td>重写 / 人工修</td><td>缺口定位后定向补证/修订/降级</td><td>可控可终止</td></tr>
+</tbody>
+</table>
+
+<p><span text-color="gray">说明：人工基线为行业经验估算；系统不替代分析师，而是生成可信初稿，提高资料整理、结构化对比、证据回查效率。</span></p>
+
+<hr/>
+
+<h1>2 · 整体架构</h1>
+
+<p>「前端工作台 + FastAPI 后端 + LangGraph 编排 + 阶段质量门 + 节点内定向修复」的分层架构：</p>
+
+<whiteboard type="mermaid">
+flowchart TB
+  FE["前端工作台 Next.js：报告 / Timeline / Checklist / 证据抽屉"]
+  API["API 层 FastAPI / SSE：流式进度 + 报告持久化"]
+  ORCH["编排层 LangGraph + AgentState + StageReport"]
+  AG["Agent 层：Collector / Analyzer / Writer / Reviewer / Guard"]
+  EV["证据层：live / cache / mock + Source Ledger"]
+  FE --> API --> ORCH --> AG --> EV
+</whiteboard>
+
+<grid>
+<column width-ratio="0.34">
+<callout emoji="🧩" background-color="light-blue">
+<p><b>专职分工</b></p>
+<p>六 Agent 各干一件事，三个唯一 owner + AST 测试焊死边界，分析层一旦碰采集就挂测试。</p>
+</callout>
+</column>
+<column width-ratio="0.33">
+<callout emoji="📨" background-color="light-green">
+<p><b>结构化协作</b></p>
+<p>Agent 间传字段冻结的 AgentState 工单，不做自然语言对话，每步输入输出可审计。</p>
+</callout>
+</column>
+<column width-ratio="0.33">
+<callout emoji="📐" background-color="light-orange">
+<p><b>契约 + 可观测</b></p>
+<p>每阶段先定输入/输出契约，再用 stage_quality 日志验证实际产出——所有坑都是看指标看出来的。</p>
+</callout>
+</column>
+</grid>
+
+<callout emoji="✅" background-color="light-gray" border-color="gray">
+<p><b>StageReport 四问：</b>每个阶段同构回答「我产出了什么 / 我通过了吗 / 哪里坏了 / 成本多少」——前端 Timeline、后端日志、质量聚合读同一份数据，不靠下游正则反推。</p>
+</callout>
+
+<hr/>
+
+<h1>3 · 核心技术：关键架构设计 + 技术难点</h1>
+
+<h2>3.1 五个关键架构设计</h2>
+
+<table>
+<colgroup><col width="40"/><col width="300"/><col width="240"/></colgroup>
+<thead><tr><th background-color="light-blue">#</th><th background-color="light-blue">关键架构设计</th><th background-color="light-blue">为什么 / 命中维度</th></tr></thead>
+<tbody>
+<tr><td>①</td><td><b>六节点直线 DAG + 单一 AgentState</b>：无环流水线，传结构化工单非对话</td><td>结构化协作 35% + 全程可观测可回放</td></tr>
+<tr><td>②</td><td><b>三个唯一 owner + AST 锁边界</b>：缺口判定 / 采集执行 / 结论强度各一 owner，AST 测试自动校验分析层不碰采集</td><td>边界无重叠靠代码守，不靠自觉（35%）</td></tr>
+<tr><td>③</td><td><b>契约 + 可观测方法论</b>：每阶段先定契约，再用 stage_quality 逐阶段验证</td><td>可观测 25%（项目灵魂）</td></tr>
+<tr><td>④</td><td><b>闭环下沉：直线 + 阶段内自检 + 确定性终门</b>：实测 54 run 打回仅 1 次 → 删带环打回状态机</td><td>闭环非伪 35% + 前瞻性 25%</td></tr>
+<tr><td>⑤</td><td><b>三层降级 + 泛化双路径</b>：采集 live→cache→mock；竞品走 LLM 动态发现（主）+ YAML 兜底</td><td>降级 25% + 换行业 20%</td></tr>
+</tbody>
+</table>
+
+<h3>① 六节点直线 DAG + 单一 AgentState</h3>
+<p><b>设计：</b>把竞品分析拆成 evidence_planner → collector → analyzer → writer → reviewer → guard 六个专职节点，LangGraph 编排成无环有向图；节点间不传自然语言，而是读写同一份字段冻结的 <code>AgentState</code>（TypedDict），各填各的栏。</p>
+<p><b>为什么：</b>① 结构化工单可审计、可回放，不是「大模型自由发挥」；② 无环 = 工程上不可能死循环；③ 每个节点的输入输出都能落日志、单独测试。</p>
+<p><b>怎么落地：</b>状态在 <code>state.py</code> 的 <code>build_initial_state</code> 初始化；每个节点纯函数式地读 state 若干字段、写回若干字段，便于 mock 任一上游单测下游。</p>
+
+<h3>② 三个唯一 owner + AST 锁边界</h3>
+<p><b>设计：</b>三件最易越界的事各只有一个 owner——缺口判定只走 <code>evidence_gaps.find_gaps</code>、采集执行只走 <code>evidence_service.fill</code>、结论强度只走 <code>guard.apply</code>。</p>
+<p><b>为什么：</b>多 Agent 系统最怕「谁都能改证据、谁都能改结论」，导致责任不清、互相打架、出问题无法定位。</p>
+<p><b>怎么落地：</b>写了 <b>AST 静态测试</b>扫描 analyzer 模块的 import 树，断言它对采集层零依赖——分析层一旦 import 采集就测试红。边界靠测试守，不靠自觉。</p>
+
+<h3>③ 契约 + 可观测方法论（项目灵魂）</h3>
+<p><b>设计：</b>每个阶段先定义「输入 → 输出契约」（该产出哪些 claim_type / 字段），再用 <code>logs/stage_quality.jsonl</code> 的 StageReport 逐阶段记可量化指标（覆盖率 / 相关性 / 幻觉数 / 缺口数 / 耗时）验证实际产出。</p>
+<p><b>为什么：</b>Agent 是黑盒——能看到它采了上百条、加工出一份报告，但报告有定价缺漏、信息混乱。只有逐阶段量化，才知道偏差出在哪一环。</p>
+<p><b>怎么落地：</b>我所有的坑都是看这些指标发现的：采集相关性只有 5 成、定价桶没有真实价格、处理阶段幻觉数不为 0、chip 对不上——指标一异常立刻定位到环节。</p>
+
+<h3>④ 闭环下沉：直线 + 阶段内自检 + 确定性终门</h3>
+<p><b>设计：</b>三层质检——① 节点内 <code>quick_validate</code> + 确定性 <code>sanitize</code> 自愈；② 独立 Reviewer 跑 R0-R10 只审不修、出带归因的问题清单；③ <code>guard.apply</code> 确定性终门（幂等）兜底。</p>
+<p><b>为什么 + 怎么落地：</b>实测 54 run 跨节点打回仅触发 1 次——问题几乎都在节点内自愈了。于是删掉带环打回状态机（retry 配额 / degraded_writer），换成下图的直线，终止性由图结构保证。</p>
+
+<p><b>架构演进的核心决策 —— 闭环下沉：</b></p>
+
+<whiteboard type="mermaid">
+flowchart TB
+  subgraph OLD["传统带环打回 ❌"]
+    R1["Reviewer 判官"] --> X1["打回上游重做"]
+    X1 --> Y1["全量重抓 / 死循环 / 20 分钟跑不完"]
+    Y1 --> R1
+  end
+  subgraph NEW["三层下沉直线 ✅"]
+    S1["节点内自检自愈"] --> S2["Reviewer 只审不修 出清单"]
+    S2 --> S3["Guard 确定性终门 一次修订"]
+  end
+  OLD -.实测 54:1 驱动简化.-> NEW
+</whiteboard>
+
+<h3>⑤ 三层降级 + 泛化双路径</h3>
+<p><b>设计：</b>采集 live → cache → mock 三层降级、搜索 Brave → Tavily → DDG 多供应商降级；竞品发现走 LLM 动态发现（<code>intake</code>）为主、YAML 为兜底。</p>
+<p><b>为什么：</b>稳定性（断网 / 限流也能跑完整闭环，Demo 不翻车）+ 真泛化（不把竞品写死在 YAML 里，换行业也能找到对的对手）。</p>
+<p><b>怎么落地：</b>换行业只改 <code>config/products.yaml</code> + <code>domains.yaml</code>，不改一行代码；已内置多个行业域配置。</p>
+
+<h2>3.2 六个技术难点</h2>
+
+<table>
+<colgroup><col width="40"/><col width="200"/><col width="280"/><col width="200"/></colgroup>
+<thead><tr><th background-color="light-orange">#</th><th background-color="light-orange">难点</th><th background-color="light-orange">方案</th><th background-color="light-orange">效果</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>长输出截断 + 倒推幻觉</td><td>两步式 facts→derivations + 三 section 并行 + 证据压缩 + quick_validate 自评估</td><td>截断率降；结论必挂事实，不足输出 unknown</td></tr>
+<tr><td>2</td><td>结论级溯源</td><td>evidence_id 确定性 hash（编不出）+ chip + Reviewer R1/R9 校验</td><td>每句可点回原文，伪造引用被拦截</td></tr>
+<tr><td>3</td><td>质检既可信又可终止</td><td>三层下沉 + 直线（54:1 实测驱动）</td><td>闭环真实可触发且必收敛、无死循环</td></tr>
+<tr><td>4</td><td>全量打回低效（20 分钟）</td><td>闭环前置 + 定向补采（只补缺的那格）+ 策略阶梯换检索 + 轮次上限</td><td>20min → 约 4min、约 5× 提速且可终止</td></tr>
+<tr><td>5</td><td>采集质量（无关信息 + 定价缺漏）</td><td>5 维质量分 + 相关性硬门（≥70% 真提产品）+ Playwright SPA 渲染</td><td>少收无关、抓到真实档位价</td></tr>
+<tr><td>6</td><td>并发提速但防串台</td><td>ContextVar + CtxThreadPoolExecutor 隔离上下文</td><td>提速且跨 run 不串台（靠日志发现并修掉）</td></tr>
+</tbody>
+</table>
+
+<h3>难点 1 · 长输出截断 + 倒推幻觉</h3>
+<p><b>难在哪：</b>让模型一次生成整篇报告，输出一超 max_tokens 就 JSON 截断、整轮无法解析；模型还爱「先想好结论、再倒编证据」。</p>
+<p><b>方案：</b>拆 <code>facts → derivations</code> 两步（facts 内 feature/pricing/persona 三 section 还并行），单次输出体量减半；证据用 <code>_compact_evidence</code> 按（类型 × 产品）分桶取 top-K + 近似去重 + 截短，压到约 8K token；每步 <code>quick_validate</code> 自评估，万一截断还有尾部 JSON 修复兜底。</p>
+<p><b>效果：</b>截断率显著下降；两步式逼着结论必须挂在已抽取的 facts 上，证据不足只能输出 <code>unknown</code>，从源头压制倒推式幻觉。</p>
+
+<h3>难点 2 · 结论级溯源</h3>
+<p><b>难在哪：</b>段落级引用太粗、追不到具体出处；LLM 还会编造 evidence_id。</p>
+<p><b>方案：</b><code>evidence_id = "S" + sha1(证据内容)[:7].upper()</code>，对内容做确定性 hash——模型编不出真实存在的 ID；Writer 给每条 claim 句末打 <code>[SXXXXXXX]</code> chip；Reviewer R1 校验引用真实存在、R9 校验 chip 可溯源、R10 禁止正文泄露质量分。</p>
+<p><b>效果：</b>每条结论可一键点回原文 / URL / 来源可信度；伪造或断链的引用被自动拦截。</p>
+
+<h3>难点 3 · 质检既可信又可终止</h3>
+<p><b>难在哪：</b>质检规则太严、带环会死循环；太松又失信。</p>
+<p><b>方案：</b>三层质检下沉（节点内自愈 + Reviewer 只审不修 + guard 确定性终门，见 3.1 ④）；guard 不调 LLM、不新增内容，只做幂等的确定性操作（清理幻觉引用 / G1 强对比对账 / G2 basis 对账 / 收敛过强表述）。</p>
+<p><b>效果：</b>闭环真实可触发，且由直线图结构保证一定收敛，无死循环。</p>
+
+<h3>难点 4 · 全量打回低效（20 分钟故事）</h3>
+<p><b>难在哪：</b>早期只缺 Asana 一个定价，却把三个产品四类证据全量重抓；检索不到还反复重试同一批词，最惨一次 20 分钟没跑完。</p>
+<p><b>方案：</b>把闭环前置、下沉到采集阶段内部——验收门审计 → 诊断缺口 → 定向补采（只补缺的 product × claim_type）；检索不到不重复，走策略阶梯 L0-L4 换方法（站内 → 全网 → 中英别名 → 官网 SPA 渲染 → 诚实标「不可得」）；加轮次上限。</p>
+<p><b>效果：</b>20 分钟 → 约 4 分钟、约 5× 提速，且一定终止。</p>
+
+<h3>难点 5 · 采集质量（无关信息 + 定价缺漏）</h3>
+<p><b>难在哪：</b>「搜到就用」会混入大量无关信息（理财帖混进 AI 工具分析）；SaaS 定价表是 JS 渲染的，普通抓取拿不到价格。</p>
+<p><b>方案：</b><code>quality.py</code> 5 维质量分 + 相关性硬门（≥70% 内容真提产品名）+ 营销空话 fluff 检测，入库前把关；定价检测到「联系销售 / 无数字」就走 L3 Playwright SPA 渲染并锚定出处。</p>
+<p><b>效果：</b>相关性差的宁可少收；定价能抓到真实档位价而非「联系销售」。</p>
+
+<h3>难点 6 · 并发提速但防串台</h3>
+<p><b>难在哪：</b>并发是提速关键，但多个 run 的进度 / token 最容易混在一起串台（SSE 推串、token 归错 run）。</p>
+<p><b>方案：</b><code>ContextVar</code> 存每个 run 的上下文 + 自定义 <code>CtxThreadPoolExecutor</code> 跨线程传播；进度通道每节点独立实例，防 SSE 串台。</p>
+<p><b>效果：</b>采集四适配器并发、facts 三 section 并行的同时，跨 run 不串台——这个 bug 正是靠可观测日志发现并修掉的，修掉后才敢放心并发。</p>
+
+<callout emoji="🔧" background-color="light-gray" border-color="gray">
+<p><b>谁的问题谁修（owner 表）：</b>证据问题 → EvidenceService（池内回捞优先，不足再定向外搜）；字段问题 → Analyzer sanitize；结论强度 → Guard（清理/降级，不新增）；格式问题 → Writer + Reviewer。</p>
+</callout>
+
+<hr/>
+
+<h1>4 · 三个记忆点故事</h1>
+
+<callout emoji="⏱️" background-color="light-red" border-color="red">
+<p><b>① 20 分钟跑不完</b> → 早期质检发现缺东西就全量打回重抓，检索不到反复重试，一次跑了 20 分钟还没结束。改成闭环前置 + 定向补采 + 策略阶梯后，<b>约 4 分钟跑完</b>。</p>
+</callout>
+
+<callout emoji="📉" background-color="light-yellow" border-color="yellow">
+<p><b>② 54:1 删打回</b> → 实测 54 次运行里跨节点打回只真正触发 1 次。于是把复杂的带环打回状态机整个删掉，改成<b>一条直线 + 一个确定性终门</b>，幂等无环、修不掉就诚实降级。</p>
+</callout>
+
+<callout emoji="🌐" background-color="light-blue" border-color="blue">
+<p><b>③ 定价缺漏是部署禁浏览器</b> → 线上免费档 512MB 跑不起浏览器（headless Chromium 单实例 261MB、2 并发 634MB 必 OOM）。同一份代码两种形态：本地满血演 SPA 抓真价，云端诚实降级标「不可得」——<b>云端本身就是三层降级机制的真实演练场</b>。</p>
+</callout>
+
+<hr/>
+
+<h1>5 · 实机 Demo（产品截图）</h1>
+
+<p><b>Step 1：输入分析需求，选择分析场景。</b>入口不是固定 Demo 表单，而是支持自然语言需求；下方保留历史情报档案，说明它是可沉淀的分析工作台，不是一次性生成器。</p>
+<img src="LhGTbmZGToyKyPxozH1c6TCRnag" name="step1_home.png"/>
+<img src="PX7VbmKsWos9nFx87jRcmqDGnbd" name="step1b_intake.png"/>
+
+<p><b>Step 2：观看 Agent 执行过程和阶段状态。</b>SSE 实时展示当前处于证据规划、采集、分析、写作、审查还是 Guard 修订阶段，并看到每阶段产物数、质量状态和缺口——把 Agent 协作过程产品化展示，而不是等一篇文本。</p>
+<img src="BdoLb74ISo7Qc6xtaSrcZz7KnLX" name="step2_stages.png"/>
+
+<p><b>Step 3：查看报告质量、业务价值和结构化结论。</b>顶部质量徽章 + 业务价值量化，下面按功能矩阵、定价、用户痛点、改进建议、SWOT 展开；每条关键结论后带 chip，可点击回查来源。</p>
+<img src="OxgTbRCVkoxsLUxp7PucZOKQnTh" name="step3_report.png"/>
+
+<hr/>
+
+<h1>6 · 性能优化（实测，最优配置已固化为代码默认）</h1>
+
+<table>
+<thead><tr><th background-color="light-green">优化项</th><th background-color="light-green">手段</th><th background-color="light-green">实测收益</th></tr></thead>
+<tbody>
+<tr><td>Thinking 分层</td><td>机械任务关隐藏思维链，深度推理保留</td><td>思维链占 43%-91% 输出 token；机械分类 24.8s→1.4s；端到端 -34%</td></tr>
+<tr><td>Prompt 瘦身</td><td>derivations 按 section 过滤证据 + 证据压缩（每类型≤5 条、摘要≤140 字）</td><td>prompt 体积 -23%~-38%；recommendations 74s→40s；盲评零掉分</td></tr>
+<tr><td>多级并发</td><td>Collector 多产品×适配器并发；Analyzer facts 三 section 并行</td><td>feature 段墙钟约 8s（串行约 38s）；跨线程隔离不串台</td></tr>
+<tr><td>池内回捞</td><td>缺口先回捞池内被 top-K 截断的存量证据，不足再外搜</td><td>省一次外搜的网络/token 成本</td></tr>
+<tr><td>链路提速</td><td>LLM 直连关代理；timeout 200s + 单次重试；搜索结果磁盘缓存 72h</td><td>每次调用省约 10s 代理绕行</td></tr>
+</tbody>
+</table>
+
+<callout emoji="🏁" background-color="light-blue" border-color="blue">
+<p><b>端到端基线：</b>live 全链路 244.9s 产出含 <b>200 条溯源 chip</b> 的完整报告（Reviewer passed）。</p>
+</callout>
+
+<hr/>
+
+<h1>7 · 工程完整度 + 可观测 + 合规</h1>
+
+<ul>
+<li><b>端到端链路</b>：采集 → 编排 → 知识存储 → 后端 SSE → 前端交互，现场可演示。</li>
+<li><b>可观测</b>：每个 Agent 的 Prompt / 输入输出 / Token 落 jsonl 日志，按 run/stage 归因，现场可翻。</li>
+<li><b>稳定性</b>：超时 + 重试 + 三层采集降级，断网/无 key 也能跑完整闭环。</li>
+</ul>
+
+<callout emoji="🛡️" background-color="light-green" border-color="green">
+<p><b>合规声明：</b>只采公开信息、遵守 robots.txt；source_bias / source_reliability 透明标注来源偏向；合成访谈明确标注 synthetic、可信度最低，<b>绝不冒充真实用户反馈</b>；访谈/问卷数据脱敏；API key 经环境变量注入、不入库。</p>
+</callout>
+
+<hr/>
+
+<h1>8 · 高危问答三题（必背）</h1>
+
+<callout emoji="❓" background-color="light-purple" border-color="purple">
+<p><b>Q1 闭环真伪？</b> 能打回，但实测 54 run 打回仅 1 次，于是下沉为更优解——三层下沉 + 现场前后对比 + 20 分钟故事佐证。</p>
+<p><b>Q2 Guard 怎么修 Reviewer 的发现？</b> 诚实答「确定性重新对账、不逐条定向修，findings 仅计数」：清理不存在的 evidence_id、强对比缺双方证据则降级、basis 不足降 unknown、收敛过强表述。</p>
+<p><b>Q3 YAML 还是 LLM 发现竞品？</b> LLM 主路径（动态发现最新有竞争力的竞品），YAML 兜底（断网/无 key/Demo 种子）。</p>
+</callout>
+
+<hr/>
+
+<h1>9 · 效果展示</h1>
+
+<img src="YzThb5ABlo8zoExRRZEcvTjMnCg" name="effect-1.png"/>
+<img src="Q1JrboooboOqSgxCxvIcuYDGnqh" name="effect-2.png"/>
+<img src="QGDhbOieboffVtxmfkXc8h3nn9d" name="effect-3.png"/>
+
+<hr/>
+
+<callout emoji="⭐" background-color="light-yellow" border-color="yellow">
+<p><b>一句话版本：</b>AI Competitive Radar 不是「自动写报告」的工具，而是一条可信竞品分析流水线——先规划证据，再采集补证，随后结构化分析、渲染报告、审查质量，最后由 Guard 做确定性修订；用户既看到报告，也看到每个 Agent 的执行过程和每条结论背后的原始证据。</p>
+</callout>

@@ -25,9 +25,9 @@ class EvidencePlanTest(unittest.TestCase):
         )
         self.assertIn("market_signal", plan["optional_claim_types"])
 
-    def test_pain_intent_requires_only_pain_and_quality(self):
+    def test_pain_intent_still_requires_pricing_for_product_analysis(self):
         plan = build_evidence_plan(self._meta(intent="pain_attribution"))
-        self.assertEqual(plan["required_claim_types"], ["user_pain", "performance_quality"])
+        self.assertEqual(plan["required_claim_types"], ["user_pain", "performance_quality", "pricing"])
 
     def test_market_keywords_promote_market_signal_to_required(self):
         plan = build_evidence_plan(

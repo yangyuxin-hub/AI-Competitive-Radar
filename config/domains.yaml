@@ -7,7 +7,7 @@ domains:
     en_name: "AI coding assistant"   # 检索消歧用:产品名是英文时拼到 query 里锚定品类
     sample_path: "data/sample_sources.json"
     target_product: "Cursor"
-    competitors: ["Windsurf", "GitHubCopilot"]
+    competitors: ["ClaudeCode", "Trae"]
     analysis_focus: ["代码补全体验"]
     analysis_purpose: "学习竞品优点,优化 Cursor 的产品策略"
 
@@ -16,7 +16,7 @@ domains:
     en_name: "project management"
     sample_path: "data/sample_sources_pm.json"
     target_product: "Notion"
-    competitors: ["Asana", "Linear"]
+    competitors: ["Linear", "飞书项目"]
     analysis_focus: ["团队任务管理体验"]
     analysis_purpose: "学习竞品优势,优化 Notion 的项目协作能力"
 
@@ -25,7 +25,7 @@ domains:
     name: "AI 对话助手"
     en_name: "AI assistant chatbot"
     target_product: "ChatGPT"
-    competitors: ["Claude", "Gemini"]
+    competitors: ["Gemini", "DeepSeek"]
     analysis_focus: ["通用对话与推理体验"]
     analysis_purpose: "对比头部大模型助手的体验差距,辅助选型"
 
@@ -33,7 +33,7 @@ domains:
     name: "设计协作工具"
     en_name: "design tool"
     target_product: "Figma"
-    competitors: ["Sketch", "Canva"]
+    competitors: ["Canva", "即时设计"]
     analysis_focus: ["界面设计协作体验"]
     analysis_purpose: "对比设计工具的协作与易用性,辅助团队选型"
 
@@ -49,7 +49,7 @@ domains:
     name: "AI 图像生成"
     en_name: "AI image generation"
     target_product: "Midjourney"
-    competitors: ["StableDiffusion", "DALLE"]
+    competitors: ["NanoBanana", "即梦AI"]
     analysis_focus: ["图像生成质量与创作体验"]
     analysis_purpose: "对比主流文生图工具的质量与易用性,辅助创作者选型"
 
@@ -57,15 +57,23 @@ domains:
     name: "AI 视频生成"
     en_name: "AI video generation"
     target_product: "Sora"
-    competitors: ["Kling", "Runway"]
+    competitors: ["Veo3", "即梦AI"]
     analysis_focus: ["文生视频效果与可控性"]
     analysis_purpose: "对比主流文生视频工具的效果与可控性,辅助创作者选型"
+
+  jimeng:
+    name: "即梦 AI 视频生成"
+    en_name: "AI video generation"
+    target_product: "即梦AI"
+    competitors: ["可灵Kling", "Runway"]
+    analysis_focus: ["视频生成质量与可控性"]
+    analysis_purpose: "对比即梦、可灵与 Runway 在视频生成质量、可控性和成本上的差距"
 
   ai_music:
     name: "AI 音乐生成"
     en_name: "AI music generation"
     target_product: "Suno"
-    competitors: ["Udio", "StableAudio"]
+    competitors: ["Udio", "Mureka"]
     analysis_focus: ["AI 音乐生成质量与易用性"]
     analysis_purpose: "对比 AI 作曲工具的质量与易用性,辅助创作者选型"
 

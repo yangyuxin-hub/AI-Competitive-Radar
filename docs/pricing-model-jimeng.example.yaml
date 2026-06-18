@@ -1,0 +1,204 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 即梦AI 完整定价模型 —— 实例 / 实现对照规范(spec-by-example)
+#
+# 数据来源:
+#   [O] 官方定价弹窗截图(连续包月 6折视图),采于 2026-06-17
+#   [T] 第三方解读/教程文(消耗率、备用价),见各字段 source.refs
+# 数字均按 2026-06-17 快照;FX 折算用 $1≈¥7.2(仅跨币比较时用,原币始终保留)。
+#
+# 模型分两层(完整定价模型 = 结构层 + 数值层,都从同一份事实确定性派生):
+#   pricing_structure  结构层:商业模式骨架(可组合的 Freemium/Subscription/Credits 三层 + 角色)
+#   tiers              数值层:各档位 + 计费变体(月/季/年/单月,促销 vs 常规)+ 积分发放
+#   consumption        积分→产出消耗率(算单位成本的分母)
+#   unit_costs         确定性派生:元/积分、元/张、元/秒(basis=续费常规价)
+#   incentives         非购买积分(获客层):赠送/每日/免费额度 —— 单独记录,不折进单位成本
+#   conflicts / gaps   诚实区:多源价格冲突、未采到的字段(不编,标 unknown + 补采指引)
+#
+# 关键铁律(实现时务必照做):
+#   1. 单位成本只用「续费常规价」做 basis,促销/体验价永不入基准。
+#   2. 页面自报的换算值(如"¥10=177积分")只作佐证,引擎一律独立复算并对账。
+#   3. 算不出的(缺消耗率/缺时长)标 unknown + gap,绝不估算填数。
+#   4. confidence:价格 confirmed(官方截图);单位成本 tentative(消耗率随清晰度/时长/调价波动)。
+# ─────────────────────────────────────────────────────────────────────────────
+
+product: "即梦AI"
+aliases: ["即梦", "Dreamina", "Jimeng"]
+vendor: "字节跳动"
+currency_native: "CNY"
+observed_at: "2026-06-17"
+
+# ── 结构层:可组合的商业模式骨架(archetype 由 present 的 layer 自动拼出)──────────
+pricing_structure:
+  archetype: "Freemium + Subscription + Credits"     # = 下面三层均 present
+  layers:
+    - mechanism: freemium
+      present: true
+      role: "获客层"
+      detail: "免费用户每日送积分(约60–100/天,当天清零)+ 部分功能限免体验"
+      source: {class: mixed, as_of: "2026-06-17", confidence: confirmed,
+               refs: ["官方截图:登录每日送灵感值/功能可体验", "chooseai.net/news/2095"]}
+    - mechanism: subscription
+      present: true
+      role: "收入层"
+      detail: "基础/标准/高级/超级 四档会员,支持月/季/年/单月计费"
+      billing_cycles: [monthly, quarterly, yearly, single_month]
+      source: {class: official, as_of: "2026-06-17", confidence: confirmed, refs: ["官方定价弹窗截图"]}
+    - mechanism: credits
+      present: true
+      role: "增值层"
+      detail: "订阅外可单独购买积分 / 会员兑换补充额度;积分按消耗机制扣减"
+      source: {class: official, as_of: "2026-06-17", confidence: confirmed, refs: ["官方截图:直接购买积分|会员兑换"]}
+
+# ── 数值层:订阅档位。每档可有多个 billing_option(同档不同买法),各算归一月价 ─────────
+# pricing_mode 仅标该档主计费性质(credit_metered=按积分计量),不再当全局单选。
+tiers:
+  - tier_name: "基础会员"
+    segment: 个人
+    is_free: false
+    pricing_mode: credit_metered
+    billing_options:
+      # 已知:连续包月 6折视图。首月促销价 + 续费常规价。
+      - {cycle: monthly, kind: 续费常规, price: {amount: 69, currency: CNY},
+         normalized_monthly: {amount: 69, currency: CNY}, is_promo: false}
+      - {cycle: monthly, kind: 首月促销, price: {amount: 41, currency: CNY},
+         normalized_monthly: {amount: 41, currency: CNY}, is_promo: true, promo_scope: first_month_6折}
+      # 季/年/单月:页面有这些 tab 但本次未截到价 → 已知存在、金额未知。
+      - {cycle: quarterly,    amount_status: unknown, note: "连续包季 tab 存在,未采到价"}
+      - {cycle: yearly,       amount_status: unknown, note: "连续包年 tab 存在(限时3.8折),未采到价"}
+      - {cycle: single_month, amount_status: unknown, note: "单月购买 tab 存在,未采到价"}
+    credit_grant: {amount: 725, unit: "积分", cadence: monthly, expires: true}
+    source: {class: official, evidence_ids: ["<hash>"], as_of: "2026-06-17",
+             confidence: confirmed, refs: ["官方定价弹窗截图"]}
+
+  - tier_name: "标准会员"
+    segment: 个人
+    is_free: false
+    pricing_mode: credit_metered
+    billing_options:
+      - {cycle: monthly, kind: 续费常规, price: {amount: 199, currency: CNY},
+         normalized_monthly: {amount: 199, currency: CNY}, is_promo: false}
+      - {cycle: quarterly,    amount_status: unknown}
+      - {cycle: yearly,       amount_status: unknown}
+      - {cycle: single_month, amount_status: unknown}
+    credit_grant: {amount: 2210, unit: "积分", cadence: monthly, expires: true}
+    # 页面自报"¥9/100积分"= 199/2210×100=9.00,与常规价一致 → 复算对账通过。
+    stated_unit_economics: [{per: "100积分", price: 9, currency: CNY, basis_price: 199, reconciled: true}]
+    source: {class: official, evidence_ids: ["<hash>"], as_of: "2026-06-17", confidence: confirmed}
+
+  - tier_name: "高级会员"
+    segment: 个人
+    is_free: false
+    pricing_mode: credit_metered
+    billing_options:
+      - {cycle: monthly, kind: 续费常规, price: {amount: 998, currency: CNY},
+         normalized_monthly: {amount: 998, currency: CNY}, is_promo: false}
+      - {cycle: monthly, kind: 首月促销, price: {amount: 599, currency: CNY},
+         normalized_monthly: {amount: 599, currency: CNY}, is_promo: true, promo_scope: first_month_6.1折}
+    # 滑块档:同一档积分量可调,价随量变。default 为页面默认选中点。
+    credit_grant:
+      adjustable: true
+      unit: "积分"
+      cadence: monthly
+      expires: true
+      default: 12320
+      options: [6200, 12320, 18500, 27700]     # 6.2K / 12.3K / 18.5K / 27.7K
+    source: {class: official, evidence_ids: ["<hash>"], as_of: "2026-06-17", confidence: confirmed}
+
+  - tier_name: "超级会员"
+    segment: 个人
+    is_free: false
+    pricing_mode: credit_metered
+    billing_options:
+      - {cycle: monthly, kind: 续费常规, price: {amount: 4299, currency: CNY},
+         normalized_monthly: {amount: 4299, currency: CNY}, is_promo: false}
+      - {cycle: monthly, kind: 首月促销, price: {amount: 2579, currency: CNY},
+         normalized_monthly: {amount: 2579, currency: CNY}, is_promo: true, promo_scope: first_month_6折}
+    credit_grant: {amount: 54600, unit: "积分", cadence: monthly, expires: true}
+    source: {class: official, evidence_ids: ["<hash>"], as_of: "2026-06-17", confidence: confirmed}
+
+# ── 积分→产出消耗率(算单位成本的分母)。第三方来源,随清晰度/时长/调价波动 → tentative ──
+consumption:
+  - capability: image
+    spec: "文生图·标准清晰度"
+    credits_per_output: 1
+    unit: "积分/张"
+    variability: "高清/更高分辨率更贵;具体随清晰度档变"
+    source: {class: third_party, confidence: tentative,
+             refs: ["zhihu.com/p/29791231830", "chooseai.net/news/2095"]}
+  - capability: video
+    spec: "Seedance·按秒计"
+    credits_per_unit: 8                          # ~6–8 积分/秒,取中上值
+    unit: "积分/秒"
+    examples: ["5秒参考图生视频≈25积分", "15秒≈90–120积分(2026-04调价后大涨)"]
+    variability: "随模型版本/时长/输入类型(纯文 vs 图+视频+音频参考)大幅波动"
+    source: {class: third_party, confidence: tentative,
+             refs: ["21jingji.com/.../20260420", "news.qq.com/.../20260213A02AB700"]}
+  - capability: digital_human
+    spec: "数字人配音"
+    credits_per_unit: 0.5                         # 2字/积分;大师效果 8积分/3字
+    unit: "积分/字"
+    variability: "大师效果约 8积分/3字"
+    source: {class: third_party, confidence: tentative, refs: ["aigc.cn/jimeng-ai"]}
+
+# ── 确定性派生:单位成本。basis=续费常规月价 ÷ 月积分 × 单位耗分。derivation 全程可溯源 ──
+unit_costs:
+  basis: regular_monthly
+  per_tier:
+    基础会员:  {price_per_credit: {amount: 0.095, currency: CNY},
+               image: {amount: 0.095, currency: CNY, derivation: "¥69 ÷ 725 × 1积分/张"},
+               video_per_sec: {amount: 0.76, currency: CNY, derivation: "¥69 ÷ 725 × 8积分/秒"},
+               confidence: tentative}
+    标准会员:  {price_per_credit: {amount: 0.090, currency: CNY},
+               image: {amount: 0.090, currency: CNY, derivation: "¥199 ÷ 2210 × 1"},
+               video_per_sec: {amount: 0.72, currency: CNY, derivation: "¥199 ÷ 2210 × 8"},
+               confidence: tentative}
+    高级会员:  {price_per_credit: {amount: 0.081, currency: CNY},
+               image: {amount: 0.081, currency: CNY, derivation: "¥998 ÷ 12320(default) × 1"},
+               video_per_sec: {amount: 0.65, currency: CNY, derivation: "¥998 ÷ 12320 × 8"},
+               confidence: tentative,
+               note: "滑块档,其余积分点(6.2K/18.5K/27.7K)单位成本各异,可按需展开"}
+    超级会员:  {price_per_credit: {amount: 0.079, currency: CNY},
+               image: {amount: 0.079, currency: CNY, derivation: "¥4299 ÷ 54600 × 1"},
+               video_per_sec: {amount: 0.63, currency: CNY, derivation: "¥4299 ÷ 54600 × 8"},
+               confidence: tentative}
+  summary:
+    image_cny_per_unit:    {min: 0.079, max: 0.095, unit: "元/张(标准清晰度)"}
+    video_cny_per_second:  {min: 0.63,  max: 0.76,  unit: "元/秒(Seedance)"}
+
+# ── 获客层制度:非购买积分。单独结构化,绝不折进 unit_costs ───────────────────────
+incentives:
+  - {type: daily_login, amount_range: [60, 100], unit: "积分", frequency: daily,
+     conditions: "免费用户每日登录领取,当天未用清零", source: {class: third_party, refs: ["chooseai.net/news/2095"]}}
+  - {type: free_feature, detail: "图片4.0 2K 限时免费", frequency: limited_time,
+     source: {class: official, refs: ["官方截图"]}}
+  - {type: free_feature, detail: "视频O1 主体智能补全 每天3次免费", frequency: daily,
+     source: {class: official, refs: ["官方截图"]}}
+  - {type: paid_topup, detail: "单独购买积分 / 会员兑换(增值层补充额度)", frequency: on_demand,
+     source: {class: official, refs: ["官方截图"]}}
+
+# ── 诚实区①:多源价格冲突,两源都存,不擅自取舍 ───────────────────────────────
+conflicts:
+  - field: "subscription 月价"
+    kind: price_conflict
+    values:
+      - {source: official, as_of: "2026-06-17", data: {基础: 69, 标准: 199, 高级: 998}, note: "连续包月续费常规价(截图)"}
+      - {source: third_party, data: {基础: 79, 标准: 239, 高级: 649}, refs: ["ai-bio.cn/sites/498"],
+         note: "第三方文报价,推测为单月购买/不同计费模式或调价时点"}
+    resolution: "以官方截图为主展示,第三方值保留并标注;不合并、不平均"
+
+# ── 诚实区②:未采到/不可比的字段,标 unknown + 补采指引,绝不估算 ──────────────────
+gaps:
+  - {field: "billing_options.quarterly/yearly/single_month 金额", kind: amount_missing,
+     fix: "采即梦官网各计费 tab(连续包季/包年/单月)价格"}
+  - {field: "image unit_cost 高清档", kind: spec_partial,
+     note: "现仅标准清晰度=1积分/张;高清/4K 耗分更高,未采", fix: "采各清晰度档积分消耗"}
+  - {field: "视频跨产品可比", kind: cross_product_unnormalized,
+     note: "即梦视频=元/秒,可灵视频=元/个720p(时长未知),二者暂不可直接比",
+     fix: "采可灵单条标准视频时长,归一到元/秒"}
+
+# ── 跨产品对比锚点(供 comparison 模块消费;同 capability 才比)────────────────────
+comparison_anchors:
+  image_cny_per_unit:
+    即梦AI: {min: 0.079, max: 0.095, confidence: tentative}
+    # 对照(已采):可灵AI 0.044–0.088;GPT-Image-2 0.24–0.43(按¥7.2折算)
+  note: "图像同口径(元/张标准图)可比:即梦≈可灵,均显著低于 GPT-Image-2;视频暂不可比(见 gaps)"

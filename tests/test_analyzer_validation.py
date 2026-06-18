@@ -1,6 +1,11 @@
 import unittest
 
-from src.analyzer import quick_validate_derivations, quick_validate_facts, sanitize_facts_evidence_refs
+from src.analyzer import (
+    quick_validate_derivations,
+    quick_validate_facts,
+    sanitize_derivations,
+    sanitize_facts_evidence_refs,
+)
 from src.reviewer import check_reasoning_chain
 
 
@@ -172,6 +177,24 @@ class AnalyzerFactsValidationTest(unittest.TestCase):
 
         self.assertTrue([i for i in issues if i.startswith("recommendations:")], issues)
         self.assertTrue([i for i in issues if i.startswith("swot:")], issues)
+
+    def test_sanitize_derivations_filters_and_mirrors_recommendation_evidence_refs(self):
+        derivations = {
+            "recommendations": [{
+                "rec_id": "R001",
+                "evidence_refs": ["SPAIN001", "SFAKE999"],
+                "source_feature_ids": ["F001"],
+                "source_pain_ids": ["P001"],
+            }],
+            "swot": {},
+        }
+
+        out, dropped = sanitize_derivations(derivations, _base_facts(), EVIDENCE)
+
+        rec = out["recommendations"][0]
+        self.assertEqual(dropped, 1)
+        self.assertEqual(rec["evidence_refs"], ["SPAIN001"])
+        self.assertEqual(rec["evidence_ids"], ["SPAIN001"])
 
     def test_reviewer_rejects_report_without_recommendations_and_swot(self):
         schema = {**_base_facts(), "recommendations": [], "swot": {}}

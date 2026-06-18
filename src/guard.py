@@ -59,12 +59,21 @@ def enforce_comparison_evidence(schema: dict, evidence: list[dict]) -> int:
             qs = pdata.get("quality_score") or {}
             return _has_ct(qs.get("evidence_ids"), ct_map, _QUALITY_CTS)
 
+        comparable = {
+            p: d for p, d in products.items()
+            if d.get("support_status") in ("supported", "partial")
+        }
+        missing_quality = [p for p, d in comparable.items() if not _q_ok(d)]
         winner_ok = winner in products and _q_ok(products[winner])
         second_ok = any(_q_ok(d) for p, d in products.items() if p != winner)
-        if winner_ok and second_ok:
+        if winner_ok and second_ok and not missing_quality:
             continue
         name = feat.get("name") or "该能力"
-        if winner_ok:
+        if winner_ok and missing_quality:
+            reason = (f"「{name}」仅部分产品有用户体验质量证据，"
+                      "部分产品缺少质量证据，暂不作强对比")
+            conf = 0.25
+        elif winner_ok:
             reason = (f"仅 {winner} 在「{name}」上有较充分的用户体验反馈，"
                       "其余产品证据不足，暂不作强对比")
             conf = 0.3
@@ -99,6 +108,36 @@ def enforce_basis_support(schema: dict, evidence: list[dict]) -> int:
             pdata["support_status"] = "unknown"
             qs["basis"] = "未检索到该能力的功能证据，支持情况不明"
             qs["score"] = 0
+            changed += 1
+    return changed
+
+
+def enforce_quality_basis_evidence(schema: dict, evidence: list[dict]) -> int:
+    """G3:quality_score.basis 只能表达有质量证据支撑的质量判断。
+
+    support_status 已承载"是否具备"；当 quality_score 没有 performance_quality/user_pain
+    证据时,质量格只保留"暂不评分"安全措辞,避免把功能存在性混进质量 claim。
+    """
+    ct_map = _ct_by_id(evidence)
+    changed = 0
+    neutral_basis = "无用户/第三方质量评价证据，暂不评分"
+    for feat in (schema.get("feature_tree") or {}).get("features", []) or []:
+        for pdata in (feat.get("products") or {}).values():
+            qs = pdata.get("quality_score") or {}
+            if _has_ct(qs.get("evidence_ids"), ct_map, _QUALITY_CTS):
+                continue
+            if (
+                qs.get("score") == 0
+                and qs.get("basis") == neutral_basis
+                and not qs.get("evidence_ids")
+            ):
+                continue
+            qs["score"] = 0
+            qs["basis"] = neutral_basis
+            qs["evidence_ids"] = []
+            agg = qs.get("aggregation")
+            if isinstance(agg, dict):
+                agg["representative_evidence_ids"] = []
             changed += 1
     return changed
 
@@ -179,13 +218,15 @@ def apply(schema: dict, evidence: list[dict],
     schema, dropped = sanitize_schema_evidence_refs(schema, evidence)
     g1 = enforce_comparison_evidence(schema, evidence)
     g2 = enforce_basis_support(schema, evidence)
+    g3 = enforce_quality_basis_evidence(schema, evidence)
     softened = soften_overgeneralization(schema)
     report = {
         "dropped_refs": dropped,
         "comparison_downgraded": g1,
         "basis_unknowned": g2,
+        "quality_basis_neutralized": g3,
         "softened": softened,
         "findings_consumed": len(findings or []),
-        "changes_total": dropped + g1 + g2 + softened,
+        "changes_total": dropped + g1 + g2 + g3 + softened,
     }
     return schema, report

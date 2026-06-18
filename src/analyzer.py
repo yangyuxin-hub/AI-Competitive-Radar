@@ -23,6 +23,7 @@ from .analyzer_sanitize import (  # noqa: F401 — 确定性后处理簇,re-expo
     _filter_evidence_ids,
     _freq_is_truly_frequent,
     _soften_text,
+    normalize_user_segments,
     repair_rec_anchors,
     sanitize_derivations,
     sanitize_facts_evidence_refs,
@@ -71,7 +72,12 @@ from .analyzer_fallback import (  # noqa: F401 — 骨架兜底构建器,re-expo
 )
 from .evidence_service import fill as _evidence_fill  # M3:缺口声明 → EvidenceService 补证据
 from .llm import deep_thinking_mode, get_llm, is_mock_mode, load_sample_report
+from .pricing_compare import compare_pricing_products
+from .pricing_model import compute_product
+from .pricing_strategy import build_pricing_strategy_analysis
 from .state import AgentState
+from . import feature_tree_skills, feature_weights
+from .feature_model import normalize_status, compute_feature_analysis
 
 # B2: per-product feature_fill 调用计数（跨 gap_refill 轮次累加），超阈值走骨架兜底。
 # ContextVar 按 run 隔离(此前是模块级全局,并发 run 共享计数:一方 clear 抹掉另一方,熔断失效/误熔断)。
@@ -107,7 +113,7 @@ def collect_all_evidence_refs(
                 pdata.get("support_evidence_ids") or [],
                 ["feature_existence"],
             ))
-            qs = pdata.get("quality_score") or {}
+            qs = _quality_score_obj(pdata.get("quality_score"))
             refs.append((
                 f"feature_tree.{fid}.{pname}.quality_score.evidence_ids",
                 qs.get("evidence_ids") or [],
@@ -157,7 +163,7 @@ def collect_all_evidence_refs(
     for r in schema.get("recommendations", []):
         refs.append((
             f"recommendations.{r.get('rec_id', '?')}.evidence_ids",
-            r.get("evidence_ids") or [],
+            r.get("evidence_ids") or r.get("evidence_refs") or [],
             ["feature_existence", "user_pain", "performance_quality", "pricing", "market_signal"],
         ))
 
@@ -302,9 +308,17 @@ def _feature_tree_split_enabled() -> bool:
     return os.environ.get("ANALYZER_FEATURE_TREE_SPLIT", "1").strip() not in ("0", "false", "False")
 
 
+def _quality_score_obj(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (int, float)):
+        return {"score": value, "scale": 5, "evidence_ids": []}
+    return {}
+
+
 def _real_score(pdata: dict) -> Optional[float]:
     """真实质量分;证据不足(unknown / 0 分且无质量证据)→ None,不参与胜负与均分。"""
-    qs = pdata.get("quality_score") or {}
+    qs = _quality_score_obj(pdata.get("quality_score"))
     if (pdata.get("support_status") or "").lower() == "unknown":
         return None
     try:
@@ -330,7 +344,7 @@ def _compute_gap(name: str, products_block: dict, meta: dict) -> dict:
 
     def _eids(pdata: dict) -> list[str]:
         return ((pdata.get("support_evidence_ids") or [])
-                + ((pdata.get("quality_score") or {}).get("evidence_ids") or []))[:4]
+                + (_quality_score_obj(pdata.get("quality_score")).get("evidence_ids") or []))[:4]
 
     if not rated:
         # 全员都没质量分,但若官网已确认各产品都具备 → 是「能力对等、未评分」,不是「没证据」
@@ -377,8 +391,21 @@ def _compute_gap(name: str, products_block: dict, meta: dict) -> dict:
             "evidence_ids": _eids(win_data), "confidence": conf}
 
 
+def _standard_ai_coding_feature_spine(meta: dict) -> Optional[list[dict]]:
+    # Back-compat name for tests/callers. The tree now comes from
+    # config/feature_tree_skills/ai_coding.yaml instead of being hardcoded here.
+    if feature_tree_skills.selected_skill_id(meta) != "ai_coding":
+        return None
+    return feature_tree_skills.feature_spine_for_meta(meta)
+
+
 def _feature_spine(system_base: str, evidence: list[dict], meta: dict) -> list[dict]:
     """段1:从证据里抽 4-6 个适合跨产品对比的功能点(只要 id+name,小输出)。"""
+    skill_spine = feature_tree_skills.feature_spine_for_meta(meta)
+    if skill_spine:
+        # Skill 命中时使用稳定行业能力模型。LLM 后续只负责按产品填充证据/评分,
+        # 避免把页面/按钮/营销词漂移成功能维度。
+        return skill_spine
     focus = " / ".join(meta.get("analysis_focus") or []) or "核心体验"
     timeout = float(os.environ.get("ANALYZER_FACTS_TIMEOUT", "90"))
     ft_ev = [e for e in evidence if e.get("claim_type") in _FT_CLAIM_TYPES]
@@ -437,19 +464,27 @@ def _enrich_evidence_by_features(
     except Exception as e:  # noqa: BLE001
         print(f"[analyzer] enrich: spine 生成失败,跳过补采: {e}")
         return evidence, None
-    feat_names = [f["name"] for f in spine if f.get("name")]
+    # 定向补采只投核心模块:长尾低权重维度(F007-F010)证据稀疏,搜了多半也填不满,
+    # 反而摊薄搜索预算。把省下的预算转给核心维度(每查询多取结果 → top-K 选材更密),
+    # 让真正决定选型的 6 个核心格子尽量填满。长尾维度仍由官网证据自然填,缺则坦然 unknown。
+    long_tail = feature_tree_skills.long_tail_feature_keys(meta)
+    core_feats = [f for f in spine
+                  if f.get("name") and f.get("feature_id") not in long_tail and f.get("name") not in long_tail]
+    feat_names = [f["name"] for f in core_feats] or [f["name"] for f in spine if f.get("name")]
+    # 长尾被剔走后,把搜索深度从默认 3 提到 5(_compact_evidence 仍按 8/桶封顶,只增选材池不胀 payload)
+    per_feat = int(os.environ.get("ANALYZER_ENRICH_RESULTS", "5" if len(core_feats) < len(spine) else "3"))
     products = _target_products(meta)
     focus = (meta.get("analysis_focus") or [""])[0] if meta.get("analysis_focus") else ""
     if not feat_names or not products:
         return evidence, spine
 
     _emit_progress(step="facts", phase="enrich_start",
-                   summary=f"[分析阶段] 按 {len(feat_names)} 个功能为 {len(products)} 个产品定向补采证据")
+                   summary=f"[分析阶段] 按 {len(feat_names)} 个核心功能为 {len(products)} 个产品定向补采证据")
     existing_ids = {e.get("evidence_id") for e in evidence}
     added: list[dict] = []
     with CtxThreadPoolExecutor(max_workers=max(1, len(products))) as ex:
         futs = {
-            ex.submit(search.feature_targeted_evidence, p, feat_names, focus): p
+            ex.submit(search.feature_targeted_evidence, p, feat_names, focus, per_feat): p
             for p in products
         }
         for fut in as_completed(futs):
@@ -466,6 +501,95 @@ def _enrich_evidence_by_features(
     _emit_progress(step="facts", phase="enrich_done",
                    summary=f"[分析阶段] 定向补采完成，新增 {len(added)} 条证据")
     return evidence + added, spine
+
+
+def _normalize_leaf(legacy_pdata: dict) -> dict:
+    """旧叶子(support_status + quality_score.score) → 新叶子 schema(depth_score 等)。"""
+    pdata = legacy_pdata or {}
+    qs = _quality_score_obj(pdata.get("quality_score"))
+    raw_depth = pdata.get("depth_score")
+    if raw_depth is None:
+        raw_depth = qs.get("score")
+    depth = int(raw_depth) if isinstance(raw_depth, (int, float)) and 1 <= int(raw_depth) <= 5 else None
+    refs = list(dict.fromkeys(
+        list(pdata.get("source_refs") or [])
+        + list(pdata.get("support_evidence_ids") or [])
+        + list(qs.get("evidence_ids") or [])
+    ))
+    if depth is not None and not refs:
+        depth = None
+    level = pdata.get("evidence_level")
+    if level not in {"official", "third_party", "user_review", "inferred"}:
+        level = "official" if refs else "inferred"
+    return {
+        "support_status": normalize_status(pdata.get("support_status", "unknown")),
+        "depth_score": depth,
+        "evidence_level": level,
+        "differentiator": bool(pdata.get("differentiator")),
+        "source_refs": refs,
+    }
+
+
+def _build_feature_skeleton(meta: dict, flat_features: list[dict]) -> dict:
+    """把扁平 feature_spine 包成加权三层 skeleton(叶子先空,后续填)。
+    无法精确归类时,功能均匀落入各 domain 的『其它』module —— 装配确定、可复现。
+    域权重优先用 meta['feature_weights'](Phase 7 intake 自适应产出),缺则回退 config 种子。"""
+    focus = (meta.get("analysis_focus") or [""])[0]
+    skill_cfg = None if meta.get("feature_weights") else feature_tree_skills.domains_for_meta(meta)
+    dynamic_domains = []
+    if not meta.get("feature_weights") and not skill_cfg and not feature_weights.has_focus(focus):
+        dynamic_domains = [
+            {"id": chr(64 + i) if i <= 26 else f"D{i}", "name": str(f.get("name") or f"能力{i}"),
+             "weight": round(1.0 / max(1, len(flat_features or [])), 6), "role": "core"}
+            for i, f in enumerate(flat_features or [], start=1)
+        ]
+    domains_cfg = (
+        meta.get("feature_weights")
+        or ((skill_cfg or {}).get("domains"))
+        or dynamic_domains
+        or feature_weights.domains_for_focus(focus)
+    )
+    version = (
+        meta.get("feature_weight_version")
+        or (f"skill:{skill_cfg['skill_id']}@{skill_cfg['version']}" if skill_cfg else None)
+        or ("llm_dynamic@unversioned" if dynamic_domains else None)
+        or feature_weights.version()
+    )
+    domains = [{"id": d["id"], "name": d["name"], "weight": d["weight"],
+                "role": d.get("role", "core"),
+                "source_skill": d.get("source_skill"),
+                "core_question": d.get("core_question"),
+                "evidence_requirements": d.get("evidence_requirements") or [],
+                "modules": [{"id": f"{d['id']}0", "name": "其它", "points": []}]}
+               for d in domains_cfg]
+
+    def _domain_for_feature(feature: dict, index: int) -> Optional[dict]:
+        fname = str(feature.get("name") or "").lower()
+        for d in domains:
+            dname = str(d.get("name") or "").lower()
+            if fname and (fname in dname or dname in fname):
+                return d
+        alias = {"模型配置": "工程集成/安全/协作", "工程集成": "工程集成/安全/协作",
+                 "安全权限": "工程集成/安全/协作", "协作交付": "工程集成/安全/协作"}
+        target_name = alias.get(str(feature.get("name") or ""))
+        if target_name:
+            return next((d for d in domains if d.get("name") == target_name), None)
+        return domains[index % len(domains)] if domains else None
+
+    # 优先按模块名落入同名 domain;未命中时才轮转,保证 AI 编程标准树的权重域稳定可复现。
+    for i, f in enumerate(flat_features or []):
+        target = _domain_for_feature(f, i)
+        if target is None:
+            continue
+        target["modules"][0]["points"].append(
+            {"id": f.get("feature_id"), "name": f.get("name"), "products": {}})
+    out = {"feature_weight_version": version, "domains": domains}
+    if skill_cfg:
+        out["source_skill"] = skill_cfg["skill_id"]
+        out["feature_tree_skill_version"] = skill_cfg["version"]
+        out["generation_mode"] = skill_cfg["generation_mode"]
+        out["scoring_rubric"] = skill_cfg["scoring_rubric"]
+    return out
 
 
 def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
@@ -517,31 +641,42 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
         fill_instruct = (
             pain_note
             + f"对产品「{product}」,针对下面 feature_list 中每个功能逐一评估其支持度与质量。\n"
-            '只输出 JSON: {"products":{"F001":{"support_status":"supported|partially_supported|'
-            'not_supported|unknown","support_evidence_ids":["..."],"quality_score":{"score":0-5,'
-            '"scale":5,"basis":"一句话依据","evidence_ids":["..."]}}}}。\n'
+            '只输出 JSON: {"products":{"F001":{"support_status":"supported|partial|'
+            'unsupported|unknown","support_evidence_ids":["..."],'
+            '"depth_score":1-5或null,"evidence_level":"official|third_party|user_review|inferred",'
+            '"differentiator":true/false,'
+            '"quality_score":{"score":0-5,"scale":5,"basis":"一句话依据","evidence_ids":["..."]}}}}。\n'
             "support_evidence_ids 只能用 feature_existence 证据;quality_score.evidence_ids 只能用 "
             "performance_quality / user_pain 证据。\n"
             "## 关键:支持度 与 质量分 分开判,各用各的证据(不要绑死)\n"
             "### support_status —— 该产品**是否具备**这个能力(优先用 feature_existence / 官网 vendor_claim 证据)\n"
-            "- supported=官网功能页/产品介绍明确描述了该能力;partially_supported=只部分具备或明显受限;\n"
-            "- not_supported=证据明确表明没有;unknown=**连官网都没有任何相关介绍**(真的一点线索都没有时才用)。\n"
+            "- supported=官网功能页/产品介绍明确描述了该能力;partial=只部分具备或明显受限;\n"
+            "- unsupported=证据明确表明没有;unknown=**连官网都没有任何相关介绍**(真的一点线索都没有时才用)。\n"
             "- **核心:官网产品介绍能证明『具备』,就给 supported,哪怕完全没有用户体验数据**——"
             "绝不要因为缺质量证据,就把本可由官网确认的支持度也写成 unknown。这是矩阵不塌方的关键。\n"
             "### quality_score —— 该能力**好不好**(只用 performance_quality / user_pain 证据,严禁用官网营销话术补分)\n"
             "- 5=多条用户/第三方证据一致称业界领先;4=明确优于同类;3=可用/评价不一;2=明显短板;1=几乎不可用;\n"
             "- 0=**没有任何质量证据** → score 0,basis 写『仅确认具备,无质量证据』;"
             "**这条只代表没评分,不要因此改动上面的 support_status**。\n"
+            "## depth_score 评分口径(强制,无证据写 null,绝不编分)\n"
+            "1=仅入口/基础能力; 2=可用但限制明显; 3=主流可用效果稳定; "
+            "4=质量/可控性明显优于多数竞品; 5=专业级,形成明显工作流优势。\n"
+            "**仅当存在 官方说明/实测结果/第三方评测/用户案例 之一才给分,否则 depth_score=null。**\n"
+            "evidence_level 取你给 depth_score 所依据证据的最高等级;differentiator=该能力是否"
+            "在本次样本产品中明显仅此一家做到位(宁缺毋滥,不确定填 false)。\n"
             "## 纪律\n"
             "- support_status 可采信官网/feature_existence;quality_score **只**采信 user_generated/third_party;\n"
             "- basis 写成**可对比**的一句话(点出快/慢、准/糙),或在无质量证据时如实写『仅确认具备』;\n"
             "- 严禁编造 evidence_id。\n"
             "## 微示例\n"
             '有官网无评价(常见,务必照此填): {"support_status":"supported","support_evidence_ids":["SAAA1111"],'
+            '"depth_score":null,"evidence_level":"official","differentiator":false,'
             '"quality_score":{"score":0,"scale":5,"basis":"官网功能页确认具备该能力,但无用户质量证据","evidence_ids":[]}}\n'
             '有评价: {"support_status":"supported","support_evidence_ids":["SAAA1111"],'
+            '"depth_score":4,"evidence_level":"third_party","differentiator":false,'
             '"quality_score":{"score":4,"scale":5,"basis":"第三方实测延迟100-200ms,优于多数同类","evidence_ids":["SBBB2222"]}}\n'
             '真无任何线索: {"support_status":"unknown","support_evidence_ids":[],'
+            '"depth_score":null,"evidence_level":"inferred","differentiator":false,'
             '"quality_score":{"score":0,"scale":5,"basis":"未检索到该能力的任何证据","evidence_ids":[]}}'
         )
         out = get_llm().call_json(
@@ -598,7 +733,17 @@ def _feature_tree_call(system_base: str, evidence: list[dict], meta: dict,
     if len(grounded) >= 2 and len(grounded) < len(features_out):
         print(f"[analyzer] 功能矩阵剪枝:移除 {len(features_out) - len(grounded)} 个全无证据维度(全'—'行)")
         features_out = grounded
-    return {"category": focus, "features": features_out}
+    out = {"category": focus, "features": features_out}
+    skill_cfg = feature_tree_skills.domains_for_meta(meta)
+    if skill_cfg:
+        out.update({
+            "category": skill_cfg.get("category") or focus,
+            "source_skill": skill_cfg.get("skill_id"),
+            "feature_tree_skill_version": skill_cfg.get("version"),
+            "generation_mode": skill_cfg.get("generation_mode"),
+            "scoring_rubric": skill_cfg.get("scoring_rubric"),
+        })
+    return out
 
 
 def _normalize_pricing_tiers(facts: dict) -> int:
@@ -635,6 +780,207 @@ def _normalize_pricing_tiers(facts: dict) -> int:
         deduped.sort(key=lambda t: (_month(t) is None, _month(t) if _month(t) is not None else 0))
         prod["tiers"] = deduped
     return removed
+
+
+def _backfill_unknown_pricing_tiers(facts: dict, evidence: list[dict], products: list[str]) -> int:
+    """有 pricing 证据但 LLM 未结构化出 tiers 时,补一个 unknown tier 防整段缺失。
+
+    只引用真实 pricing evidence,不估算价格、不编套餐名；后续 pricing_engine 会把单位成本算成 None。
+    """
+    pm = facts.setdefault("pricing_model", {})
+    pm_products = pm.setdefault("products", [])
+    by_name = {p.get("name"): p for p in pm_products if p.get("name")}
+    pricing_ids_by_product: dict[str, list[str]] = {}
+    for ev in evidence:
+        product = ev.get("product")
+        eid = ev.get("evidence_id")
+        if ev.get("claim_type") == "pricing" and product and eid:
+            pricing_ids_by_product.setdefault(product, []).append(eid)
+
+    filled = 0
+    for product in products:
+        ids = list(dict.fromkeys(pricing_ids_by_product.get(product) or []))[:5]
+        if not ids:
+            continue
+        prod = by_name.get(product)
+        if prod is None:
+            prod = {"name": product, "tiers": []}
+            pm_products.append(prod)
+            by_name[product] = prod
+        if prod.get("tiers"):
+            continue
+        prod["tiers"] = [{
+            "tier_name": "定价信息待结构化",
+            "billing_options": [{
+                "cycle": "monthly",
+                "amount_status": "unknown",
+                "is_promo": False,
+            }],
+            "evidence_ids": ids,
+        }]
+        prod.setdefault("gaps", []).append({
+            "kind": "pricing_tier_unstructured",
+            "field": "pricing_model.products[].tiers",
+            "fix": "已有定价证据但未抽出明确档位/金额,报告中按 unknown 展示并保留证据",
+        })
+        filled += 1
+    return filled
+
+
+def _pricing_text_for_product(product: str, evidence: list[dict]) -> str:
+    chunks = []
+    for ev in evidence:
+        if ev.get("product") != product or ev.get("claim_type") != "pricing":
+            continue
+        chunks.append(ev.get("extracted_snippet") or ev.get("claim") or "")
+    return "\n".join(chunks).lower()
+
+
+def _infer_pricing_structure(product: dict, evidence: list[dict]) -> dict:
+    explicit = product.get("pricing_structure")
+    if isinstance(explicit, dict) and explicit.get("layers"):
+        return explicit
+
+    tiers = product.get("tiers") or []
+    text = _pricing_text_for_product(product.get("name") or product.get("product") or "", evidence)
+
+    def _tier_amount(tier: dict) -> Optional[float]:
+        price = tier.get("price") or {}
+        value = price.get("amount", price.get("normalized_usd_month"))
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    has_free = any(
+        (_tier_amount(t) == 0)
+        or "free" in (t.get("tier_name") or "").lower()
+        or "免费" in (t.get("tier_name") or "")
+        for t in tiers
+    )
+    has_subscription = bool(tiers)
+    has_credits = any(t.get("credit_grant") for t in tiers) or any(
+        word in text for word in ("积分", "灵感值", "credits", "credit pack")
+    )
+    has_usage = any(word in text for word in ("per token", "每百万", "元/秒", "按量", "按时长"))
+    unit = "seat" if any(
+        word in text for word in ("per user", "/user", "seat", "席位", "每用户", "按人")
+    ) else None
+
+    return {"layers": [
+        {"mechanism": "freemium", "present": has_free},
+        {"mechanism": "subscription", "present": has_subscription, "unit": unit},
+        {"mechanism": "credits", "present": has_credits},
+        {"mechanism": "usage", "present": has_usage},
+    ]}
+
+
+def _tier_to_engine_tier(tier: dict) -> dict:
+    out = {
+        "tier_name": tier.get("tier_name") or tier.get("name") or "Unknown",
+        "is_free": tier.get("is_free"),
+        "pricing_mode": tier.get("pricing_mode"),
+        "segment": tier.get("segment"),
+        "credit_grant": tier.get("credit_grant"),
+    }
+    billing_options = tier.get("billing_options")
+    if isinstance(billing_options, list) and billing_options:
+        out["billing_options"] = billing_options
+    else:
+        price = tier.get("price") or {}
+        amount = price.get("amount")
+        if amount is None:
+            amount = price.get("normalized_usd_month")
+        if amount is not None:
+            out["billing_options"] = [{
+                "cycle": tier.get("billing_cycle") or "monthly",
+                "is_promo": bool(tier.get("is_promo")),
+                "price": {
+                    "amount": amount,
+                    "currency": price.get("currency") or "USD",
+                },
+            }]
+        else:
+            out["billing_options"] = []
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def _product_to_engine_input(product: dict, evidence: list[dict]) -> dict:
+    name = product.get("name") or product.get("product") or "Unknown"
+    return {
+        "product": name,
+        "pricing_structure": _infer_pricing_structure(product, evidence),
+        "tiers": [_tier_to_engine_tier(t) for t in (product.get("tiers") or [])],
+        "consumption": product.get("consumption") or [],
+        "promotions": product.get("promotions") or product.get("promotion_rules") or [],
+        "raw_billing_items": product.get("raw_billing_items") or [],
+        "gaps": product.get("gaps") or [],
+    }
+
+
+def _apply_pricing_engine(facts: dict, evidence: list[dict], focus: object = None) -> int:
+    """把 Analyzer 抽到的定价事实接入确定性定价引擎。
+
+    兼容旧 schema:保留 products[].tiers[].price 给 Writer/Reviewer 使用,额外挂
+    products[].pricing_engine 作为统一稀疏 schema 的派生结果。
+    """
+    changed = 0
+    pm = facts.get("pricing_model") or {}
+    for product in pm.get("products") or []:
+        if not product.get("tiers") and not product.get("pricing_structure"):
+            continue
+        engine_input = _product_to_engine_input(product, evidence)
+        product["pricing_engine"] = compute_product(engine_input)
+        changed += 1
+    comparison = {}
+    if changed >= 2:
+        pm["engine_comparison"] = compare_pricing_products(pm.get("products") or [])
+        comparison = pm["engine_comparison"]
+    if changed >= 1:
+        pm["pricing_strategy_analysis"] = build_pricing_strategy_analysis(
+            pm.get("products") or [],
+            comparison,
+            focus,
+        )
+    return changed
+
+
+def _apply_feature_engine(facts: dict, meta: dict) -> int:
+    """把 Analyzer 抽到的功能事实接入确定性功能引擎。
+
+    兼容旧 schema:保留 feature_tree.features 不动;额外挂 feature_tree.tree(三层)
+    与 feature_tree.analysis(派生结果)。
+    """
+    ft = facts.get("feature_tree") or {}
+    flat = ft.get("features") or []
+    if not flat:
+        return 0
+    products = [meta.get("target_product")] + list(meta.get("competitors") or [])
+    products = [p for p in products if p]
+    tree = _build_feature_skeleton(meta, flat)
+    point_by_id = {
+        pt["id"]: pt
+        for domain in tree["domains"]
+        for module in domain["modules"]
+        for pt in module["points"]
+    }
+    for feature in flat:
+        pt = point_by_id.get(feature.get("feature_id"))
+        if pt is None:
+            continue
+        for product, pdata in (feature.get("products") or {}).items():
+            pt["products"][product] = _normalize_leaf(pdata)
+    migration = ((facts.get("user_persona") or {}).get("migration_cost") or {}).get("level")
+    analysis = compute_feature_analysis(
+        tree,
+        products,
+        target=meta.get("target_product") or (products[0] if products else ""),
+        migration_cost=migration,
+    )
+    ft["tree"] = tree
+    ft["analysis"] = analysis
+    facts["feature_tree"] = ft
+    return len(flat)
 
 
 def _facts_section_call(section: str, system_base: str, evidence: list[dict], meta: dict,
@@ -675,7 +1021,12 @@ _DERIV_SECTIONS = {
                        "evidence_confidence 各 1-5 整数, weights 用 {0.35,0.30,0.20,0.15}, "
                        "final_score=各项×权重之和(保留两位小数), priority 为 P0/P1/P2}。\n"
                        "另尽量补齐可落地字段(让 PM 能直接立项):`expected_impact`(预期收益)、"
-                       "`success_metric`(验收指标)、`risk`(主要风险)、`time_horizon`(周期)。无把握的字段可省略,不要编造。",
+                       "`success_metric`(验收指标)、`risk`(主要风险)、`time_horizon`(周期)。无把握的字段可省略,不要编造。\n"
+                       "每条建议还必须含: action_type(learn|avoid|attack), action, target_competitor, "
+                       "evidence_refs(只用真实 evidence_id), priority_score_100(0-100), rationale, risk。"
+                       "注意:为兼容 Reviewer,原 `priority_score` 仍按上面的公式对象输出,不要改成数字。"
+                       "Learn=学对手 winner 强项; Avoid=避开对手高权重且领先的能力域; "
+                       "Attack=切入 whitespace 蓝海。证据不足的建议不要编,宁可少出。",
     "competitor_landscape": "本次任务只输出 `competitor_landscape` 一个顶层字段。把 analysis_meta.competitors "
                             "及你从证据中识别到的相关玩家,按竞争关系分三类:direct(直接竞品)/indirect(间接竞品)/"
                             "alternative(替代方案),每类是数组,元素 {name, relation, reason(为何纳入,一句话), "
@@ -721,6 +1072,146 @@ def _ensure_priority_scores(der: dict) -> int:
                                  "final_score": final, "priority": priority}
         filled += 1
     return filled
+
+
+def _fallback_decision_summary(schema: dict, target: str) -> dict:
+    """从已算出的派生结果拼决策摘要。缺数据时只输出低置信的「证据不足」。"""
+    analysis = (schema.get("feature_tree") or {}).get("analysis") or {}
+    archetype = (analysis.get("archetypes") or {}).get(target)
+    moats = analysis.get("moat_candidates") or []
+    pricing_model = schema.get("pricing_model") or {}
+    price_archetype = next(
+        (
+            (product.get("pricing_engine") or {}).get("archetype")
+            for product in pricing_model.get("products") or []
+            if product.get("name") == target
+        ),
+        None,
+    )
+
+    def refs_of(obj: dict | None) -> list[str]:
+        if not isinstance(obj, dict):
+            return []
+        refs = (
+            obj.get("refs")
+            or obj.get("evidence_refs")
+            or obj.get("evidence_ids")
+            or obj.get("source_refs")
+            or obj.get("support_evidence_ids")
+            or []
+        )
+        return [r for r in refs if isinstance(r, str)][:5]
+
+    def confidence(value: object, default: str = "low") -> str:
+        if value in ("high", "medium", "low"):
+            return str(value)
+        if isinstance(value, (int, float)):
+            if value >= 0.75:
+                return "high"
+            if value >= 0.45:
+                return "medium"
+        return default
+
+    def item(answer: str | None, conf: object = "low", refs: list[str] | None = None) -> dict:
+        clean = answer.strip() if isinstance(answer, str) else ""
+        return {
+            "answer": clean or "证据不足",
+            "confidence": confidence(conf) if clean else "low",
+            "refs": refs or [],
+        }
+
+    def rec_score(rec: dict) -> float:
+        score_100 = rec.get("priority_score_100")
+        if isinstance(score_100, (int, float)):
+            return float(score_100)
+        score = rec.get("priority_score")
+        if isinstance(score, (int, float)):
+            return float(score)
+        if isinstance(score, dict):
+            final = score.get("final_score")
+            if isinstance(final, (int, float)):
+                return float(final) * 20
+        return 0.0
+
+    def best_rec(action_type: str) -> dict | None:
+        recs = [
+            rec for rec in schema.get("recommendations") or []
+            if isinstance(rec, dict) and rec.get("action_type") == action_type
+        ]
+        return max(recs, key=rec_score) if recs else None
+
+    def rec_item(action_type: str, verb: str) -> dict:
+        rec = best_rec(action_type)
+        if not rec:
+            return item(None)
+        action = rec.get("action") or rec.get("title") or rec.get("rationale")
+        competitor = rec.get("target_competitor")
+        if competitor and action:
+            answer = f"{verb}{competitor}: {action}"
+        else:
+            answer = action
+        score = rec_score(rec)
+        conf = "high" if score >= 75 else ("medium" if score >= 50 else "low")
+        return item(answer, conf, refs_of(rec))
+
+    moat = moats[0] if moats and isinstance(moats[0], dict) else {}
+    moat_name = moat.get("name")
+    moat_answer = f"{moat_name} 为护城河候选" if moat_name else None
+    target_label = target or "目标产品"
+
+    # why_success:优先落到 target 真正胜出的能力点(带 chip),而不是只报形态。
+    # refs 从 feature 树叶子里 target 的 support/quality 证据取,经 guard 再对账,不存在的会被清掉。
+    _conf_rank = {"high": 3, "medium": 2, "low": 1}
+    leaf_by_id = {
+        pt.get("id"): pt
+        for dom in ((schema.get("feature_tree") or {}).get("tree") or {}).get("domains") or []
+        for mod in dom.get("modules") or []
+        for pt in mod.get("points") or []
+    }
+    target_wins = sorted(
+        (w for w in analysis.get("winners") or [] if w.get("winner") == target),
+        key=lambda w: _conf_rank.get(w.get("confidence"), 0),
+        reverse=True,
+    )
+    win_names: list[str] = []
+    win_refs: list[str] = []
+    for w in target_wins[:2]:
+        if w.get("name"):
+            win_names.append(w["name"])
+        pdata = (leaf_by_id.get(w.get("feature_id"), {}).get("products") or {}).get(target) or {}
+        for r in (pdata.get("support_evidence_ids") or []) + \
+                ((pdata.get("quality_score") or {}).get("evidence_ids") or []):
+            if isinstance(r, str) and r not in win_refs:
+                win_refs.append(r)
+    if win_names:
+        lead = "、".join(win_names)
+        suffix = f"（{archetype}）" if archetype else ""
+        why_item = item(f"{target_label} 在「{lead}」上建立能力优势{suffix}",
+                        target_wins[0].get("confidence", "low"), win_refs[:5])
+    else:
+        why_item = item(f"{target_label} 形态为{archetype}" if archetype else None, "low")
+
+    # how_monetize:挂上 target 定价档位的证据 chip
+    price_refs: list[str] = []
+    for product in pricing_model.get("products") or []:
+        if product.get("name") != target:
+            continue
+        for tier in product.get("tiers") or []:
+            for r in (tier.get("evidence_ids") or tier.get("source_refs") or []):
+                if isinstance(r, str) and r not in price_refs:
+                    price_refs.append(r)
+
+    return {
+        "why_success": why_item,
+        "how_monetize": item(
+            f"定价范式 {price_archetype}" if price_archetype else None,
+            "medium" if price_archetype else "low",
+            price_refs[:5],
+        ),
+        "moat": item(moat_answer, moat.get("confidence", "low"), refs_of(moat)),
+        "what_to_learn": rec_item("learn", "向"),
+        "what_to_avoid": rec_item("avoid", "避免直接硬拼 "),
+    }
 
 
 def _deriv_section_call(section: str, system_base: str, payload: dict) -> tuple[str, object]:
@@ -796,9 +1287,23 @@ def _step1_facts(evidence: list[dict], meta: dict, analyzer_retry: int = 0,
 
     # 确定性整理定价档位(去重同价档 + 升序),纯本地不调 LLM。
     if "pricing_model" in facts:
+        backfilled = _backfill_unknown_pricing_tiers(facts, evidence, _target_products(meta))
+        if backfilled:
+            print(f"[analyzer] pricing unknown tier backfilled {backfilled} product(s)")
         n = _normalize_pricing_tiers(facts)
         if n:
             print(f"[analyzer] pricing 去重 {n} 个重复档位")
+        enriched = _apply_pricing_engine(facts, evidence, meta.get("analysis_focus"))
+        if enriched:
+            print(f"[analyzer] pricing engine enriched {enriched} product(s)")
+    if "feature_tree" in facts:
+        enriched = _apply_feature_engine(facts, meta)
+        if enriched:
+            print(f"[analyzer] feature engine enriched {enriched} feature(s)")
+    if "user_persona" in facts:
+        fixed = normalize_user_segments(facts["user_persona"])
+        if fixed:
+            print(f"[analyzer] user_segments normalized {fixed} field(s)")
 
     # 拆分后不再走 LLM 重跑(那会退回大调用);引用问题统一用确定性 sanitize(秒级)。
     issues = quick_validate_facts(facts, evidence, meta)
@@ -828,6 +1333,11 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
         if _is_demo_loop() and analyzer_retry == 0:
             print("[analyzer] DEMO_LOOP: 注入 R5/R4 错误到 derivations")
             der = _corrupt_derivations_for_demo(der)
+        if not der.get("decision_summary"):
+            der["decision_summary"] = _fallback_decision_summary(
+                {**facts, **der},
+                target=meta.get("target_product") or "",
+            )
         _emit_progress(step="derivations", phase="done", attempt=1, summary=_der_summary(der), preview=_derivations_preview(der))
         return der
 
@@ -891,6 +1401,11 @@ def _step2_derivations(facts: dict, evidence: list[dict], meta: dict, analyzer_r
     softened = soften_overgeneralization(der)
     if softened:
         print(f"[analyzer] swot 过度泛化措辞收敛 {softened} 处(大量/普遍→部分用户)")
+    if not der.get("decision_summary"):
+        der["decision_summary"] = _fallback_decision_summary(
+            {**facts, **der},
+            target=meta.get("target_product") or "",
+        )
     return der
 
 
@@ -1094,6 +1609,7 @@ def analyzer_node(state: AgentState) -> AgentState:
         print(f"[analyzer] guard: -{guard_rep['dropped_refs']} 幻觉引用, "
               f"降级强对比 {guard_rep['comparison_downgraded']} 条, "
               f"basis 改 unknown {guard_rep['basis_unknowned']} 格, "
+              f"质量 basis 暂不评分 {guard_rep.get('quality_basis_neutralized', 0)} 格, "
               f"软化措辞 {guard_rep['softened']} 处")
         schema_draft["_guard_report"] = guard_rep  # 供 stage_report 观测
     # B2: 记录 per-product fill 尝计数到 schema_draft metadata（供 stage_report 观测）

@@ -20,31 +20,31 @@ const SCENARIOS = [
     domainHint: "ai_coding",
     domain: "AI 编程工具",
     title: "代码补全体验",
-    prompt: "分析 Cursor、Windsurf 和 GitHub Copilot 在代码补全体验上的差距",
+    prompt: "分析 Cursor、Claude Code 和 Trae 在代码补全体验上的差距",
   },
   {
     domainHint: "ai_assistant",
     domain: "AI 对话助手",
     title: "大模型助手对比",
-    prompt: "分析 ChatGPT、Claude 和 Gemini 在通用对话与推理体验上的差距",
+    prompt: "分析 ChatGPT、Gemini 和 DeepSeek 在通用对话与推理体验上的差距",
   },
   {
     domainHint: "ai_video",
     domain: "AI 视频生成",
     title: "文生视频效果",
-    prompt: "分析 Sora、可灵 Kling 和 Runway 在文生视频效果与可控性上的差距",
+    prompt: "分析 Sora、Veo 3 和 即梦 AI 在文生视频效果与可控性上的差距",
   },
   {
     domainHint: "ai_image",
     domain: "AI 图像生成",
     title: "文生图质量",
-    prompt: "分析 Midjourney、Stable Diffusion 和 DALL·E 在图像生成质量与创作体验上的差距",
+    prompt: "分析 Midjourney、Nano Banana 和 即梦 AI 在图像生成质量与创作体验上的差距",
   },
   {
     domainHint: "ai_music",
     domain: "AI 音乐生成",
     title: "AI 作曲体验",
-    prompt: "分析 Suno、Udio 和 Stable Audio 在 AI 音乐生成质量与易用性上的差距",
+    prompt: "分析 Suno、Udio 和 Mureka 在 AI 音乐生成质量与易用性上的差距",
   },
   {
     domainHint: "ai_search",
@@ -56,13 +56,13 @@ const SCENARIOS = [
     domainHint: "pm",
     domain: "项目协作工具",
     title: "团队任务管理",
-    prompt: "分析 Notion、Asana 和 Linear 在团队任务管理体验上的差距",
+    prompt: "分析 Notion、Linear 和 飞书项目 在团队任务管理体验上的差距",
   },
   {
     domainHint: "design",
     domain: "设计协作工具",
     title: "设计协作体验",
-    prompt: "分析 Figma、Sketch 和 Canva 在界面设计协作体验上的差距",
+    prompt: "分析 Figma、Canva 和 即时设计 在界面设计协作体验上的差距",
   },
 ];
 
@@ -397,6 +397,9 @@ export default function AnalyzeFlow({
               const cur = answers[q.key];
               return q.multi ? ((cur as string[]) ?? []).includes(opt) : cur === opt;
             };
+            // 竞品候选含全部产品；当前主体不能做自己的竞品 → 锁定该项(提交时也会被排除)
+            const currentTarget = (answers["target"] as string) ?? "";
+            const isLocked = (opt: string) => q.key === "competitors" && opt === currentTarget;
             const customBox = q.allow_custom && (
               <span className="inline-flex items-center gap-1">
                 <input
@@ -433,14 +436,19 @@ export default function AnalyzeFlow({
                   <>
                     <div className="grid gap-2 sm:grid-cols-2">
                       {opts.map((opt) => {
-                        const on = isOn(opt);
+                        const locked = isLocked(opt);
+                        const on = isOn(opt) && !locked;
                         const hint = q.hints?.[opt];
                         return (
                           <button
                             key={opt}
-                            onClick={() => toggle(q, opt)}
+                            onClick={() => !locked && toggle(q, opt)}
+                            disabled={locked}
+                            title={locked ? "当前已选为目标产品，不能作为自己的竞品" : undefined}
                             className={`rounded-xl border px-3 py-2.5 text-left transition ${
-                              on
+                              locked
+                                ? "cursor-not-allowed border-white/5 bg-white/[0.01] opacity-40"
+                                : on
                                 ? "border-sky-500 bg-sky-500/10"
                                 : "border-white/10 bg-white/[0.02] hover:border-white/30"
                             }`}
@@ -457,9 +465,10 @@ export default function AnalyzeFlow({
                               </span>
                               <span className={`text-sm font-medium ${on ? "text-sky-200" : "text-neutral-200"}`}>
                                 {opt}
+                                {locked && <span className="ml-1.5 text-[11px] text-neutral-500">（当前目标产品）</span>}
                               </span>
                             </div>
-                            {hint && (
+                            {hint && !locked && (
                               <div className="mt-1 pl-6 text-xs leading-relaxed text-neutral-500">{hint}</div>
                             )}
                           </button>

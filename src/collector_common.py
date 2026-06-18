@@ -440,7 +440,9 @@ _PRICE_SIGNAL_WORDS = ("per month", "per user", "per year", "/mo", "/user", "/yr
 def is_pricing_url(url: str) -> bool:
     """定价页 URL 判定(出处规则的单一口径,adapter / 收尾精分类共用)。"""
     u = (url or "").lower()
-    return "pric" in u or "plan" in u
+    return any(token in u for token in (
+        "pric", "plan", "membership", "subscribe", "subscription", "billing", "spirit-unit"
+    ))
 
 
 def infer_claim_type(snippet: str, default: str, price_re) -> str:

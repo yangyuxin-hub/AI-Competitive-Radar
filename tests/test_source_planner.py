@@ -74,5 +74,71 @@ class QueryDisambiguationTest(unittest.TestCase):
         self.assertIn("project management", q)
 
 
+class ChineseCommunityPlanTest(unittest.TestCase):
+    def _plan(self):
+        return sp.plan_sources(
+            product="飞书项目",
+            competitors=["Notion", "Linear", "Todoist"],
+            analysis_focus=["任务全生命周期流转能力"],
+            missing_claim_types=["performance_quality", "user_pain"],
+            domain="pm",
+        )
+
+    def test_chinese_pm_product_prefers_chinese_feedback_sources(self):
+        plan = self._plan()
+        perf_sites = [q["site"] for q in plan if q["claim_type"] == "performance_quality" and q["site"]]
+        pain_sites = [q["site"] for q in plan if q["claim_type"] == "user_pain" and q["site"]]
+
+        for sites in (perf_sites, pain_sites):
+            self.assertIn("zhihu.com", sites)
+            self.assertIn("sspai.com", sites)
+            self.assertIn("v2ex.com", sites)
+            self.assertIn("juejin.cn", sites)
+            self.assertIn("community.feishu.cn", sites)
+
+    def test_chinese_pm_queries_expand_product_aliases(self):
+        plan = self._plan()
+        pinned = [q for q in plan if q["claim_type"] == "performance_quality" and q["site"] == "zhihu.com"]
+        self.assertTrue(pinned)
+        query = pinned[0]["query"]
+
+        self.assertIn("飞书项目", query)
+        self.assertIn("Meego", query)
+        self.assertIn("Lark Project", query)
+        self.assertIn("任务全生命周期流转能力", query)
+        self.assertIn("评测 体验", query)
+
+    def test_chinese_product_uses_chinese_sources_without_domain(self):
+        plan = sp.plan_sources(
+            product="飞书项目",
+            competitors=["Notion", "Linear", "Todoist"],
+            analysis_focus=["任务全生命周期流转能力"],
+            missing_claim_types=["performance_quality"],
+            domain=None,
+        )
+        sites = [q["site"] for q in plan if q["site"]]
+
+        self.assertIn("community.feishu.cn", sites)
+        self.assertIn("zhihu.com", sites)
+        self.assertIn("sspai.com", sites)
+        self.assertNotIn("reddit.com", sites[:3])
+
+    def test_english_feedback_site_uses_english_alias_query(self):
+        q = sp._build_query_for_site(
+            "飞书项目",
+            "任务全生命周期流转能力",
+            "user_pain",
+            "project management",
+            "项目协作工具",
+            "g2.com",
+        )
+
+        self.assertIn("Lark Project", q)
+        self.assertIn("Meego", q)
+        self.assertIn("project management", q)
+        self.assertIn("complaints problems", q)
+        self.assertNotIn("任务全生命周期", q)
+
+
 if __name__ == "__main__":
     unittest.main()

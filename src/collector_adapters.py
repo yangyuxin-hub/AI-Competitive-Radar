@@ -210,7 +210,7 @@ class OfficialPageAdapter(SourceAdapter):
     # 价格 token:符号价($10/￥99/€13.49)+ 无符号货币码价(10 USD / USD 10)。
     # 很多定价页(尤其非美区)不带货币符号,旧版只认 $￥€£ 会整页漏价。
     _PRICE_RE = re.compile(
-        r"[\$￥€£]\s?\d[\d.,]*"
+        r"[\$￥¥€£]\s?\d[\d.,]*"
         r"|\b\d[\d.,]*\s?(?:USD|EUR|GBP|CNY|RMB)\b"
         r"|\b(?:USD|EUR|GBP|CNY|RMB)\s?\d[\d.,]*",
         re.IGNORECASE,
@@ -275,16 +275,33 @@ class OfficialPageAdapter(SourceAdapter):
         except Exception:  # noqa: BLE001 — 提取尽力而为,失败不阻断
             pass
 
-        # 路径 2:内嵌 JSON 里的 price/amount + 货币
+        # 路径 2:内嵌 JSON 里的 price/amount + 货币,或 prices/points/specs 并行数组
         try:
             for sc in soup.find_all("script"):
                 raw = sc.string or sc.get_text() or ""
-                if not raw or ('"price"' not in raw and '"amount"' not in raw and "priceCurrency" not in raw):
+                if not raw or (
+                    '"price"' not in raw and '"amount"' not in raw and '"prices"' not in raw
+                    and "priceCurrency" not in raw
+                ):
                     continue
                 for m in re.finditer(
                     r'"(?:name|tier|plan|title)"\s*:\s*"([^"]{1,40})"[^{}]{0,200}?'
                     r'"(?:price|amount)"\s*:\s*"?(\d[\d.]*)"?', raw):
                     _add(f"{m.group(1)}: ${m.group(2)}")
+                for m in re.finditer(r'"prices"\s*:\s*\[([^\]]{1,1200})\]', raw):
+                    window = raw[max(0, m.start() - 1600): min(len(raw), m.end() + 1600)]
+                    prices = re.findall(r'"([^"]*[\$￥¥€£]\s?\d[\d.,]*[^"]*)"', m.group(1))
+                    points_match = re.search(r'"points"\s*:\s*\[([^\]]{1,1200})\]', window)
+                    specs_match = re.search(r'"specs"\s*:\s*\[([^\]]{1,1600})\]', window)
+                    points = re.findall(r'"([^"]{1,40})"', points_match.group(1)) if points_match else []
+                    specs = re.findall(r'"([^"]{1,80})"', specs_match.group(1)) if specs_match else []
+                    for idx, price in enumerate(prices[:12]):
+                        parts = [f"Pricing option {idx + 1}: {price}"]
+                        if idx < len(points):
+                            parts.append(f"{points[idx]} points")
+                        if idx < len(specs):
+                            parts.append(specs[idx])
+                        _add(" · ".join(parts))
                 if len(snips) >= 12:
                     break
         except Exception:  # noqa: BLE001
@@ -305,7 +322,7 @@ class OfficialPageAdapter(SourceAdapter):
 
         # 判断 URL 类型，决定 claim_type
         url_lower = url.lower()
-        if "pric" in url_lower or "plan" in url_lower:
+        if is_pricing_url(url_lower):
             default_claim_type = "pricing"
         else:
             default_claim_type = "feature_existence"

@@ -31,7 +31,7 @@ def sanitize_schema_evidence_refs(schema: dict, evidence: list[dict]) -> tuple[d
     """Remove evidence IDs that do not exist in the current raw_evidence packet."""
     valid_ids = {e["evidence_id"] for e in evidence if e.get("evidence_id")}
     dropped = 0
-    ref_keys = {"evidence_ids", "support_evidence_ids", "representative_evidence_ids"}
+    ref_keys = {"evidence_ids", "evidence_refs", "support_evidence_ids", "representative_evidence_ids"}
 
     def walk(obj) -> None:
         nonlocal dropped
@@ -79,7 +79,12 @@ def sanitize_derivations(derivations: dict, facts: dict, evidence: list[dict]) -
             item["evidence_ids"] = _keep(item.get("evidence_ids"), valid_ids)
 
     for rec in derivations.get("recommendations") or []:
-        rec["evidence_ids"] = _keep(rec.get("evidence_ids"), valid_ids)
+        rec_refs = list(dict.fromkeys(
+            list(rec.get("evidence_ids") or []) + list(rec.get("evidence_refs") or [])
+        ))
+        kept_refs = _keep(rec_refs, valid_ids)
+        rec["evidence_ids"] = kept_refs
+        rec["evidence_refs"] = kept_refs
         rec["source_feature_ids"] = _keep(rec.get("source_feature_ids"), valid_fids)
         rec["source_pain_ids"] = _keep(rec.get("source_pain_ids"), valid_pids)
         ps = rec.get("priority_score") or {}
@@ -229,11 +234,14 @@ def sanitize_facts_evidence_refs(facts: dict, evidence: list[dict]) -> tuple[dic
 _OVERGEN_SUBS = [
     # 量词 + (可夹少量修饰,如"现有Copilot") + 用户/开发者/反馈 → 部分…
     # {0,10}? 非贪婪且仅匹配中英文(遇标点/空格即止,不跨子句),覆盖"大量现有Copilot用户"这类。
-    (re.compile(r"(?:大量|大批|众多|绝大多数|大多数|多数)([一-鿿A-Za-z]{0,10}?)(用户|开发者|反馈)"),
+    (re.compile(r"(?:大量|大批|众多|绝大多数|大多数|多数)([一-鿿A-Za-z]{0,12}?)(用户|开发者|反馈|创作者|爱好者|从业者)"),
      r"部分\1\2"),
     (re.compile(r"(用户|开发者)普遍"), r"部分\1"),
     (re.compile(r"普遍(反馈|认为|抱怨|遇到|存在|觉得|表示)"), r"部分用户\1"),
     (re.compile(r"广泛(反馈|存在|出现|抱怨|使用)"), r"部分场景\1"),
+    (re.compile(r"多次被提及"), r"有证据提及"),
+    (re.compile(r"多次(反馈|提及|表示)"), r"有证据\1"),
+    (re.compile(r"(?:有)?[0-9一二三四五六七八九十]+条以上[^，。；;,.]*?证据支撑"), r"现有证据支撑"),
 ]
 
 
@@ -301,10 +309,57 @@ def soften_overgeneralization(schema: dict) -> int:
                 soft_field(item, "reason")
     soft_field(landscape, "selection_rationale")
 
-    # ⑤ 改进建议:证据 ≤2 时 rationale / action 收敛
+    # ⑤ 改进建议:建议是决策文本,即使引用数量较多也可能混入不相关证据;量词一律保守收敛。
     for rec in schema.get("recommendations") or []:
-        if len(rec.get("evidence_ids") or []) <= 2:
-            soft_field(rec, "rationale")
-            soft_field(rec, "action")
+        soft_field(rec, "rationale")
+        soft_field(rec, "action")
 
+    return changes
+
+
+_SEG_CODE_RE = re.compile(r"^[A-Za-z]{1,4}\d{1,4}$")
+
+
+def normalize_user_segments(persona: dict) -> int:
+    """确定性修复 user_segments(P0):
+
+    - LLM 常把画像名错塞进 segment_id、name 留空 → writer 渲染成「名字 ?」。
+      把非编码型(不匹配 U001 这类)的 segment_id 回填为 name。
+    - segment_id 统一重排成 U001/U002…(确定性、幂等)。
+    - name 与 description 都为空的纯空壳直接丢弃(否则前端整行渲染成 '?')。
+
+    返回发生的改动数(幂等:已规范化的 persona 再跑返回 0)。
+    """
+    if not isinstance(persona, dict):
+        return 0
+    segs = persona.get("user_segments")
+    if not isinstance(segs, list) or not segs:
+        return 0
+    changes = 0
+    cleaned: list[dict] = []
+    for seg in segs:
+        if not isinstance(seg, dict):
+            changes += 1
+            continue
+        name = (seg.get("name") or "").strip()
+        sid = (seg.get("segment_id") or "").strip()
+        desc = (seg.get("description") or "").strip()
+        # name 缺失但 segment_id 是描述性文本(非 U001 编码) → 视为错位,回填 name
+        if not name and sid and not _SEG_CODE_RE.match(sid):
+            name = sid
+            seg["name"] = name
+            changes += 1
+        # 纯空壳(无 name 无 description) → 丢弃,不让 '?' 进报告
+        if not name and not desc:
+            changes += 1
+            continue
+        cleaned.append(seg)
+    # 重排 segment_id 为 U001..(已正确则不计 change)
+    for i, seg in enumerate(cleaned, start=1):
+        new_id = f"U{i:03d}"
+        if seg.get("segment_id") != new_id:
+            seg["segment_id"] = new_id
+            changes += 1
+    if len(cleaned) != len(segs):
+        persona["user_segments"] = cleaned
     return changes
