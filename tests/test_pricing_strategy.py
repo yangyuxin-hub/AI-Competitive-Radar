@@ -50,8 +50,32 @@ class PricingStrategyAnalysisTest(unittest.TestCase):
         self.assertEqual(len(model["products"]), 2)
         self.assertTrue(any("免费" in lever for lever in model["products"][0]["conversion_levers"]))
         self.assertTrue(any("积分" in lever for lever in model["products"][0]["conversion_levers"]))
-        self.assertTrue(any(s["scenario"] == "稳定短视频产出" for s in value["scenario_baskets"]))
+        self.assertTrue(any(s["scenario"] == "稳定日常使用" for s in value["scenario_baskets"]))
         self.assertTrue(value["caveats"])
+
+    def test_scenario_baskets_are_industry_agnostic_and_focus_driven(self):
+        """场景篮子必须行业泛化:不含任何垂直名词(短视频/首尾帧…),
+        且把 analysis_focus 织进话术。"""
+        engine = compute_product({
+            "product": "X",
+            "pricing_structure": {"layers": [
+                {"mechanism": "freemium", "present": True},
+                {"mechanism": "subscription", "present": True},
+                {"mechanism": "credits", "present": True},
+            ]},
+            "tiers": [{"tier_name": "Pro",
+                       "billing_options": [{"cycle": "monthly", "is_promo": False,
+                                            "price": {"amount": 20, "currency": "USD"}}]}],
+        })
+        products = [{"name": "X", "pricing_engine": engine}]
+        out = build_pricing_strategy_analysis(
+            products, compare_pricing_products(products), focus=["代码补全体验"])
+        baskets = out["value_for_money_analysis"]["scenario_baskets"]
+        blob = str(baskets)
+        for vertical in ("短视频", "首尾帧", "运镜", "商业视频", "图片"):
+            self.assertNotIn(vertical, blob)
+        # focus 提炼后(去「体验」后缀)应织入场景产出话术
+        self.assertIn("代码补全", blob)
 
     def test_outputs_entitlements_monetization_and_cautious_value_claims(self):
         jimeng = compute_product({
@@ -90,7 +114,7 @@ class PricingStrategyAnalysisTest(unittest.TestCase):
         out = build_pricing_strategy_analysis(products, compare_pricing_products(products))
         product = out["pricing_model_analysis"]["products"][0]
         scenario = next(s for s in out["value_for_money_analysis"]["scenario_baskets"]
-                        if s["scenario"] == "稳定短视频产出")
+                        if s["scenario"] == "稳定日常使用")
 
         self.assertIn("entitlement_design", product)
         self.assertIn("monetization_hypothesis", product)

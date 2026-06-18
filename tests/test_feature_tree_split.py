@@ -8,7 +8,7 @@
 import unittest
 
 from src import analyzer
-from src.analyzer import _compute_gap, _feature_tree_call, quick_validate_facts
+from src.analyzer import _apply_feature_engine, _compute_gap, _feature_tree_call, quick_validate_facts
 
 
 META = {
@@ -54,6 +54,49 @@ class _StubLLM:
         return {}
 
 
+class _NoSpineLLM(_StubLLM):
+    """Skill 命中时不应再调用 facts:feature_spine。"""
+
+    def call_json(self, system, payload, label="call", **kw):
+        if label == "facts:feature_spine":
+            raise AssertionError("AI coding skill should provide the feature spine")
+        return super().call_json(system, payload, label=label, **kw)
+
+
+class _NoSkillLLM:
+    """无行业 skill 时模拟 LLM 生成骨架 + 按产品填充。"""
+
+    def __init__(self):
+        self.labels = []
+
+    def call_json(self, system, payload, label="call", **kw):
+        self.labels.append(label)
+        if label == "facts:feature_spine":
+            return {"features": [
+                {"feature_id": "F001", "name": "知识组织"},
+                {"feature_id": "F002", "name": "协作权限"},
+            ]}
+        if label == "facts:feature_fill:Notion":
+            return {"products": {
+                "F001": {"support_status": "supported", "support_evidence_ids": ["SNOTE01"],
+                         "quality_score": {"score": 4, "scale": 5, "basis": "知识组织能力较强",
+                                           "evidence_ids": ["SPERF11"]}},
+                "F002": {"support_status": "supported", "support_evidence_ids": ["SNOTE02"],
+                         "quality_score": {"score": 3, "scale": 5, "basis": "权限能力可用",
+                                           "evidence_ids": ["SPERF12"]}},
+            }}
+        if label == "facts:feature_fill:Coda":
+            return {"products": {
+                "F001": {"support_status": "supported", "support_evidence_ids": ["SCODA01"],
+                         "quality_score": {"score": 3, "scale": 5, "basis": "知识组织能力可用",
+                                           "evidence_ids": ["SPERF21"]}},
+                "F002": {"support_status": "partial", "support_evidence_ids": ["SCODA02"],
+                         "quality_score": {"score": 2, "scale": 5, "basis": "权限能力较弱",
+                                           "evidence_ids": ["SPERF22"]}},
+            }}
+        return {}
+
+
 class FeatureTreeSplitTest(unittest.TestCase):
     def setUp(self):
         self._orig = analyzer.get_llm
@@ -88,6 +131,49 @@ class FeatureTreeSplitTest(unittest.TestCase):
         block = ft["features"][0]["products"]
         self.assertIn("Windsurf", block)
         self.assertEqual(block["Windsurf"]["support_status"], "unknown")
+
+    def test_ai_coding_generation_uses_skill_spine_not_llm_spine(self):
+        analyzer.get_llm = lambda: _NoSpineLLM()
+        ft = _feature_tree_call("SYS", EVIDENCE, META)
+        self.assertEqual(ft["source_skill"], "ai_coding")
+        self.assertEqual(ft["generation_mode"], "skill_llm_hybrid_ready")
+        self.assertEqual(ft["features"][0]["name"], "代码理解")
+        self.assertEqual(len(ft["features"]), 10)
+
+    def test_no_skill_generation_uses_llm_spine_then_dynamic_domains(self):
+        meta = {"target_product": "Notion", "competitors": ["Coda"],
+                "analysis_focus": ["知识库协作效率"], "category": "协作文档"}
+        evidence = [
+            {"evidence_id": "SNOTE01", "claim_type": "feature_existence", "product": "Notion",
+             "claim": "Notion knowledge organization", "extracted_snippet": "knowledge"},
+            {"evidence_id": "SNOTE02", "claim_type": "feature_existence", "product": "Notion",
+             "claim": "Notion permissions", "extracted_snippet": "permissions"},
+            {"evidence_id": "SCODA01", "claim_type": "feature_existence", "product": "Coda",
+             "claim": "Coda docs organization", "extracted_snippet": "docs"},
+            {"evidence_id": "SCODA02", "claim_type": "feature_existence", "product": "Coda",
+             "claim": "Coda permissions", "extracted_snippet": "permissions"},
+            {"evidence_id": "SPERF11", "claim_type": "performance_quality", "product": "Notion",
+             "claim": "Notion organization works well", "extracted_snippet": "well"},
+            {"evidence_id": "SPERF12", "claim_type": "performance_quality", "product": "Notion",
+             "claim": "Notion permissions are usable", "extracted_snippet": "usable"},
+            {"evidence_id": "SPERF21", "claim_type": "performance_quality", "product": "Coda",
+             "claim": "Coda organization works", "extracted_snippet": "works"},
+            {"evidence_id": "SPERF22", "claim_type": "performance_quality", "product": "Coda",
+             "claim": "Coda permissions are limited", "extracted_snippet": "limited"},
+        ]
+        stub = _NoSkillLLM()
+        analyzer.get_llm = lambda: stub
+        ft = _feature_tree_call("SYS", evidence, meta)
+        self.assertIn("facts:feature_spine", stub.labels)
+        self.assertIsNone(ft.get("source_skill"))
+        self.assertEqual([f["name"] for f in ft["features"]], ["知识组织", "协作权限"])
+
+        facts = {"feature_tree": ft}
+        changed = _apply_feature_engine(facts, meta)
+        self.assertEqual(changed, 2)
+        tree = facts["feature_tree"]["tree"]
+        self.assertEqual(tree["feature_weight_version"], "llm_dynamic@unversioned")
+        self.assertEqual([d["name"] for d in tree["domains"]], ["知识组织", "协作权限"])
 
 
 class ComputeGapTest(unittest.TestCase):

@@ -45,6 +45,10 @@ _COMMUNITY_DOMAINS = (
     "ycombinator.com",
     "v2ex.com",
     "g2.com",
+    "zhihu.com",
+    "sspai.com",
+    "juejin.cn",
+    "community.feishu.cn",
 )
 
 # ── 词典/正则 ───────────────────────────────────────────────────────────────

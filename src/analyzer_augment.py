@@ -28,6 +28,11 @@ def _gap_refill_enabled() -> bool:
 def _coverage_gaps(facts: dict, meta: dict, evidence: list[dict]) -> dict:
     """扫描 facts 暴露的缺口:未评分的 (产品×功能) 格子 + 缺失的必需 claim_type。"""
     products = _target_products(meta)
+    # 长尾低权重模块(role≠core 且权重 <阈值,如 工程集成/模型配置/安全权限/协作交付):
+    # 证据稀疏、几乎恒 unknown,合计仅占很小权重。按 skill principle 让它们坦然 unknown,
+    # 不进 unknown_cells → 不触发昂贵的 gap-refill 整轮重算去追根本抓不到的证据。
+    from . import feature_tree_skills
+    long_tail = feature_tree_skills.long_tail_feature_keys(meta)
     unknown_cells: list[tuple[str, str]] = []
     dim_en: dict[str, str] = {}  # 维度中文名 → 英文检索别名(定向补采用英文搜官网/文档,命中更准)
     for feat in (facts.get("feature_tree") or {}).get("features", []):
@@ -36,6 +41,8 @@ def _coverage_gaps(facts: dict, meta: dict, evidence: list[dict]) -> dict:
             continue
         if feat.get("name_en"):
             dim_en[name] = feat["name_en"]
+        if long_tail and (feat.get("feature_id") in long_tail or name in long_tail):
+            continue  # 长尾模块:留在矩阵里展示为 unknown,但不驱动补采
         for p in products:
             d = (feat.get("products") or {}).get(p) or {}
             if (d.get("support_status") or "").lower() == "unknown":

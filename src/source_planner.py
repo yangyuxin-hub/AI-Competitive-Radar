@@ -77,6 +77,14 @@ _CLAIM_KEYWORDS_CN = {
     "user_pain": "吐槽 问题 缺点",
     "market_signal": "用户量 融资 估值 收入 公司状况",
 }
+_FEEDBACK_CLAIMS = {"performance_quality", "user_pain"}
+_CN_FEEDBACK_DOMAINS = {
+    "zhihu.com",
+    "sspai.com",
+    "v2ex.com",
+    "juejin.cn",
+    "community.feishu.cn",
+}
 
 _DOMAINS_YAML = _ROOT / "config" / "domains.yaml"
 _domain_cat_cache: Optional[dict] = None
@@ -101,6 +109,49 @@ def _is_cjk(s: str) -> bool:
     return any("一" <= c <= "鿿" for c in (s or ""))
 
 
+_product_aliases_cache: Optional[dict] = None
+
+
+def _product_aliases_for_query(product: str) -> list[str]:
+    """products.yaml aliases for query expansion.
+
+    search.py also has relevance aliases, but source planning keeps its own
+    reader to avoid importing the search stack while constructing plans.
+    """
+    global _product_aliases_cache
+    if _product_aliases_cache is None:
+        _product_aliases_cache = {}
+        try:
+            cfg = yaml.safe_load(_PRODUCTS_YAML.read_text(encoding="utf-8")) or {}
+            for name, p in (cfg.get("products") or {}).items():
+                vals = [name, *(p.get("aliases") or [])]
+                _product_aliases_cache[name] = list(dict.fromkeys(v for v in vals if v))
+        except Exception:  # noqa: BLE001
+            _product_aliases_cache = {}
+    return list(dict.fromkeys([product, *_product_aliases_cache.get(product, [])]))
+
+
+def _site_domain(site: str) -> str:
+    site = (site or "").strip().lower()
+    if not site:
+        return ""
+    return site.split("/")[0]
+
+
+def _is_cn_feedback_site(site: str) -> bool:
+    d = _site_domain(site)
+    return bool(d) and any(d == s or d.endswith("." + s) for s in _CN_FEEDBACK_DOMAINS)
+
+
+def _alias_expr(aliases: list[str]) -> str:
+    parts = []
+    for a in aliases:
+        if not a:
+            continue
+        parts.append(f'"{a}"' if " " in a else a)
+    return " OR ".join(dict.fromkeys(parts))
+
+
 def _build_query(product: str, focus_kw: str, ct: str, cat_en: str, cat_cn: str) -> str:
     """按产品名语种拼检索词,杜绝中英混搭噪声:
     - 英文产品 → 「产品 + 英文品类 + 英文关键词」(丢中文焦点)
@@ -114,6 +165,47 @@ def _build_query(product: str, focus_kw: str, ct: str, cat_en: str, cat_cn: str)
         parts.append(cat)
     if focus_kw and _is_cjk(focus_kw) == cjk:  # 同语种才加焦点,否则丢弃
         parts.append(focus_kw)
+    if kw:
+        parts.append(kw)
+    return " ".join(p for p in parts if p).strip()
+
+
+def _build_query_for_site(
+    product: str,
+    focus_kw: str,
+    ct: str,
+    cat_en: str,
+    cat_cn: str,
+    site: str = "",
+) -> str:
+    """Build a site-aware query.
+
+    CJK products often have English aliases on English review sites and native
+    names on Chinese communities. Keep the strict relevance gate, but increase
+    recall by searching both the canonical Chinese name and configured aliases.
+    """
+    if not (_is_cjk(product) and ct in _FEEDBACK_CLAIMS):
+        return _build_query(product, focus_kw, ct, cat_en, cat_cn)
+
+    aliases = _product_aliases_for_query(product)
+    site_is_cn = _is_cn_feedback_site(site) or not site
+    if site_is_cn:
+        cat = cat_cn
+        kw = _CLAIM_KEYWORDS_CN.get(ct, "")
+        focus = focus_kw if focus_kw and _is_cjk(focus_kw) else ""
+        name = _alias_expr(aliases)
+    else:
+        en_aliases = [a for a in aliases if not _is_cjk(a)] or [product]
+        cat = cat_en
+        kw = _CLAIM_KEYWORDS.get(ct, "")
+        focus = ""
+        name = _alias_expr(en_aliases)
+
+    parts = [name]
+    if cat:
+        parts.append(cat)
+    if focus:
+        parts.append(focus)
     if kw:
         parts.append(kw)
     return " ".join(p for p in parts if p).strip()
@@ -166,6 +258,39 @@ def _product_official_domains(product: str) -> list[str]:
                                *_discovered_domains.get().get(product, [])]))
 
 
+def _configured_sites_for_claim(
+    category: Optional[str],
+    ct: str,
+    *,
+    product: str = "",
+    include_zh_cn: bool = False,
+) -> list[tuple]:
+    cfg = load_sources_config()
+    out: list[tuple] = []
+
+    def collect(rows: list[dict]) -> None:
+        for r in rows:
+            claim_types = r.get("claim_types")
+            if claim_types and ct not in claim_types:
+                continue
+            if r.get("site"):
+                out.append((r["site"], r.get("source_type", "web_search"), r.get("bias", "third_party")))
+
+    collect((cfg.get("by_product") or {}).get(product or "", []))
+    if include_zh_cn:
+        collect((cfg.get("by_locale") or {}).get("zh_cn", []))
+    collect((cfg.get("by_domain") or {}).get(category or "", []))
+    return out
+
+
+def _domain_sites_for_claim(category: Optional[str], ct: str) -> list[tuple]:
+    """Back-compat wrapper for tests/old call sites."""
+    out: list[tuple] = []
+    for site, st, bias in _configured_sites_for_claim(category, ct):
+        out.append((site, st, bias))
+    return out
+
+
 def _sites_for_claim(product: str, ct: str, by_ct: dict, category: Optional[str] = None) -> list[tuple]:
     """该 claim_type 应优先检索的权威源 (site, source_type, bias)。
     修复:旧实现对所有 claim_type 共用 recs[:N](前几条恰是 feature 的无 site 官网页)
@@ -177,6 +302,13 @@ def _sites_for_claim(product: str, ct: str, by_ct: dict, category: Optional[str]
         if site and site not in seen:
             seen.add(site)
             out.append((site, st, bias))
+
+    # 中文产品的体验/痛点优先走中文社区/内容源,避免中文 query 锁到 Reddit/HN/G2 后低召回。
+    if _is_cjk(product) and ct in _FEEDBACK_CLAIMS:
+        for site, st, bias in _configured_sites_for_claim(
+            category, ct, product=product, include_zh_cn=True
+        ):
+            add(site, st, bias)
 
     # feature/pricing:官网/定价页域名最权威
     if ct in ("feature_existence", "pricing"):
@@ -215,14 +347,17 @@ def _heuristic_plan(product: str, focus: list[str], missing: list[str], recs: li
     by_ct = load_sources_config().get("by_claim_type") or {}
     queries: list[dict] = []
     for ct in missing:
-        base_q = _build_query(product, focus_kw, ct, cat_en, cat_cn)
-        sites = _sites_for_claim(product, ct, by_ct, category=domain)[:max_per_claim]
+        sites = _sites_for_claim(product, ct, by_ct, category=domain)
+        site_limit = max(max_per_claim, 5) if _is_cjk(product) and ct in _FEEDBACK_CLAIMS else max_per_claim
+        sites = sites[:site_limit]
         for site, st, bias in sites:
+            base_q = _build_query_for_site(product, focus_kw, ct, cat_en, cat_cn, site)
             queries.append({
                 "claim_type": ct, "query": base_q, "site": site,
                 "source_type": st, "bias": bias, "why": "权威源定向",
             })
         # 全网兜底一条:相关性门会滤掉离题/农场,补足定向源覆盖不到的角落
+        base_q = _build_query_for_site(product, focus_kw, ct, cat_en, cat_cn, "")
         queries.append({
             "claim_type": ct, "query": base_q, "site": "",
             "source_type": "web_search",

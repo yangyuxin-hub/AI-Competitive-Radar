@@ -116,12 +116,27 @@ def normalized_monthly(billing_option: BillingOption) -> Optional[float]:
     """把一个计费变体归一成「每月价」(原币)。金额未知 → None。"""
     if billing_option.get("amount_status") == "unknown":
         return None
-    price = billing_option.get("price") or {}
-    amount = price.get("amount")
+    # price 容错:LLM 有时把 price 直接给成数字(8.0)而非 {"amount":8.0};
+    # 也兼容旧字段 normalized_usd_month。任一非法形状都退化成 None 而不是抛 AttributeError。
+    price = billing_option.get("price")
+    if isinstance(price, bool):
+        amount = None
+    elif isinstance(price, (int, float)):
+        amount = price
+    elif isinstance(price, dict):
+        amount = price.get("amount")
+        if amount is None:
+            amount = price.get("normalized_usd_month")
+    else:
+        amount = None
     if amount is None:
         return None
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return None
     months = _CYCLE_MONTHS.get(billing_option.get("cycle"), 1)
-    return round(float(amount) / months, 2)
+    return round(amount / months, 2)
 
 
 def regular_monthly_price(tier: PricingTier) -> Optional[float]:

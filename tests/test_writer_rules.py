@@ -2,7 +2,7 @@
 import unittest
 
 from src.reviewer import check_report_chip_traceability, check_report_no_score_leak
-from src.writer import _render_business_model, _render_data_availability, _render_pricing
+from src.writer import _render_data_availability, _render_feature_gaps, _render_pricing
 
 _EV = [{"evidence_id": "S1234ABC"}, {"evidence_id": "SABCDEF1"}]
 
@@ -138,11 +138,29 @@ class PricingEngineRenderTest(unittest.TestCase):
         self.assertIn("不能等同", md)
         self.assertNotIn("未抓到付费档价格数值", md)
 
-        biz = _render_business_model(pricing)
-        self.assertIn("商业模式逻辑", biz)
-        self.assertIn("Freemium + Subscription + Credits", biz)
-        self.assertIn("定价应拆成免费获客", biz)
-        self.assertIn("用免费额度拉新", biz)
+
+class WriterRobustnessTest(unittest.TestCase):
+    def test_numeric_quality_score_does_not_crash(self):
+        feature_tree = {
+            "category": "图像生成质量",
+            "features": [{
+                "feature_id": "F001",
+                "name": "细节还原",
+                "products": {
+                    "Midjourney": {
+                        "support_status": "supported",
+                        "support_evidence_ids": ["S1234ABC"],
+                        "quality_score": 4.0,
+                    }
+                },
+                "gap": {"winner": "Midjourney", "evidence_ids": ["S1234ABC"]},
+            }],
+        }
+
+        md = _render_feature_gaps(feature_tree, _EV)
+
+        self.assertIn("Midjourney", md)
+        self.assertIn("4/5", md)
 
 
 if __name__ == "__main__":

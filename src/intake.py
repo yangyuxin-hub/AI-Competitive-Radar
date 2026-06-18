@@ -209,8 +209,26 @@ def _canonicalize_draft(draft: dict) -> dict:
     for key in ("target_candidates", "competitors_candidates", "competitors_suggested"):
         if draft.get(key):
             draft[key] = _canonicalize_names(draft[key], amap)
-    # target 不应混进竞品候选;竞品候选不含 target
+    # LLM 在"分析 A/B/C"时常把三者都放进 target_candidates,但 UI 的 target 是单选。
+    # 因此除首个目标外,其余用户点名对象必须进入竞品候选和默认建议,否则确认页会只剩额外竞品。
     target = (draft.get("target_candidates") or [""])[0]
+    peer_targets = [
+        t for t in (draft.get("target_candidates") or [])[1:]
+        if target and _norm_key(t) != _norm_key(target)
+    ]
+    if peer_targets:
+        draft["competitors_candidates"] = _dedupe([
+            *peer_targets,
+            *(draft.get("competitors_candidates") or []),
+        ])
+        draft["competitors_suggested"] = _dedupe([
+            *peer_targets,
+            *(draft.get("competitors_suggested") or []),
+        ])
+        hints = draft.setdefault("competitor_hints", {})
+        for p in peer_targets:
+            hints.setdefault(p, "用户点名的对比对象")
+    # target 不应混进竞品候选;竞品候选不含 target
     if target:
         draft["competitors_candidates"] = [
             c for c in (draft.get("competitors_candidates") or []) if _norm_key(c) != _norm_key(target)
@@ -676,8 +694,16 @@ def propose_stream(user_input: str, domain_hint: Optional[str] = None):
 
 def build_questions(draft: dict) -> list[Choice]:
     target_opts = draft.get("target_candidates") or []
-    comp_opts = draft.get("competitors_candidates") or []
-    comp_sug = [c for c in (draft.get("competitors_suggested") or []) if c in comp_opts]
+    # 竞品候选包含全部产品(含被选为 target 的那个)——换主体时不必手动补回原第一个产品。
+    # target 自身不会进 suggested(下方过滤),提交时前端按 target 排除自比(answersToRunArgs)。
+    comp_opts = _dedupe([
+        *(draft.get("competitors_candidates") or []),
+        *target_opts,
+    ])
+    comp_sug = [
+        c for c in (draft.get("competitors_suggested") or [])
+        if c in comp_opts and c not in (target_opts[:1])
+    ]
     focus_opts = draft.get("focus_candidates") or []
     focus_sug = draft.get("focus_suggested") or (focus_opts[0] if focus_opts else "")
     focus_hints = draft.get("focus_hints") or {}

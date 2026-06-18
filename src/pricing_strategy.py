@@ -70,7 +70,7 @@ def _entitlement_design(engine: dict) -> dict:
             if "subscription" in present else []
         ),
         "premium_capabilities": [
-            "高阶模型", "高清输出", "首尾帧/运镜控制", "商用权益", "优先队列"
+            "高阶模型/能力", "更高输出规格", "高级控制选项", "商用权益", "优先队列"
         ],
         "topup_rules": (
             ["积分/灵感值用完后的增购与消耗规则是复购关键"]
@@ -84,14 +84,15 @@ def _entitlement_design(engine: dict) -> dict:
     }
 
 
-def _monetization_hypothesis(engine: dict) -> dict:
+def _monetization_hypothesis(engine: dict, focus: object = None) -> dict:
     present = _present_mechanisms(engine)
+    term = _focus_term(focus)
     if {"freemium", "subscription", "credits"} <= present:
         return {
-            "target_paid_user": "持续生成图片/视频的创作者",
+            "target_paid_user": f"高频使用{term}的专业用户",
             "upsell_path": "免费试用 -> 会员订阅 -> 高额度档位/积分增购",
             "retention_mechanism": "月度额度和会员权益形成持续使用理由",
-            "revenue_expansion": "高频生成通过积分消耗带来二次变现",
+            "revenue_expansion": "高频使用通过积分消耗带来二次变现",
         }
     if {"freemium", "subscription"} <= present:
         return {
@@ -108,7 +109,7 @@ def _monetization_hypothesis(engine: dict) -> dict:
     }
 
 
-def _product_strategy(product: dict) -> dict:
+def _product_strategy(product: dict, focus: object = None) -> dict:
     engine = product.get("pricing_engine") or {}
     return {
         "product": product.get("name") or engine.get("product"),
@@ -116,51 +117,73 @@ def _product_strategy(product: dict) -> dict:
         "comparison_axis": engine.get("comparison_axis", "unknown"),
         "conversion_levers": _conversion_levers(engine),
         "entitlement_design": _entitlement_design(engine),
-        "monetization_hypothesis": _monetization_hypothesis(engine),
+        "monetization_hypothesis": _monetization_hypothesis(engine, focus),
         "business_logic": _business_logic(engine),
     }
 
 
-def _scenario_baskets(comparison: dict) -> list[dict]:
+def _focus_term(focus: object) -> str:
+    """从 analysis_focus 提炼一个简短中性名词,供场景话术复用。
+
+    行业泛化的关键:场景篮子不写死任何垂直名词(短视频/首尾帧…),
+    而是把当前行业的分析焦点织进通用模板。缺省回退「核心功能」。
+    """
+    if isinstance(focus, (list, tuple)):
+        focus = focus[0] if focus else None
+    term = (focus or "").strip()
+    if not term:
+        return "核心功能"
+    # 去掉「体验/能力/效果」等通用后缀,保留可读的品类词;过长则截断。
+    for suffix in ("体验", "能力", "效果", "质量", "支持"):
+        if term.endswith(suffix) and len(term) > len(suffix):
+            term = term[: -len(suffix)]
+            break
+    return term[:12]
+
+
+def _scenario_baskets(comparison: dict, focus: object = None) -> list[dict]:
+    """构建「预算 × 使用强度」四档场景。四档(轻度试用 / 稳定日常 / 重度专业 /
+    团队组织)对任何 SaaS 通用,垂直信息只通过 focus 注入,不硬编码任何行业名词。"""
+    term = _focus_term(focus)
     credit_winner = comparison.get("credit_price_winner") or {}
-    caveat = "需结合生成质量、失败率和高阶功能判断"
+    caveat = "需结合产出质量、失败率和高阶功能综合判断"
     if comparison.get("gaps"):
-        caveat = "当前单位产出口径不一致,不能只看月费或积分单价"
+        caveat = "当前单位产出口径不一致,不能只看月费或单位价格"
     winner = credit_winner.get("product")
     stable_best = (
-        f"{winner}在额度/积分单价口径上更低,但不能等同于同规格视频成本优势"
+        f"{winner}在额度/单位价格口径上更低,但不能等同于同规格产出成本优势"
         if winner else "需补齐同口径消耗率后判断"
     )
     return [
         {
-            "scenario": "轻度尝鲜",
-            "monthly_budget": "0-70 CNY",
-            "expected_outputs": "少量图片/短视频试做",
-            "required_capabilities": ["免费额度", "低水印/无水印", "基础模型可用性"],
-            "decision_basis": "看免费额度、入门会员价、是否带水印和排队限制",
+            "scenario": "轻度试用",
+            "monthly_budget": "免费 ~ 入门档",
+            "expected_outputs": f"少量{term}试用",
+            "required_capabilities": ["免费额度", "入门会员价", "基础能力可用性"],
+            "decision_basis": "看免费额度、入门会员价、是否有功能/用量限制",
             "best_for": "低门槛试用优先,价格差距很小时看免费层体验",
         },
         {
-            "scenario": "稳定短视频产出",
-            "monthly_budget": "100-300 CNY",
-            "expected_outputs": "每月 30-100 条标准短视频",
-            "required_capabilities": ["标准视频消耗率", "月度额度", "生成成功率", "排队/并发"],
-            "decision_basis": "看主力会员每月额度、积分单价、标准视频消耗率",
+            "scenario": "稳定日常使用",
+            "monthly_budget": "主力会员档",
+            "expected_outputs": f"高频{term}日常使用",
+            "required_capabilities": ["月度额度", "主力能力可用性", "稳定性", "响应/并发"],
+            "decision_basis": "看主力会员每月额度、单位价格、稳定性",
             "best_for": stable_best,
         },
         {
-            "scenario": "高质量商业视频",
-            "monthly_budget": "300+ CNY",
-            "expected_outputs": "少量高质量可交付视频",
-            "required_capabilities": ["高阶模型", "高清输出", "首尾帧", "运镜控制", "商用权益"],
-            "decision_basis": "看高阶模型、首尾帧、运镜控制、高清输出、商用权益",
+            "scenario": "重度专业产出",
+            "monthly_budget": "高阶 / 旗舰档",
+            "expected_outputs": f"重度专业{term}产出",
+            "required_capabilities": ["高阶模型/能力", "更高输出规格", "高级控制", "商用权益"],
+            "decision_basis": "看高阶能力、输出规格上限、高级控制与商用权益",
             "best_for": caveat,
         },
         {
-            "scenario": "团队/工作室",
-            "monthly_budget": "按项目/团队预算",
-            "expected_outputs": "批量生成与多人协作",
-            "required_capabilities": ["批量额度", "优先队列", "账号管理", "发票/合同", "稳定性"],
+            "scenario": "团队 / 组织",
+            "monthly_budget": "团队 / 企业档",
+            "expected_outputs": f"批量{term}与多人协作",
+            "required_capabilities": ["批量额度", "优先队列", "账号/权限管理", "发票/合同", "稳定性"],
             "decision_basis": "看批量额度、优先队列、多人协作、发票/账号管理和稳定性",
             "best_for": "若缺少团队权益证据,不建议仅凭个人会员价格下结论",
         },
@@ -203,9 +226,16 @@ def _normalized_cost_table(comparison: dict) -> list[dict]:
     return rows
 
 
-def build_pricing_strategy_analysis(products: list[dict], comparison: dict) -> dict:
-    """构建“商业模式”和“性价比”两页分析结构。"""
-    products_analysis = [_product_strategy(p) for p in products if p.get("pricing_engine")]
+def build_pricing_strategy_analysis(
+    products: list[dict], comparison: dict, focus: object = None
+) -> dict:
+    """构建“商业模式”和“性价比”两页分析结构。
+
+    focus: 当前行业的 analysis_focus,用于把场景话术泛化到任意行业(不硬编码垂直名词)。
+    """
+    products_analysis = [
+        _product_strategy(p, focus) for p in products if p.get("pricing_engine")
+    ]
     return {
         "pricing_model_analysis": {
             "products": products_analysis,
@@ -213,7 +243,7 @@ def build_pricing_strategy_analysis(products: list[dict], comparison: dict) -> d
         },
         "value_for_money_analysis": {
             "normalized_cost_table": _normalized_cost_table(comparison),
-            "scenario_baskets": _scenario_baskets(comparison),
+            "scenario_baskets": _scenario_baskets(comparison, focus),
             "caveats": _expanded_caveats(comparison),
         },
     }

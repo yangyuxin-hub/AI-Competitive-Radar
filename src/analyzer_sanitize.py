@@ -315,3 +315,51 @@ def soften_overgeneralization(schema: dict) -> int:
         soft_field(rec, "action")
 
     return changes
+
+
+_SEG_CODE_RE = re.compile(r"^[A-Za-z]{1,4}\d{1,4}$")
+
+
+def normalize_user_segments(persona: dict) -> int:
+    """确定性修复 user_segments(P0):
+
+    - LLM 常把画像名错塞进 segment_id、name 留空 → writer 渲染成「名字 ?」。
+      把非编码型(不匹配 U001 这类)的 segment_id 回填为 name。
+    - segment_id 统一重排成 U001/U002…(确定性、幂等)。
+    - name 与 description 都为空的纯空壳直接丢弃(否则前端整行渲染成 '?')。
+
+    返回发生的改动数(幂等:已规范化的 persona 再跑返回 0)。
+    """
+    if not isinstance(persona, dict):
+        return 0
+    segs = persona.get("user_segments")
+    if not isinstance(segs, list) or not segs:
+        return 0
+    changes = 0
+    cleaned: list[dict] = []
+    for seg in segs:
+        if not isinstance(seg, dict):
+            changes += 1
+            continue
+        name = (seg.get("name") or "").strip()
+        sid = (seg.get("segment_id") or "").strip()
+        desc = (seg.get("description") or "").strip()
+        # name 缺失但 segment_id 是描述性文本(非 U001 编码) → 视为错位,回填 name
+        if not name and sid and not _SEG_CODE_RE.match(sid):
+            name = sid
+            seg["name"] = name
+            changes += 1
+        # 纯空壳(无 name 无 description) → 丢弃,不让 '?' 进报告
+        if not name and not desc:
+            changes += 1
+            continue
+        cleaned.append(seg)
+    # 重排 segment_id 为 U001..(已正确则不计 change)
+    for i, seg in enumerate(cleaned, start=1):
+        new_id = f"U{i:03d}"
+        if seg.get("segment_id") != new_id:
+            seg["segment_id"] = new_id
+            changes += 1
+    if len(cleaned) != len(segs):
+        persona["user_segments"] = cleaned
+    return changes

@@ -1,5 +1,11 @@
 import unittest
-from src.analyzer import _apply_feature_engine, _build_feature_skeleton, _normalize_leaf
+from src.analyzer import (
+    _apply_feature_engine,
+    _build_feature_skeleton,
+    _compute_gap,
+    _normalize_leaf,
+    _standard_ai_coding_feature_spine,
+)
 
 
 class NormalizeLeafTest(unittest.TestCase):
@@ -40,6 +46,12 @@ class NormalizeLeafTest(unittest.TestCase):
         self.assertEqual(out["depth_score"], 3)
         self.assertEqual(out["source_refs"], ["S7654321"])
 
+    def test_numeric_quality_score_maps_to_depth(self):
+        out = _normalize_leaf({"support_status": "supported",
+                               "support_evidence_ids": ["S1234567"],
+                               "quality_score": 4.0})
+        self.assertEqual(out["depth_score"], 4)
+
     def test_depth_score_without_refs_is_cleared(self):
         out = _normalize_leaf({"support_status": "supported",
                                "support_evidence_ids": [],
@@ -49,6 +61,28 @@ class NormalizeLeafTest(unittest.TestCase):
                                                  "evidence_ids": []}})
         self.assertIsNone(out["depth_score"])
         self.assertEqual(out["source_refs"], [])
+
+
+class GapComputationRobustnessTest(unittest.TestCase):
+    def test_numeric_quality_score_supported_in_gap_computation(self):
+        gap = _compute_gap(
+            "细节还原",
+            {
+                "Midjourney": {
+                    "support_status": "supported",
+                    "support_evidence_ids": ["SAAA1111"],
+                    "quality_score": 4.0,
+                },
+                "Nano Banana": {
+                    "support_status": "supported",
+                    "support_evidence_ids": ["SBBB2222"],
+                    "quality_score": 3.0,
+                },
+            },
+            {"target_product": "Midjourney"},
+        )
+
+        self.assertEqual(gap["winner"], "Midjourney")
 
 
 class SkeletonTest(unittest.TestCase):
@@ -71,6 +105,46 @@ class SkeletonTest(unittest.TestCase):
                 "feature_weight_version": "intake-proposed"}
         tree = _build_feature_skeleton(meta, [{"feature_id": "F001", "name": "x"}])
         self.assertEqual([d["id"] for d in tree["domains"]], ["X"])
+
+    def test_ai_coding_standard_spine_uses_developer_workflow(self):
+        meta = {"analysis_focus": ["代码补全体验"], "target_product": "Cursor",
+                "competitors": ["GitHubCopilot", "Cline"]}
+        spine = _standard_ai_coding_feature_spine(meta)
+        self.assertIsNotNone(spine)
+        self.assertEqual([f["name"] for f in spine[:6]], [
+            "代码理解", "代码生成", "代码修改与重构", "Agent 自动执行", "调试与测试", "上下文管理"
+        ])
+        self.assertEqual(len(spine), 10)
+        self.assertEqual(spine[0]["source_skill"], "ai_coding")
+
+    def test_ai_coding_skeleton_maps_features_to_matching_domains(self):
+        meta = {"analysis_focus": ["代码补全体验"]}
+        flat = [
+            {"feature_id": "F001", "name": "代码理解"},
+            {"feature_id": "F002", "name": "代码生成"},
+            {"feature_id": "F009", "name": "安全权限"},
+        ]
+        tree = _build_feature_skeleton(meta, flat)
+        by_domain = {
+            d["name"]: [pt["name"] for m in d["modules"] for pt in m["points"]]
+            for d in tree["domains"]
+        }
+        self.assertIn("代码理解", by_domain["代码理解"])
+        self.assertIn("代码生成", by_domain["代码生成"])
+        self.assertIn("安全权限", by_domain["安全权限"])
+        self.assertEqual(tree["source_skill"], "ai_coding")
+        self.assertEqual(tree["generation_mode"], "skill_llm_hybrid_ready")
+
+    def test_unknown_focus_uses_dynamic_domains_not_video_default(self):
+        meta = {"analysis_focus": ["知识库协作效率"], "target_product": "Notion",
+                "competitors": ["Coda"]}
+        flat = [
+            {"feature_id": "F001", "name": "知识组织"},
+            {"feature_id": "F002", "name": "协作权限"},
+        ]
+        tree = _build_feature_skeleton(meta, flat)
+        self.assertEqual([d["name"] for d in tree["domains"]], ["知识组织", "协作权限"])
+        self.assertEqual(tree["feature_weight_version"], "llm_dynamic@unversioned")
 
 
 class ApplyFeatureEngineTest(unittest.TestCase):

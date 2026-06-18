@@ -9,6 +9,7 @@ import unittest
 from src import analyzer
 from src.analyzer import (
     _compact_evidence,
+    _fallback_decision_summary,
     _fallback_derivations,
     _fallback_facts,
     _step2_derivations,
@@ -185,6 +186,109 @@ class OvergeneralizationSoftenTest(unittest.TestCase):
         analyzer.soften_overgeneralization(schema)
         self.assertIn("部分用户", schema["swot"]["weaknesses"][0]["point"])   # 1 证据 → 收敛
         self.assertIn("众多用户", schema["swot"]["weaknesses"][1]["point"])   # 3 证据 → 保留
+
+
+class NormalizeUserSegmentsTest(unittest.TestCase):
+    """P0 bug:LLM 常把画像名错塞进 segment_id(name 留空),writer 渲染成 '名字 ?'。
+    确定性 normalize 必须把错位名回填、segment_id 重排 U001.. 、丢弃纯空壳。"""
+
+    def test_misplaced_name_in_segment_id_is_recovered(self):
+        from src.analyzer import normalize_user_segments
+        persona = {"user_segments": [
+            {"segment_id": "U001", "name": "海外创意从业者", "description": "d1",
+             "evidence_ids": ["S1"]},
+            {"segment_id": "国内中文场景电商创作者", "description": "d2",   # 名字错塞进 id
+             "evidence_ids": ["S2"]},
+        ]}
+        n = normalize_user_segments(persona)
+        self.assertGreater(n, 0)
+        segs = persona["user_segments"]
+        self.assertEqual(segs[1]["name"], "国内中文场景电商创作者")  # 回填
+        self.assertEqual([s["segment_id"] for s in segs], ["U001", "U002"])  # 重排
+        # 没有任何 name 渲染成 '?' 的隐患
+        self.assertTrue(all((s.get("name") or "").strip() for s in segs))
+
+    def test_empty_shell_segment_dropped(self):
+        from src.analyzer import normalize_user_segments
+        persona = {"user_segments": [
+            {"segment_id": "U001", "name": "真实分群", "description": "d"},
+            {"segment_id": "U002"},   # 无 name 无 description → 空壳
+            {"name": "  ", "description": ""},  # 全空白 → 空壳
+        ]}
+        normalize_user_segments(persona)
+        segs = persona["user_segments"]
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(segs[0]["name"], "真实分群")
+
+    def test_idempotent(self):
+        from src.analyzer import normalize_user_segments
+        persona = {"user_segments": [
+            {"segment_id": "海报创作者", "description": "d2", "evidence_ids": ["S2"]},
+        ]}
+        normalize_user_segments(persona)
+        n2 = normalize_user_segments(persona)
+        self.assertEqual(n2, 0)  # 第二遍零改动
+        self.assertEqual(persona["user_segments"][0]["segment_id"], "U001")
+        self.assertEqual(persona["user_segments"][0]["name"], "海报创作者")
+
+    def test_empty_persona_safe(self):
+        from src.analyzer import normalize_user_segments
+        self.assertEqual(normalize_user_segments({}), 0)
+        self.assertEqual(normalize_user_segments({"user_segments": []}), 0)
+
+
+class FallbackDecisionSummaryGroundingTest(unittest.TestCase):
+    """P0:why_success / how_monetize 之前 refs 恒空(无 chip,显得没证据),
+    且文案泛化('形态为全能型')。增强后须从 feature winners / pricing tiers 挂上 refs,
+    并把 target 胜出的能力点写进结论。"""
+
+    def _schema(self):
+        return {
+            "feature_tree": {
+                "tree": {"domains": [{"modules": [{"points": [
+                    {"id": "F001", "name": "艺术质感",
+                     "products": {"Midjourney": {
+                         "support_status": "supported", "depth_score": 5,
+                         "support_evidence_ids": ["SWIN0001"],
+                         "quality_score": {"evidence_ids": ["SWIN0002"]}}}},
+                ]}]}]},
+                "analysis": {
+                    "archetypes": {"Midjourney": "全能型"},
+                    "moat_candidates": [],
+                    "winners": [
+                        {"feature_id": "F001", "name": "艺术质感",
+                         "winner": "Midjourney", "confidence": "high"},
+                    ],
+                },
+            },
+            "pricing_model": {"products": [{
+                "name": "Midjourney",
+                "pricing_engine": {"archetype": "Subscription"},
+                "tiers": [{"tier_name": "Basic", "evidence_ids": ["SPRC0001"]}],
+            }]},
+            "recommendations": [],
+        }
+
+    def test_why_success_grounded_in_winning_feature(self):
+        ds = _fallback_decision_summary(self._schema(), target="Midjourney")
+        why = ds["why_success"]
+        self.assertIn("艺术质感", why["answer"])       # 写进胜出能力点
+        self.assertTrue(why["refs"])                    # 有 chip
+        self.assertTrue(set(why["refs"]) & {"SWIN0001", "SWIN0002"})
+        self.assertEqual(why["confidence"], "high")     # 跟随 winner 置信度
+
+    def test_how_monetize_carries_pricing_refs(self):
+        ds = _fallback_decision_summary(self._schema(), target="Midjourney")
+        hm = ds["how_monetize"]
+        self.assertIn("Subscription", hm["answer"])
+        self.assertIn("SPRC0001", hm["refs"])
+
+    def test_no_winner_falls_back_to_archetype_low(self):
+        schema = self._schema()
+        schema["feature_tree"]["analysis"]["winners"] = []  # target 无胜出
+        ds = _fallback_decision_summary(schema, target="Midjourney")
+        self.assertIn("全能型", ds["why_success"]["answer"])
+        self.assertEqual(ds["why_success"]["confidence"], "low")
 
 
 class FallbackDerivationsTest(unittest.TestCase):

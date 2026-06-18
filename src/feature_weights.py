@@ -48,6 +48,10 @@ def version() -> str:
     return str(v) if v else "unversioned"
 
 
+def has_focus(focus: str) -> bool:
+    return str(focus or "") in ((_cfg().get("focuses") or {}).keys())
+
+
 def _normalize(doms: list[dict]) -> list[dict]:
     out = []
     for d in doms or []:

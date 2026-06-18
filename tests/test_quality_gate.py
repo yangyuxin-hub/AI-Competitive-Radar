@@ -81,6 +81,19 @@ class HardGateTest(unittest.TestCase):
         self.assertEqual(len(gaps), 1)
         self.assertEqual(gaps[0]["gap_type"], "community_low_quality")
 
+    def test_chinese_feedback_domains_count_as_community(self):
+        for url in (
+            "https://www.zhihu.com/question/1",
+            "https://sspai.com/post/1",
+            "https://juejin.cn/post/1",
+            "https://community.feishu.cn/thread/1",
+        ):
+            self.assertTrue(is_community_evidence({
+                "source_type": "web_search",
+                "source_bias": "third_party",
+                "source_url": url,
+            }), url)
+
     def test_high_quality_community_passes(self):
         ev = [{
             "product": "Kling", "claim_type": "performance_quality",

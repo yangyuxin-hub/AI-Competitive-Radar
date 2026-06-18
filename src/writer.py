@@ -208,28 +208,46 @@ def _render_header(meta: dict, target: str, competitors: list[str], focus: list[
     )
 
 
-_DECISION_QUESTIONS = [
-    ("why_success", "为什么成功"),
-    ("how_monetize", "靠什么赚钱"),
-    ("moat", "护城河是什么"),
-    ("what_to_learn", "我们该学什么"),
-    ("what_to_avoid", "我们该避开什么"),
-]
 _CONF_CN = {"high": "高", "medium": "中", "low": "低"}
+_SEG_CODE_RE = re.compile(r"^[A-Za-z]{1,4}\d{1,4}$")
 
 
 def _render_decision_summary(schema: dict, meta: dict) -> str:
     ds = schema.get("decision_summary") or {}
-    lines = ["## 决策摘要", "", "> 只读一页:5 个终极问题,每条结论标注置信度。", ""]
-    for key, label in _DECISION_QUESTIONS:
+    lines = ["## 决策摘要", "", "> 结论优先:先回答怎么选、为什么、下一步做什么；证据不足时不硬做护城河/蓝海判断。", ""]
+    conclusion_items = [
+        ("why_success", "关键判断"),
+        ("how_monetize", "定价/变现判断"),
+    ]
+    moat = ds.get("moat") or {}
+    if moat.get("answer") and moat.get("confidence") == "high":
+        conclusion_items.append(("moat", "高置信护城河判断"))
+
+    wrote = False
+    for key, label in conclusion_items:
         item = ds.get(key) or {}
         answer = item.get("answer")
         if not answer:
-            lines.append(f"- **{label}？** 证据不足（置信度低）")
             continue
         conf = _CONF_CN.get(item.get("confidence", "low"), "低")
         chips = cite(item.get("refs") or [])
-        lines.append(f"- **{label}？** {answer}（置信度{conf}）{chips}")
+        lines.append(f"- **{label}**: {answer}（置信度{conf}）{chips}")
+        wrote = True
+
+    if not wrote:
+        lines.append("- **关键判断**: 当前证据不足，暂不做强弱和护城河判断。")
+
+    lines += ["", "### 推荐", ""]
+    for key, label in (("what_to_learn", "可以学习"), ("what_to_avoid", "需要避开")):
+        item = ds.get(key) or {}
+        answer = item.get("answer")
+        if not answer:
+            continue
+        conf = _CONF_CN.get(item.get("confidence", "low"), "低")
+        chips = cite(item.get("refs") or [])
+        lines.append(f"- **{label}**: {answer}（置信度{conf}）{chips}")
+    if len(lines) <= 8:
+        lines.append("- 证据不足，建议先补真实用户反馈、性能评测和企业采购信息。")
     return "\n".join(lines)
 
 
@@ -263,25 +281,6 @@ def _render_tech_capability(schema: dict, products: list[str], meta: dict) -> st
     return "\n".join(lines)
 
 
-def _render_business_model(pricing_model: dict) -> str:
-    lines = ["## 商业模式逻辑", "", "> 承接定价事实,落到『靠什么赚钱、为什么这么设计』的判断。", ""]
-    for prod in pricing_model.get("products") or []:
-        engine = prod.get("pricing_engine") or {}
-        archetype = engine.get("archetype")
-        if archetype:
-            lines.append(f"- **{prod.get('name')}**：定价范式 `{archetype}`")
-    model_analysis = (
-        (pricing_model.get("pricing_strategy_analysis") or {})
-        .get("pricing_model_analysis") or {}
-    )
-    if model_analysis.get("summary"):
-        lines += ["", model_analysis["summary"]]
-    for product in model_analysis.get("products") or []:
-        if product.get("business_logic"):
-            lines.append(f"- **{product.get('product')}**：{product['business_logic']}")
-    return "\n".join(lines)
-
-
 def _render_feature_coverage(feature_tree: dict, products: list[str]) -> str:
     analysis = feature_tree.get("analysis") or {}
     coverage = analysis.get("coverage") or {}
@@ -310,40 +309,6 @@ def _render_feature_coverage(feature_tree: dict, products: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _render_feature_insights(feature_tree: dict, target: str) -> str:
-    analysis = feature_tree.get("analysis") or {}
-    lines = ["## 功能定位 + 护城河 + 蓝海", "", "### 产品形态", ""]
-    archetypes = analysis.get("archetypes") or {}
-    if archetypes:
-        for product, archetype in archetypes.items():
-            lines.append(f"- {product}：{archetype}")
-    else:
-        lines.append("- 证据不足")
-    lines += ["", "### 护城河候选（公式：高权重 × 高深度 × 样本内差异点 × 难复制因素）", ""]
-    moats = analysis.get("moat_candidates") or []
-    if moats:
-        for moat in moats:
-            conf = _CONF_CN.get(moat.get("confidence", "low"), "低")
-            factors = "、".join(moat.get("factors") or []) or "（缺难复制因素，需人工确认）"
-            lines.append(
-                f"- {moat.get('name')}（{moat.get('domain')}，深度{moat.get('depth_score')}，"
-                f"置信度{conf}）：{factors}"
-            )
-    else:
-        lines.append(f"- {target or '目标产品'} 暂无满足公式的护城河候选")
-    lines += ["", "### 蓝海机会（公式：高权重需求 × 覆盖不足 × 门槛高）", ""]
-    whitespace = analysis.get("whitespace") or []
-    if whitespace:
-        for item in whitespace:
-            lines.append(
-                f"- {item.get('name')}（{item.get('domain')}）："
-                f"{item.get('reason')}；门槛——{item.get('barrier')}"
-            )
-    else:
-        lines.append("- 暂无满足公式的蓝海机会")
-    return "\n".join(lines)
-
-
 def _render_caliber_lock(schema: dict, meta: dict) -> str:
     feature_analysis = ((schema.get("feature_tree") or {}).get("analysis") or {})
     feature_weight_version = feature_analysis.get("feature_weight_version", "unversioned")
@@ -367,12 +332,20 @@ def _products(meta: dict) -> list[str]:
     return [p for p in [meta.get("target_product"), *list(meta.get("competitors") or [])] if p]
 
 
+def _quality_score_obj(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (int, float)):
+        return {"score": value, "scale": 5, "evidence_ids": []}
+    return {}
+
+
 def _score_cell(pdata: dict) -> Optional[float]:
     """返回该产品在某功能上的"真实"质量分;证据不足→ None(渲染为「未评分」)。
     约定:score 0 一律视为「未评分」——0-5 质量分上的 0 从不是「真打了 0 分」,
     而是 Analyzer 对「证据不足」的占位(见 prompts/analyzer_facts 约定)。
     None 不计入对比/均分,避免把"没数据"误当成"真实 0 分/打平"。"""
-    qs = pdata.get("quality_score") or {}
+    qs = _quality_score_obj(pdata.get("quality_score"))
     if (pdata.get("support_status") or "").lower() == "unknown":
         return None
     try:
@@ -624,7 +597,8 @@ def _render_score_overview(feature_tree: dict, products: list[str], evidence: Op
                 score_cells.append(f"{product}: 未评分")
             status = (pdata.get("support_status") or "unknown").lower()
             status_cells.append(f"{product}: {_STATUS_LABELS.get(status, status)}")
-            ev_ids = (pdata.get("support_evidence_ids") or []) + ((pdata.get("quality_score") or {}).get("evidence_ids") or [])
+            qs = _quality_score_obj(pdata.get("quality_score"))
+            ev_ids = (pdata.get("support_evidence_ids") or []) + (qs.get("evidence_ids") or [])
             grade_cells.append(f"{product}: {_evidence_grade(ev_ids, evidence)}")
         gap = feat.get("gap") or {}
         winner = gap.get("winner")
@@ -704,7 +678,7 @@ def _render_feature_gaps(feature_tree: dict, evidence: Optional[list[dict]] = No
             for pname, pdata in products.items():
                 status = pdata.get("support_status", "unknown")
                 icon = _SUPPORT_ICONS.get(status, "❓")
-                qs = pdata.get("quality_score") or {}
+                qs = _quality_score_obj(pdata.get("quality_score"))
                 scale = qs.get("scale", 5)
                 cell = _score_cell(pdata)
                 quality = f"{cell:.0f}/{scale}" if cell is not None else "未评分"
@@ -715,9 +689,10 @@ def _render_feature_gaps(feature_tree: dict, evidence: Optional[list[dict]] = No
 
             # quality basis(各产品一句话)
             for pname, pdata in products.items():
-                basis = (pdata.get("quality_score") or {}).get("basis")
+                qs = _quality_score_obj(pdata.get("quality_score"))
+                basis = qs.get("basis")
                 if basis:
-                    qs_ev = cite((pdata.get("quality_score") or {}).get("evidence_ids") or [])
+                    qs_ev = cite(qs.get("evidence_ids") or [])
                     lines.append(f"- **{pname}**:{basis} {qs_ev}")
             lines.append("")
     return "\n".join(lines)
@@ -952,9 +927,14 @@ def _render_personas(user_persona: dict, evidence: Optional[list[dict]] = None) 
     segs = user_persona.get("user_segments") or []
     if segs:
         lines.append("### 用户分群\n")
-        for u in segs:
-            uid = u.get("segment_id", "?")
-            name = u.get("name", "?")
+        for idx, u in enumerate(segs, start=1):
+            uid = u.get("segment_id") or ""
+            name = (u.get("name") or "").strip()
+            # 防御:LLM 偶把画像名错塞进 segment_id、name 留空 → 别渲染成「名字 ?」
+            if not name and uid and not _SEG_CODE_RE.match(uid):
+                name, uid = uid, ""
+            if not _SEG_CODE_RE.match(uid):
+                uid = f"U{idx:03d}"
             desc = u.get("description", "")
             ev = cite(u.get("evidence_ids") or [])
             lines.append(f"- **{uid} {name}** — {desc} {ev}")
@@ -1125,7 +1105,9 @@ def _render_recommendations(recs: list[dict], schema: Optional[dict] = None) -> 
     by_type = {key: [] for key, _ in _ACTION_BLOCKS}
     other = []
     for r in recs:
-        action_type = r.get("action_type")
+        # action_type 大小写不敏感归一:analyzer 产出 Learn/Avoid/Attack(首字母大写),
+        # _ACTION_BLOCKS 的 key 为小写,直接比对会全部 fallthrough 到「其它建议」。
+        action_type = (r.get("action_type") or "").strip().lower()
         if action_type in by_type:
             by_type[action_type].append(r)
         else:
@@ -1143,9 +1125,11 @@ def _render_recommendations(recs: list[dict], schema: Optional[dict] = None) -> 
             continue
         for item in items:
             chips = cite(item.get("evidence_refs") or item.get("evidence_ids") or [])
+            tc = item.get("target_competitor")
+            tc_text = "、".join(str(x) for x in tc) if isinstance(tc, (list, tuple)) else (tc or "—")
             lines.append(
                 f"- **{item.get('action', '')}**（优先级 {_priority_value(item)}，"
-                f"对标 {item.get('target_competitor', '—')}）{chips}"
+                f"对标 {tc_text}）{chips}"
             )
             if item.get("rationale"):
                 lines.append(f"  - 依据：{item['rationale']}")
@@ -1227,26 +1211,27 @@ def writer_node(state: AgentState) -> AgentState:
             competitors=list(meta.get("competitors") or []),
             focus=list(meta.get("analysis_focus") or []),
         ),
-        _render_decision_summary(schema, meta),
-        # 事实层 FACTS
-        _render_competitor_landscape(schema.get("competitor_landscape") or {}),
-        _render_score_overview(feature_tree, products, evidence),
-        _render_pricing(pricing_model, feature_tree, products),
-        _render_personas(schema.get("user_persona") or {}, evidence),
-        _render_tech_capability(schema, products, meta),
-        # 比较层 COMPARISON
-        _render_positioning_map(schema.get("positioning_map") or {}),
-        _render_feature_coverage(feature_tree, products),
-        # 洞察层 INSIGHTS
-        _render_feature_insights(feature_tree, target),
-        _render_business_model(pricing_model),
-        _render_swot(schema.get("swot") or {}),
-        # 决策层 DECISIONS
-        _render_recommendations(schema.get("recommendations") or [], schema),
-        # 支撑 APPENDIX
+        # 证据与生成概览
         _render_data_availability(quality_audit),
         _render_evidence_coverage(evidence),
+        _render_decision_summary(schema, meta),
+        # 产品定位对比
+        _render_positioning_map(schema.get("positioning_map") or {}),
+        _render_competitor_landscape(schema.get("competitor_landscape") or {}),
+        # 功能矩阵与权重评分
+        _render_score_overview(feature_tree, products, evidence),
+        _render_feature_coverage(feature_tree, products),
+        # 定价模型与性价比
+        _render_pricing(pricing_model, feature_tree, products),
+        # 用户画像与使用场景
+        _render_personas(schema.get("user_persona") or {}, evidence),
+        # 机会点 / 风险 / 战略建议
+        _render_recommendations(schema.get("recommendations") or [], schema),
+        # SWOT 独立栏目
+        _render_swot(schema.get("swot") or {}),
+        # 详细附录
         _render_uncertainty(evidence, schema),
+        _render_tech_capability(schema, products, meta),
         _render_caliber_lock(schema, meta),
     ]
     sections = _renumber_sections(sections)

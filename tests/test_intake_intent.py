@@ -57,5 +57,53 @@ class IntentFocusAlignmentTest(unittest.TestCase):
         self.assertNotIn(out.get("focus_suggested"), intake._PAIN_FOCUS)
 
 
+class IntakeCandidateNormalizationTest(unittest.TestCase):
+    def test_non_primary_target_candidates_become_competitor_options(self):
+        draft = intake._canonicalize_draft({
+            "target_candidates": ["Midjourney", "Nano Banana", "即梦AI"],
+            "competitors_candidates": ["通义万相", "Luma Dream Machine"],
+            "competitors_suggested": ["通义万相"],
+            "competitor_hints": {"通义万相": "大厂生态"},
+        })
+        self.assertEqual(draft["target_candidates"], ["Midjourney", "Nano Banana", "即梦AI"])
+        self.assertIn("Nano Banana", draft["competitors_candidates"])
+        self.assertIn("即梦AI", draft["competitors_candidates"])
+        self.assertNotIn("Midjourney", draft["competitors_candidates"])
+        self.assertEqual(draft["competitors_suggested"][:2], ["Nano Banana", "即梦AI"])
+        self.assertEqual(draft["competitor_hints"]["Nano Banana"], "用户点名的对比对象")
+
+    def test_build_questions_shows_named_peers_in_competitor_question(self):
+        draft = intake._canonicalize_draft({
+            "target_candidates": ["Midjourney", "Nano Banana", "即梦AI"],
+            "competitors_candidates": ["通义万相", "Luma Dream Machine"],
+            "competitors_suggested": ["通义万相"],
+            "focus_candidates": ["生成图像画质细节与审美"],
+            "focus_suggested": "生成图像画质细节与审美",
+            "purpose_candidates": ["竞品选型"],
+            "purpose_suggested": "竞品选型",
+        })
+        questions = intake.build_questions(draft)
+        comp_q = next(q for q in questions if q.key == "competitors")
+        self.assertIn("Nano Banana", comp_q.options)
+        self.assertIn("即梦AI", comp_q.options)
+        self.assertIn("Nano Banana", comp_q.suggested)
+        self.assertIn("即梦AI", comp_q.suggested)
+
+    def test_competitor_options_include_primary_target_but_not_suggested(self):
+        """换主体时不用手动补回第一个产品:竞品候选含全部产品(含默认 target),
+        但默认 target 不预勾选(自己不能做自己的竞品)。"""
+        draft = intake._canonicalize_draft({
+            "target_candidates": ["Cursor", "ClaudeCode", "Trae"],
+            "competitors_candidates": ["ClaudeCode", "Trae", "GitHubCopilot"],
+            "competitors_suggested": ["ClaudeCode", "Trae"],
+        })
+        comp_q = next(q for q in intake.build_questions(draft) if q.key == "competitors")
+        self.assertIn("Cursor", comp_q.options)          # 默认 target 也在候选里
+        self.assertNotIn("Cursor", comp_q.suggested)     # 但不预勾选
+        # 全部产品都能作为竞品候选出现
+        for p in ("Cursor", "ClaudeCode", "Trae"):
+            self.assertIn(p, comp_q.options)
+
+
 if __name__ == "__main__":
     unittest.main()

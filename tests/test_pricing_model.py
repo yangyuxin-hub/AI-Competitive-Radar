@@ -30,6 +30,21 @@ class NormalizedMonthlyTest(unittest.TestCase):
         opt = {"cycle": "yearly", "amount_status": "unknown"}
         self.assertIsNone(normalized_monthly(opt))
 
+    def test_price_as_bare_number(self):
+        # LLM 有时把 price 直接给成数字而非 {"amount": ...},不应崩溃(实测 Notion/Asana/Linear)
+        self.assertEqual(normalized_monthly({"cycle": "monthly", "price": 8}), 8.0)
+        self.assertAlmostEqual(normalized_monthly({"cycle": "yearly", "price": 96}), 8.0, places=2)
+
+    def test_price_normalized_usd_month_fallback(self):
+        opt = {"cycle": "monthly", "price": {"normalized_usd_month": 20}}
+        self.assertEqual(normalized_monthly(opt), 20.0)
+
+    def test_price_malformed_shapes_return_none(self):
+        self.assertIsNone(normalized_monthly({"cycle": "monthly", "price": "free"}))
+        self.assertIsNone(normalized_monthly({"cycle": "monthly", "price": True}))
+        self.assertIsNone(normalized_monthly({"cycle": "monthly", "price": None}))
+        self.assertIsNone(normalized_monthly({"cycle": "monthly"}))
+
 
 class PricePerCreditTest(unittest.TestCase):
     def test_uses_regular_monthly(self):

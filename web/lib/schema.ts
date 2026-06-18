@@ -32,9 +32,62 @@ export interface Feature {
   gap?: FeatureGap;
 }
 
+export interface CoverageDomain {
+  id: string;
+  name: string;
+  weight: number;
+  score: number | null;
+  evidence_rate: number;
+  known: number;
+  total: number;
+}
+
+export interface CoverageInfo {
+  coverage_known_only?: number | null;
+  evidence_coverage_rate?: number | null;
+  by_domain?: CoverageDomain[];
+}
+
+export interface WinnerRow {
+  feature_id?: string;
+  name: string;
+  winner: string;
+  reason?: string;
+  confidence?: string;
+}
+
+export interface MoatCandidate {
+  name: string;
+  domain?: string;
+  depth_score?: number;
+  confidence?: string;
+  factors?: string[];
+}
+
+export interface WhitespaceItem {
+  name: string;
+  domain?: string;
+  reason?: string;
+  barrier?: string;
+}
+
+export interface FeatureAnalysis {
+  coverage?: Record<string, CoverageInfo>;
+  winners?: WinnerRow[];
+  differentiation_matrix?: { note?: string }[];
+  archetypes?: Record<string, string>;
+  moat_candidates?: MoatCandidate[];
+  whitespace?: WhitespaceItem[];
+}
+
 export interface FeatureTree {
   category: string;
   features: Feature[];
+  analysis?: FeatureAnalysis;
+  source_skill?: string;
+  feature_tree_skill_version?: string;
+  generation_mode?: string;
+  scoring_rubric?: Record<string, string>;
 }
 
 export interface PricingTier {
@@ -50,6 +103,12 @@ export interface PricingTier {
 export interface PricingProduct {
   name: string;
   tiers: PricingTier[];
+  pricing_engine?: { archetype?: string; comparison_axis?: string };
+}
+
+export interface PricingStrategyProduct {
+  product?: string;
+  business_logic?: string;
 }
 
 export interface PricingModel {
@@ -59,6 +118,13 @@ export interface PricingModel {
     summary?: string;
     evidence_ids?: string[];
     confidence?: number;
+  };
+  engine_comparison?: {
+    insights?: string[];
+    gaps?: { note?: string }[];
+  };
+  pricing_strategy_analysis?: {
+    pricing_model_analysis?: { summary?: string; products?: PricingStrategyProduct[] };
   };
 }
 
@@ -110,9 +176,13 @@ export interface PriorityScore {
   evidence_confidence?: number;
 }
 
+export type ActionType = "Learn" | "Avoid" | "Attack";
+
 export interface Recommendation {
   rec_id: string;
   action: string;
+  action_type?: ActionType | string;
+  target_competitor?: string | string[];
   rationale?: string;
   expected_impact?: string;
   success_metric?: string;
@@ -122,7 +192,45 @@ export interface Recommendation {
   source_feature_ids?: string[];
   source_pain_ids?: string[];
   evidence_ids?: string[];
+  evidence_refs?: string[];
   priority_score?: PriorityScore;
+}
+
+export interface DecisionAnswer {
+  answer?: string;
+  confidence?: "high" | "medium" | "low" | string;
+  refs?: string[];
+}
+
+export interface DecisionSummary {
+  why_success?: DecisionAnswer;
+  how_monetize?: DecisionAnswer;
+  moat?: DecisionAnswer;
+  what_to_learn?: DecisionAnswer;
+  what_to_avoid?: DecisionAnswer;
+}
+
+export interface LandscapeEntry {
+  name: string;
+  reason?: string;
+  relation?: string;
+  evidence_ids?: string[];
+}
+
+export interface CompetitorLandscape {
+  direct?: LandscapeEntry[];
+  indirect?: LandscapeEntry[];
+  alternative?: LandscapeEntry[];
+  selection_rationale?: string;
+}
+
+export interface PositioningProduct {
+  name: string;
+  target_user?: string;
+  core_scenario?: string;
+  value_proposition?: string;
+  positioning_label?: string;
+  evidence_ids?: string[];
 }
 
 export interface SchemaDraft {
@@ -132,6 +240,9 @@ export interface SchemaDraft {
   user_persona?: UserPersona;
   swot?: Swot;
   recommendations?: Recommendation[];
+  decision_summary?: DecisionSummary;
+  competitor_landscape?: CompetitorLandscape;
+  positioning_map?: { products?: PositioningProduct[] };
 }
 
 export const SUPPORT_META: Record<SupportStatus, { icon: string; tone: string; label: string }> = {

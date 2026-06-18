@@ -58,7 +58,8 @@ from .collector_adapters import (  # noqa: F401
 # 自愈循环：验收门 Gap → 定向补采（§3.6 D）
 # ────────────────────────────────────────────────────────────────────────────
 
-def _targeted_refill(gaps: list[dict], focus: str, max_per_gap: int = 4) -> list[dict]:
+def _targeted_refill(gaps: list[dict], focus: str, max_per_gap: int = 5,
+                     meta: Optional[dict] = None) -> list[dict]:
     """质量/数量 Gap → 定向检索补采。复用 search.search_plan_to_evidence(自带相关性门+缓存)。
     每个 gap 按其 fix 处方(query_hint/source_hint/bias)定向搜,只补缺口,不全量重抓。"""
     from . import search
@@ -71,17 +72,44 @@ def _targeted_refill(gaps: list[dict], focus: str, max_per_gap: int = 4) -> list
         p = g.get("product")
         ct = g.get("claim_type") or "feature_existence"
         fix = g.get("fix") or {}
-        sites = fix.get("source_hint") or [""]
-        qhint = fix.get("query_hint") or f"{p} {ct}"
-        bias = fix.get("bias") or ("user_generated" if ct in ("user_pain", "performance_quality") else "vendor_claim")
         plan = []
-        for s in sites:
-            # source_hint 里的 official_page/pricing_page 是「去官网」信号 → site 留空走官网锚定
-            st = "pricing_page" if ct == "pricing" else (
-                "official_page" if g.get("gap_type") == "no_official" else "web_search")
-            site = "" if s in ("official_page", "pricing_page") else s
-            plan.append({"query": qhint, "claim_type": ct, "site": site,
-                         "source_type": st, "bias": bias})
+        if ct in ("user_pain", "performance_quality"):
+            try:
+                from . import source_planner as sp
+                domain = (meta or {}).get("domain") or (meta or {}).get("domain_key") or os.environ.get("DOMAIN")
+                cat_en, cat_cn = sp._domain_category(domain)
+                by_ct = sp.load_sources_config().get("by_claim_type") or {}
+                sites = sp._sites_for_claim(p, ct, by_ct, category=domain)[:max_per_gap]
+                if not sites:
+                    sites = [("", "web_search", "user_generated")]
+                for site, st, bias in sites:
+                    plan.append({
+                        "query": sp._build_query_for_site(p, focus, ct, cat_en, cat_cn, site),
+                        "claim_type": ct,
+                        "site": site,
+                        "source_type": st or "web_search",
+                        "bias": bias or "user_generated",
+                    })
+                plan.append({
+                    "query": sp._build_query_for_site(p, focus, ct, cat_en, cat_cn, ""),
+                    "claim_type": ct,
+                    "site": "",
+                    "source_type": "web_search",
+                    "bias": "user_generated",
+                })
+            except Exception:  # noqa: BLE001
+                plan = []
+        if not plan:
+            sites = fix.get("source_hint") or [""]
+            qhint = fix.get("query_hint") or f"{p} {ct}"
+            bias = fix.get("bias") or ("user_generated" if ct in ("user_pain", "performance_quality") else "vendor_claim")
+            for s in sites:
+                # source_hint 里的 official_page/pricing_page 是「去官网」信号 → site 留空走官网锚定
+                st = "pricing_page" if ct == "pricing" else (
+                    "official_page" if g.get("gap_type") == "no_official" else "web_search")
+                site = "" if s in ("official_page", "pricing_page") else s
+                plan.append({"query": qhint, "claim_type": ct, "site": site,
+                             "source_type": st, "bias": bias})
         try:
             evs, _ev = search.search_plan_to_evidence(p, plan, results_per_query=max_per_gap)
         except Exception as e:  # noqa: BLE001
@@ -107,7 +135,7 @@ def acceptance_gate_and_heal(merged: list[dict], meta: dict, focus: str,
         gaps = audit["gaps"]
         print(f"  [self-heal] round {rnd+1}: {len(gaps)} 个 Gap → 定向补采 "
               f"{[g['gap_type']+':'+str(g.get('product')) for g in gaps]}")
-        patch = _targeted_refill(gaps, focus)
+        patch = _targeted_refill(gaps, focus, meta=meta)
         if not patch:
             print("  [self-heal] 无新证据补入，停止")
             break

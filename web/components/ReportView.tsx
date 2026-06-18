@@ -8,8 +8,15 @@ import type {
   Feature,
   Recommendation,
   SwotItem,
+  Swot,
   PricingProduct,
   PainPoint,
+  CompetitorLandscape,
+  LandscapeEntry,
+  PositioningProduct,
+  PricingModel,
+  FeatureAnalysis,
+  FeatureTree,
 } from "@/lib/schema";
 import { EvidenceProvider, Chips, Chip } from "./Evidence";
 
@@ -38,15 +45,11 @@ const proseComponents: Components = {
   h3: (props) => <h3>{injectChips(props.children)}</h3>,
 };
 
-const SECTIONS = [
-  { id: "overview", label: "概览" },
-  { id: "evidence", label: "证据覆盖" },
-  { id: "matrix", label: "功能矩阵" },
-  { id: "pricing", label: "定价" },
-  { id: "pains", label: "用户痛点" },
-  { id: "recs", label: "改进建议" },
-  { id: "swot", label: "SWOT" },
-];
+const CONF_LABEL: Record<string, { text: string; tone: string }> = {
+  high: { text: "置信高", tone: "bg-emerald-500/15 text-emerald-300" },
+  medium: { text: "置信中", tone: "bg-sky-500/15 text-sky-300" },
+  low: { text: "置信低", tone: "bg-neutral-500/15 text-neutral-400" },
+};
 
 function QualityBadge({ score, status }: { score?: number; status: string }) {
   const s = score ?? 0;
@@ -73,10 +76,10 @@ function SectionTitle({ id, children }: { id: string; children: React.ReactNode 
 
 /** 真实质量分:support_status=unknown 或 score<=0(Analyzer 对「证据不足」的占位)→ null(渲染「未评分」)。
  *  与 writer._score_cell 同口径,避免把「没数据」当成真打 0 分拉低均分。 */
-function realScore(cell?: { support_status?: string; quality_score?: { score?: number } | null }): number | null {
+function realScore(cell?: { support_status?: string; quality_score?: { score?: number } | number | null }): number | null {
   if (!cell) return null;
   if ((cell.support_status ?? "").toLowerCase() === "unknown") return null;
-  const s = cell.quality_score?.score;
+  const s = typeof cell.quality_score === "number" ? cell.quality_score : cell.quality_score?.score;
   if (typeof s !== "number" || s <= 0) return null;
   return s;
 }
@@ -150,7 +153,7 @@ function ScoreBar({
         />
       </span>
       <span className={`tabular-nums text-[11px] ${est ? "text-neutral-500" : "text-neutral-200"}`}>
-        {est ? `~${value.toFixed(1)}` : value}
+        {est ? `~${value.toFixed(1)}` : Number(value.toFixed(1))}
         <span className="text-neutral-600">/{scale}</span>
       </span>
       {est && (
@@ -158,31 +161,6 @@ function ScoreBar({
       )}
     </span>
   );
-}
-
-function buildDecisionSummary(report: Report, cols: string[], recs: Recommendation[]) {
-  const features = report.schema_draft?.feature_tree?.features ?? [];
-  const avgs = averageScores(features, cols);
-  const leader = Object.entries(avgs).sort((a, b) => b[1] - a[1])[0];
-  const target = report.meta.target_product;
-  const pressure = [...features]
-    .filter((f) => f.gap?.winner && f.gap.winner !== target)
-    .sort((a, b) => (b.gap?.confidence ?? 0) - (a.gap?.confidence ?? 0))[0];
-  const strength = [...features]
-    .filter((f) => f.gap?.winner === target)
-    .sort((a, b) => (b.gap?.confidence ?? 0) - (a.gap?.confidence ?? 0))[0];
-
-  return {
-    headline:
-      report.summary ||
-      (leader
-        ? `结论：${leader[0]} 当前综合评分最高，${target} 需要围绕关键短板形成更清晰的防守策略。`
-        : "结论：当前证据不足以形成稳定综合判断。"),
-    leader: leader ? `${leader[0]} ${leader[1].toFixed(1)}/5` : "待确认",
-    strength: strength?.name ?? "待确认",
-    risk: pressure?.name ?? "待确认",
-    action: recs[0]?.action ?? "补齐可执行建议与验证指标",
-  };
 }
 
 function evidenceStats(report: Report) {
@@ -234,6 +212,90 @@ function uncertaintyNotes(report: Report) {
   return notes.length ? notes : ["未发现明显信息缺口；关键决策前仍建议复核最新定价页和用户侧反馈。"];
 }
 
+function confidenceSummary(report: Report) {
+  const ev = report.raw_evidence ?? [];
+  const hasUser = ev.some((e) => e.source_bias === "user_generated");
+  const hasThird = ev.some((e) => e.source_bias === "third_party");
+  const hasPricing = ev.some((e) => e.claim_type === "pricing");
+  const hasQuality = ev.some((e) => e.claim_type === "performance_quality" || e.claim_type === "user_pain");
+  const level = ev.length >= 12 && hasUser && hasThird && hasPricing && hasQuality
+    ? "high"
+    : ev.length >= 6 && hasPricing && (hasUser || hasThird || hasQuality)
+      ? "medium"
+      : "low";
+  const missing: string[] = [];
+  if (!hasUser) missing.push("真实用户反馈");
+  if (!hasThird) missing.push("第三方评测");
+  if (!hasQuality) missing.push("性能/留存类证据");
+  if (!hasPricing) missing.push("明确价格页");
+  const label = level === "high" ? "高" : level === "medium" ? "中等" : "低";
+  const note = missing.length
+    ? `当前证据主要覆盖公开资料，仍缺 ${missing.slice(0, 3).join("、")}。`
+    : "证据已覆盖价格、用户侧和第三方材料，仍建议在采购或立项前复核最新页面。";
+  return { level, label, note };
+}
+
+function evidenceIdsForProduct(report: Report, product: string, limit = 4) {
+  const ids: string[] = [];
+  for (const f of report.schema_draft?.feature_tree?.features ?? []) {
+    const cell = f.products[product];
+    ids.push(...(cell?.quality_score?.evidence_ids ?? []), ...(cell?.support_evidence_ids ?? []));
+    if (f.gap?.winner === product) ids.push(...(f.gap.evidence_ids ?? []));
+  }
+  for (const p of report.schema_draft?.pricing_model?.products ?? []) {
+    if (p.name === product) {
+      for (const tier of p.tiers) ids.push(...(tier.evidence_ids ?? []));
+    }
+  }
+  return [...new Set(ids)].slice(0, limit);
+}
+
+function productFitLines(report: Report, cols: string[]) {
+  const features = report.schema_draft?.feature_tree?.features ?? [];
+  const avgs = averageScores(features, cols);
+  const pos = new Map((report.schema_draft?.positioning_map?.products ?? []).map((p) => [p.name, p]));
+  return cols.slice(0, 4).map((name) => {
+    const p = pos.get(name);
+    const wins = features.filter((f) => f.gap?.winner === name).slice(0, 2).map((f) => f.name);
+    const score = avgs[name];
+    const scenario = p?.core_scenario || p?.value_proposition || p?.target_user;
+    const basis = [
+      scenario,
+      wins.length ? `相对强项: ${wins.join("、")}` : null,
+      score != null ? `已验证体验均分 ${score.toFixed(1)}/5` : null,
+    ].filter(Boolean).join("；");
+    return {
+      product: name,
+      text: basis ? `${name}: ${basis}` : `${name}: 当前证据不足，暂不做强弱判断`,
+      ids: evidenceIdsForProduct(report, name),
+    };
+  });
+}
+
+function audienceRecommendations(report: Report, cols: string[], recs: Recommendation[]) {
+  const features = report.schema_draft?.feature_tree?.features ?? [];
+  const avgs = averageScores(features, cols);
+  const pricing = report.schema_draft?.pricing_model?.products ?? [];
+  const byName = Object.fromEntries(pricing.map((p) => [p.name, p]));
+  const scored = cols.filter((c) => avgs[c] != null).sort((a, b) => (avgs[b] ?? 0) - (avgs[a] ?? 0));
+  const priced = cols
+    .map((c) => ({ name: c, price: minMonthlyPrice(byName[c]) }))
+    .filter((p): p is { name: string; price: number } => p.price != null)
+    .sort((a, b) => a.price - b.price);
+  const enterprise = cols.find((c) =>
+    /github|copilot|enterprise|team/i.test(c) ||
+    (byName[c]?.tiers ?? []).some((t) => /team|enterprise|business|团队|企业/i.test(`${t.tier_name} ${t.segment ?? ""}`))
+  );
+  const controllable = cols.find((c) => /cline|open|self|local|oss/i.test(c));
+  const topAction = recs.find((r) => (r.action_type ?? "").toString().toLowerCase() === "attack") ?? recs[0];
+  return [
+    { label: "个人/高频开发", value: scored[0] || priced[0]?.name || cols[0] || "待确认" },
+    { label: "预算敏感/可控成本", value: controllable || priced[0]?.name || "待确认" },
+    { label: "团队/企业采购", value: enterprise || scored[0] || "待确认" },
+    { label: "产品机会", value: topAction?.action || "补齐用户侧证据后再判断机会点" },
+  ];
+}
+
 export default function ReportView({ report }: { report: Report }) {
   const [showRaw, setShowRaw] = useState(false);
   const s = report.schema_draft;
@@ -256,32 +318,32 @@ export default function ReportView({ report }: { report: Report }) {
   const recs = [...(s.recommendations ?? [])].sort(
     (a, b) => (b.priority_score?.final_score ?? 0) - (a.priority_score?.final_score ?? 0)
   );
-  const decision = buildDecisionSummary(report, cols, recs);
   const stats = evidenceStats(report);
   const dimensions = fallbackQualityDimensions(report);
   const uncertainties = uncertaintyNotes(report);
+  const confidence = confidenceSummary(report);
+  const navSections = [
+    { id: "evidence", label: "证据概览", show: true },
+    { id: "decision", label: "决策摘要", show: true },
+    { id: "positioning", label: "产品定位", show: Boolean(s.competitor_landscape) || (s.positioning_map?.products?.length ?? 0) > 0 },
+    { id: "workflow", label: "核心场景", show: Boolean(s.feature_tree) },
+    { id: "matrix", label: "功能矩阵", show: Boolean(s.feature_tree) },
+    { id: "pricing", label: "定价模型", show: Boolean(s.pricing_model) },
+    { id: "personas", label: "用户场景", show: Boolean(s.user_persona) },
+    { id: "strategy", label: "机会/风险", show: true },
+    { id: "swot", label: "SWOT", show: Boolean(s.swot) },
+    { id: "appendix", label: "详细附录", show: true },
+  ].filter((sec) => sec.show);
 
   return (
     <EvidenceProvider evidence={report.raw_evidence}>
       <div className="space-y-8 ca-stagger">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold text-white">
-              {report.meta.target_product}{" "}
-              <span className="text-neutral-500">vs {report.meta.competitors.join(" / ")}</span>
-            </h1>
-            <p className="mt-1 text-sm text-neutral-500">
-              焦点 {report.meta.analysis_focus.join(" / ")} · 数据截止 {report.meta.data_cutoff} ·{" "}
-              {report.raw_evidence.length} 条证据
-            </p>
-          </div>
-          <QualityBadge score={report.quality_report?.quality_score} status={report.status} />
-        </div>
+        {/* §0 报告头部 */}
+        <ReportHeader report={report} cols={cols} recs={recs} confidence={confidence} />
 
         {/* Sub-nav */}
         <nav className="sticky top-0 z-10 -mx-2 flex flex-wrap gap-1 bg-neutral-950/80 px-2 py-2 backdrop-blur">
-          {SECTIONS.map((sec) => (
+          {navSections.map((sec) => (
             <a
               key={sec.id}
               href={`#${sec.id}`}
@@ -292,149 +354,84 @@ export default function ReportView({ report }: { report: Report }) {
           ))}
         </nav>
 
-        {/* 综合评级 — 一眼看懂这份报告几分 */}
-        <OverallGrade report={report} />
-
-        {/* 业务价值 — vs 人工竞品分析 */}
-        {report.business_value && <BusinessValueCard data={report.business_value} />}
-
-        {/* Overview */}
+        {/* 证据与生成概览 */}
         <section className="space-y-3">
-          <SectionTitle id="overview">概览</SectionTitle>
-          <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.06] p-4">
-            <div className="text-xs font-medium text-sky-300">Executive Summary</div>
-            <p className="mt-2 text-base leading-relaxed text-neutral-100">{decision.headline}</p>
-            <div className="mt-4 grid gap-2 sm:grid-cols-4">
-              <DecisionPill label="综合领先" value={decision.leader} />
-              <DecisionPill label="目标优势" value={decision.strength} />
-              <DecisionPill label="核心风险" value={decision.risk} />
-              <DecisionPill label="优先行动" value={decision.action} />
-            </div>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Stat label="对比竞品" value={`${cols.length} 家`} />
-            <Stat label="功能维度" value={`${s.feature_tree?.features.length ?? 0} 项`} />
-            <Stat
-              label="改进建议"
-              value={`${recs.length} 条 · 最高 ${recs[0]?.priority_score?.priority ?? "-"}`}
-            />
-          </div>
-          {s.pricing_model?.pricing_gap?.summary && (
-            <p className="rounded-xl border border-white/10 bg-white/[0.02] p-4 text-sm leading-relaxed text-neutral-300">
-              <span className="text-neutral-500">定价定位：</span>
-              {s.pricing_model.pricing_gap.summary}
-              <Chips ids={s.pricing_model.pricing_gap.evidence_ids} />
-            </p>
-          )}
-          {report.stage_timings && report.stage_timings.length > 0 && (() => {
-            const totalTokens = report.stage_timings.reduce((a, t) => a + (t.tokens || 0), 0);
-            const totalDuration = report.stage_timings.reduce((a, t) => a + (t.duration_sec || 0), 0);
-            return (
-              <>
-                {totalTokens > 0 && (
-                  <div className="flex flex-wrap items-center gap-3 rounded-xl border border-sky-500/20 bg-sky-500/5 px-4 py-3 text-sm">
-                    <span className="text-sky-300">🪙 Token 消耗</span>
-                    <span className="font-mono text-sky-200">{totalTokens.toLocaleString()} tokens</span>
-                    <span className="text-neutral-500">·</span>
-                    <span className="text-neutral-400">{totalDuration}s</span>
-                  </div>
-                )}
-                <details className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-sm">
-                  <summary className="cursor-pointer text-neutral-400">
-                    生成过程 · 共 {totalDuration}s
-                    {totalTokens > 0 && ` · ${totalTokens.toLocaleString()} tokens`}
-                  </summary>
-                  <div className="mt-2 space-y-1.5">
-                    {report.stage_timings.map((t, i) => (
-                      <div key={i} className="flex items-start gap-2 text-xs">
-                        <span className="shrink-0">{t.icon ?? "•"}</span>
-                        <span className="shrink-0 text-neutral-300">{t.label}</span>
-                        <span className="shrink-0 font-mono text-emerald-400">{t.duration_sec}s</span>
-                        {t.tokens ? <span className="shrink-0 font-mono text-sky-400/70">🪙 {t.tokens >= 1000 ? `${(t.tokens / 1000).toFixed(1)}k` : t.tokens}</span> : null}
-                        {t.result && <span className="text-neutral-500">· {t.result}</span>}
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              </>
-            );
-          })()}
-        </section>
-
-        <section className="space-y-3">
-          <SectionTitle id="evidence">证据覆盖与质量</SectionTitle>
+          <SectionTitle id="evidence">证据与生成概览</SectionTitle>
           {report.completeness && <CompletenessCard data={report.completeness} />}
           <div className="grid gap-3 lg:grid-cols-[1fr_1fr]">
             <QualityBreakdown dimensions={dimensions} />
             <EvidenceCoverage byClaim={stats.byClaim} byBias={stats.byBias} byType={stats.byType} />
           </div>
-          <UncertaintyBox notes={uncertainties} />
+          {report.business_value && <BusinessValueCard data={report.business_value} />}
+          <RunTracePanel report={report} />
         </section>
 
-        {/* Feature matrix — hero */}
+        {/* §1 决策摘要 */}
+        <DecisionBriefCard report={report} cols={cols} recs={recs} />
+
+        {/* §2 产品定位对比 */}
+        {(s.competitor_landscape || (s.positioning_map?.products?.length ?? 0) > 0) && (
+          <ProductPositioningSection report={report} cols={cols} />
+        )}
+
+        {/* §3 核心场景对比 */}
+        {s.feature_tree && <WorkflowComparisonSection featureTree={s.feature_tree} cols={cols} />}
+
+        {/* §4 功能矩阵与权重评分 */}
         {s.feature_tree && (
           <section className="space-y-3">
-            <SectionTitle id="matrix">功能对比矩阵 · {s.feature_tree.category}</SectionTitle>
+            <SectionTitle id="matrix">功能矩阵与权重评分 · {s.feature_tree.category}</SectionTitle>
+            <ScoringRubric />
             <CapabilityChart features={s.feature_tree.features} cols={cols} painMode={painMode} />
             <FeatureMatrix features={s.feature_tree.features} cols={cols} painMode={painMode} />
+            {s.feature_tree.analysis && (
+              <FeatureCoverageCard analysis={s.feature_tree.analysis} cols={cols} target={report.meta.target_product} />
+            )}
           </section>
         )}
 
-        {/* Pricing */}
+        {/* §5 定价模型与性价比 */}
         {s.pricing_model && (
           <section className="space-y-3">
-            <SectionTitle id="pricing">定价对比</SectionTitle>
+            <SectionTitle id="pricing">定价模型与性价比</SectionTitle>
+            <PricingTakeaways model={s.pricing_model} cols={cols} features={s.feature_tree?.features ?? []} target={report.meta.target_product} />
             <div className="grid gap-3 md:grid-cols-2">
               {s.pricing_model.products.map((p) => (
                 <PricingCard key={p.name} product={p} />
               ))}
             </div>
             {s.feature_tree && <PriceAbilityMap products={s.pricing_model.products} features={s.feature_tree.features} cols={cols} target={report.meta.target_product} />}
+            <PricingInsights model={s.pricing_model} />
           </section>
         )}
 
-        {/* SWOT */}
-        {s.swot && (
-          <section className="space-y-3">
-            <SectionTitle id="swot">SWOT</SectionTitle>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <SwotQuad title="优势 S" items={s.swot.strengths} tone="emerald" />
-              <SwotQuad title="劣势 W" items={s.swot.weaknesses} tone="red" />
-              <SwotQuad title="机会 O" items={s.swot.opportunities} tone="sky" />
-              <SwotQuad title="威胁 T" items={s.swot.threats} tone="amber" />
-            </div>
-          </section>
-        )}
-
-        {/* Pains */}
+        {/* §6 用户画像与使用场景 */}
         {s.user_persona && (
-          <section className="space-y-3">
-            <SectionTitle id="pains">用户痛点</SectionTitle>
-            {report.research_method && <ResearchMethodCard data={report.research_method} />}
-            <div className="space-y-2">
-              {s.user_persona.pain_points.map((p) => (
-                <PainRow key={p.pain_id} pain={p} syntheticIds={syntheticIds} />
-              ))}
-            </div>
-          </section>
+          <UserScenarioSection
+            report={report}
+            cols={cols}
+            syntheticIds={syntheticIds}
+          />
         )}
 
-        {/* Recommendations */}
-        <section className="space-y-3">
-          <SectionTitle id="recs">改进建议</SectionTitle>
-          <div className="space-y-3">
-            {recs.map((r) => (
-              <RecCard key={r.rec_id} rec={r} />
-            ))}
-          </div>
-        </section>
+        {/* §7 机会点 / 风险 / 战略建议 */}
+        <StrategicAdviceSection report={report} recs={recs} />
 
-        {/* Raw markdown export */}
-        <MarkdownExportPanel
-          report={report}
-          open={showRaw}
-          onToggle={setShowRaw}
-        />
+        {/* SWOT 独立栏目 */}
+        {s.swot && <SwotSection swot={s.swot} />}
+
+        {/* §8 详细附录 */}
+        <section className="space-y-3">
+          <SectionTitle id="appendix">详细附录</SectionTitle>
+          <UncertaintyBox notes={uncertainties} />
+          <AppendixNotes />
+          <TechCapabilitySection report={report} cols={cols} />
+          <MarkdownExportPanel
+            report={report}
+            open={showRaw}
+            onToggle={setShowRaw}
+          />
+        </section>
       </div>
     </EvidenceProvider>
   );
@@ -448,9 +445,27 @@ function markdownFilename(report: Report) {
   return raw.replace(/[\\/:*?"<>|\s]+/g, "-").replace(/-+/g, "-");
 }
 
+const DEPRECATED_MARKDOWN_SECTIONS = ["功能定位", "产品形态", "商业模式", "护城河", "蓝海"];
+
+function stripDeprecatedMarkdownSections(markdown: string) {
+  const lines = markdown.split(/\r?\n/);
+  const kept: string[] = [];
+  let skipping = false;
+  for (const line of lines) {
+    if (line.startsWith("## ")) {
+      const title = line
+        .replace(/^##\s+(?:[一二三四五六七八九十]+、\s*)?/, "")
+        .trim();
+      skipping = DEPRECATED_MARKDOWN_SECTIONS.some((section) => title.includes(section));
+    }
+    if (!skipping) kept.push(line);
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function markdownSource(report: Report) {
   const md = report.report_draft?.trim();
-  if (md) return md;
+  if (md) return stripDeprecatedMarkdownSections(md);
   return [
     `# ${report.meta.target_product} vs ${report.meta.competitors.join(" / ")}`,
     "",
@@ -459,6 +474,355 @@ function markdownSource(report: Report) {
     "",
     "暂无原始 Markdown 正文。",
   ].join("\n");
+}
+
+function ReportHeader({
+  report,
+  cols,
+  recs,
+  confidence,
+}: {
+  report: Report;
+  cols: string[];
+  recs: Recommendation[];
+  confidence: ReturnType<typeof confidenceSummary>;
+}) {
+  return (
+    <section className="rounded-xl border border-white/10 bg-white/[0.03] p-5">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-500">Competitive Report</div>
+          <h1 className="mt-2 text-2xl font-semibold text-white">
+            {report.meta.target_product}{" "}
+            <span className="text-neutral-500">vs {report.meta.competitors.join(" / ")}</span>
+          </h1>
+          <p className="mt-1 text-sm text-neutral-500">
+            分析对象: {report.meta.analysis_focus.join(" / ") || "全维度"} · 数据截止 {report.meta.data_cutoff}
+          </p>
+        </div>
+        <QualityBadge score={report.quality_report?.quality_score} status={report.status} />
+      </div>
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <Stat label="产品组" value={`${cols.length} 个产品`} />
+        <Stat label="证据数量" value={`${report.raw_evidence.length} 条`} />
+        <Stat label="报告时间" value={report.created_at?.slice(0, 10) || report.meta.generated_at?.slice(0, 10) || "—"} />
+        <Stat label="置信度" value={confidence.label} />
+        <Stat label="建议数量" value={`${recs.length} 条`} />
+      </div>
+      <div className="mt-3">
+        <OverallGrade report={report} />
+      </div>
+    </section>
+  );
+}
+
+function ProductPositioningSection({ report, cols }: { report: Report; cols: string[] }) {
+  const products = report.schema_draft?.positioning_map?.products ?? [];
+  return (
+    <section className="space-y-3">
+      <SectionTitle id="positioning">产品定位对比</SectionTitle>
+      {products.length > 0 ? <PositioningMapCards products={products} /> : (
+        <p className="rounded-xl border border-white/10 bg-white/[0.02] p-4 text-sm text-neutral-500">
+          当前证据不足，未生成稳定定位象限。
+        </p>
+      )}
+      <ProductDifferenceTable report={report} cols={cols} />
+      {report.schema_draft?.competitor_landscape && (
+        <CompetitorLandscapeCard landscape={report.schema_draft.competitor_landscape} />
+      )}
+    </section>
+  );
+}
+
+function ProductDifferenceTable({ report, cols }: { report: Report; cols: string[] }) {
+  const fits = productFitLines(report, cols);
+  return (
+    <div className="overflow-x-auto rounded-xl border border-white/10">
+      <table className="w-full border-collapse text-sm">
+        <thead className="bg-white/5">
+          <tr>
+            <th className="px-3 py-2 text-left font-medium text-neutral-300">产品</th>
+            <th className="px-3 py-2 text-left font-medium text-neutral-300">核心差异</th>
+            <th className="px-3 py-2 text-left font-medium text-neutral-300">证据</th>
+          </tr>
+        </thead>
+        <tbody>
+          {fits.map((f) => (
+            <tr key={f.product} className="border-t border-white/10">
+              <td className="px-3 py-2 font-medium text-neutral-100">{f.product}</td>
+              <td className="px-3 py-2 leading-relaxed text-neutral-400">{f.text.replace(`${f.product}: `, "")}</td>
+              <td className="px-3 py-2"><Chips ids={f.ids} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const WORKFLOW_BUCKETS = [
+  { key: "understand", label: "需求理解", patterns: ["需求", "issue", "文档", "上下文", "context", "read"] },
+  { key: "generate", label: "代码生成", patterns: ["生成", "补全", "completion", "generate", "chat"] },
+  { key: "edit", label: "多文件修改", patterns: ["多文件", "跨文件", "编辑", "diff", "修改", "multi"] },
+  { key: "verify", label: "执行验证", patterns: ["执行", "终端", "测试", "验证", "run", "test", "terminal"] },
+  { key: "collab", label: "团队协作", patterns: ["团队", "协作", "PR", "review", "权限", "审计", "enterprise"] },
+  { key: "cost", label: "成本控制", patterns: ["成本", "价格", "用量", "模型", "自托管", "cost", "usage"] },
+];
+
+function workflowBucketOf(feature: Feature) {
+  const text = `${feature.name} ${feature.feature_id}`.toLowerCase();
+  return WORKFLOW_BUCKETS.find((b) => b.patterns.some((p) => text.includes(p.toLowerCase()))) ?? WORKFLOW_BUCKETS[1];
+}
+
+function isAiCodingWorkflow(featureTree: FeatureTree) {
+  if (featureTree.source_skill === "ai_coding") return true;
+  const text = `${featureTree.category ?? ""} ${featureTree.features.map((f) => f.name).join(" ")}`;
+  return /代码|编程|IDE|Agent|补全|重构|测试|终端/i.test(text);
+}
+
+function featureWinner(feature: Feature) {
+  const winner = feature.gap?.winner;
+  if (!winner || winner === "tie" || winner === "unclear" || winner === "unknown") return "待确认";
+  return winner;
+}
+
+function featureEvidenceSummary(feature: Feature, cols: string[]) {
+  const missing: string[] = [];
+  let knownCount = 0;
+  for (const c of cols) {
+    const cell = feature.products[c];
+    const known = realScore(cell) != null || cell?.support_status === "supported" || cell?.support_status === "partially_supported";
+    if (known) knownCount += 1;
+    else missing.push(c);
+  }
+  if (!missing.length) return `${knownCount}/${cols.length} 产品有证据`;
+  return `${knownCount}/${cols.length} 产品有证据；缺 ${missing.join("、")}`;
+}
+
+function WorkflowComparisonSection({ featureTree, cols }: { featureTree: FeatureTree; cols: string[] }) {
+  const features = featureTree.features ?? [];
+  const aiCoding = isAiCodingWorkflow(featureTree);
+  const rows = aiCoding ? WORKFLOW_BUCKETS.map((bucket) => {
+    const matched = features.filter((f) => workflowBucketOf(f).key === bucket.key);
+    const winnerCount: Record<string, number> = {};
+    for (const f of matched) {
+      const winner = f.gap?.winner;
+      if (winner && winner !== "tie" && winner !== "unclear") winnerCount[winner] = (winnerCount[winner] ?? 0) + 1;
+    }
+    const winner = Object.entries(winnerCount).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "待确认";
+    const coverage = cols.map((c) => {
+      const known = matched.filter((f) => realScore(f.products[c]) != null || f.products[c]?.support_status === "supported" || f.products[c]?.support_status === "partially_supported").length;
+      return `${c}: ${matched.length ? Math.round((known / matched.length) * 100) : 0}%`;
+    });
+    return { key: bucket.key, label: bucket.label, capability: matched.slice(0, 4).map((f) => f.name).join(" / "), winner, coverage };
+  }).filter((r) => r.capability) : features.slice(0, 6).map((feature) => ({
+    key: feature.feature_id,
+    label: feature.name,
+    capability: feature.gap?.reason || "按当前证据做单项能力判断",
+    winner: featureWinner(feature),
+    coverage: [featureEvidenceSummary(feature, cols)],
+  }));
+
+  if (!rows.length) return null;
+
+  return (
+    <section className="space-y-3">
+      <SectionTitle id="workflow">核心场景对比</SectionTitle>
+      {!aiCoding && (
+        <p className="text-xs leading-relaxed text-neutral-500">
+          当前报告不是 AI 编程工具，场景按本次功能树生成；只展示有结构化维度的核心场景，避免套用固定模板。
+        </p>
+      )}
+      <div className="overflow-x-auto rounded-xl border border-white/10">
+        <table className="w-full border-collapse text-sm">
+          <thead className="bg-white/5">
+            <tr>
+              <th className="px-3 py-2 text-left font-medium text-neutral-300">{aiCoding ? "开发者工作流" : "核心能力/场景"}</th>
+              <th className="px-3 py-2 text-left font-medium text-neutral-300">{aiCoding ? "覆盖功能" : "判断摘要"}</th>
+              <th className="px-3 py-2 text-left font-medium text-neutral-300">当前 winner</th>
+              <th className="px-3 py-2 text-left font-medium text-neutral-300">{aiCoding ? "覆盖度" : "证据状态"}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.key} className="border-t border-white/10">
+                <td className="px-3 py-3 font-medium text-neutral-100">{r.label}</td>
+                <td className="max-w-md px-3 py-3 text-xs leading-relaxed text-neutral-400">
+                  {r.capability || "证据不足"}
+                </td>
+                <td className="px-3 py-3 text-sky-300">{r.winner}</td>
+                <td className="px-3 py-3 text-xs leading-relaxed text-neutral-500">{r.coverage.join("；")}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {features.length > rows.length && (
+        <p className="text-xs text-neutral-600">其余 {features.length - rows.length} 个低优先级维度已收起，可在“功能矩阵”查看完整评分。</p>
+      )}
+    </section>
+  );
+}
+
+function UserScenarioSection({
+  report,
+  cols,
+  syntheticIds,
+}: {
+  report: Report;
+  cols: string[];
+  syntheticIds: Set<string>;
+}) {
+  const persona = report.schema_draft?.user_persona;
+  if (!persona) return null;
+  return (
+    <section className="space-y-3">
+      <SectionTitle id="personas">用户画像与使用场景</SectionTitle>
+      {report.research_method && <ResearchMethodCard data={report.research_method} />}
+      <div className="grid gap-3 md:grid-cols-2">
+        {(persona.user_segments ?? []).map((s) => (
+          <div key={s.segment_id} className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+            <div className="text-sm font-medium text-neutral-100">{s.name}</div>
+            <p className="mt-1 text-sm leading-relaxed text-neutral-400">{s.description || "暂无画像说明"}</p>
+            <Chips ids={s.evidence_ids} />
+          </div>
+        ))}
+        {(!persona.user_segments || persona.user_segments.length === 0) && (
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 text-sm text-neutral-500">
+            使用人群画像证据不足，暂不硬写。
+          </div>
+        )}
+      </div>
+      <div className="grid gap-2">
+        {persona.pain_points.map((p) => (
+          <PainRow key={p.pain_id} pain={p} syntheticIds={syntheticIds} />
+        ))}
+      </div>
+      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 text-xs leading-relaxed text-neutral-500">
+        迁移成本判断: 当前基于 {cols.join(" / ")} 的功能、价格与证据覆盖做弱判断；如需采购级结论，需要补企业权限、审计、真实留存和迁移案例。
+      </div>
+    </section>
+  );
+}
+
+function StrategicAdviceSection({ report, recs }: { report: Report; recs: Recommendation[] }) {
+  const analysis = report.schema_draft?.feature_tree?.analysis;
+  const moatItems = (analysis?.moat_candidates ?? []).map((m) =>
+    `${m.name}${m.factors?.length ? `: ${m.factors.join("、")}` : ""}`
+  );
+  const whitespace = analysis?.whitespace ?? [];
+  const whitespaceItems = whitespace.map((w) => `${w.name}: ${w.reason || w.barrier || "待验证"}`);
+  const recommendationOpportunities = recs
+    .filter((r) => (r.action_type ?? "").toString().toLowerCase() === "attack")
+    .slice(0, 3)
+    .map((r) => `${r.action}${r.target_competitor ? `（对标 ${Array.isArray(r.target_competitor) ? r.target_competitor.join("、") : r.target_competitor}）` : ""}`);
+  const opportunityItems = whitespaceItems.length ? whitespaceItems : recommendationOpportunities;
+  const swot = report.schema_draft?.swot;
+  const riskItems = [...(swot?.weaknesses ?? []), ...(swot?.threats ?? [])].slice(0, 4).map((r) => r.point);
+  const panels = [
+    moatItems.length ? { title: "护城河", items: moatItems, tone: "emerald" as const } : null,
+    opportunityItems.length
+      ? { title: whitespaceItems.length ? "蓝海机会" : "可验证机会", items: opportunityItems, tone: "sky" as const }
+      : null,
+    riskItems.length ? { title: "风险", items: riskItems, tone: "amber" as const } : null,
+  ].filter(Boolean) as { title: string; items: string[]; tone: "emerald" | "sky" | "amber" }[];
+  const gridClass = panels.length >= 3 ? "grid gap-3 lg:grid-cols-3" : panels.length === 2 ? "grid gap-3 lg:grid-cols-2" : "grid gap-3";
+  const hiddenNotes = [
+    !moatItems.length ? "护城河需要难复制因素证据，本次不单独占栏。" : "",
+    !whitespaceItems.length
+      ? opportunityItems.length
+        ? "蓝海缺少高置信空白区证据，已降级展示建议中的可验证机会。"
+        : "蓝海证据不足，本次不单独占栏。"
+      : "",
+  ].filter(Boolean);
+  return (
+    <section className="space-y-3">
+      <SectionTitle id="strategy">机会点 / 风险 / 战略建议</SectionTitle>
+      {panels.length > 0 ? (
+        <div className={gridClass}>
+          {panels.map((panel) => (
+            <InsightList key={panel.title} title={panel.title} items={panel.items} tone={panel.tone} />
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 text-sm leading-relaxed text-neutral-500">
+          暂无高置信机会或风险信号；建议先补齐用户痛点、定价与关键功能证据。
+        </div>
+      )}
+      {hiddenNotes.length > 0 && (
+        <div className="rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3 text-xs leading-relaxed text-neutral-500">
+          {hiddenNotes.join(" ")}
+        </div>
+      )}
+      <GroupedRecommendations recs={recs} />
+    </section>
+  );
+}
+
+function InsightList({
+  title,
+  items,
+  tone,
+}: {
+  title: string;
+  items: string[];
+  tone: "emerald" | "sky" | "amber";
+}) {
+  const toneClass = tone === "emerald" ? "text-emerald-300" : tone === "sky" ? "text-sky-300" : "text-amber-300";
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+      <div className={`text-sm font-medium ${toneClass}`}>{title}</div>
+      <ul className="mt-2 space-y-1.5 text-sm leading-relaxed text-neutral-400">
+        {items.slice(0, 4).map((item, i) => <li key={i}>• {item}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+function SwotSection({ swot }: { swot: Swot }) {
+  return (
+    <section className="space-y-3">
+      <SectionTitle id="swot">SWOT</SectionTitle>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <SwotQuad title="优势 S" items={swot.strengths} tone="emerald" />
+        <SwotQuad title="劣势 W" items={swot.weaknesses} tone="red" />
+        <SwotQuad title="机会 O" items={swot.opportunities} tone="sky" />
+        <SwotQuad title="威胁 T" items={swot.threats} tone="amber" />
+      </div>
+    </section>
+  );
+}
+
+function AppendixNotes() {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 text-xs leading-relaxed text-neutral-500">
+      PEST 和详细宏观战略分析默认不进入正文；当前报告未生成 PEST，避免对开发工具竞品分析硬套行业宏观框架。
+    </div>
+  );
+}
+
+function RunTracePanel({ report }: { report: Report }) {
+  if (!report.stage_timings || report.stage_timings.length === 0) return null;
+  const totalTokens = report.stage_timings.reduce((a, t) => a + (t.tokens || 0), 0);
+  const totalDuration = report.stage_timings.reduce((a, t) => a + (t.duration_sec || 0), 0);
+  return (
+    <details className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-sm">
+      <summary className="cursor-pointer text-neutral-400">
+        生成过程 · 共 {totalDuration}s{totalTokens > 0 && ` · ${totalTokens.toLocaleString()} tokens`}
+      </summary>
+      <div className="mt-2 space-y-1.5">
+        {report.stage_timings.map((t, i) => (
+          <div key={i} className="flex items-start gap-2 text-xs">
+            <span className="shrink-0">{t.icon ?? "•"}</span>
+            <span className="shrink-0 text-neutral-300">{t.label}</span>
+            <span className="shrink-0 font-mono text-emerald-400">{t.duration_sec}s</span>
+            {t.tokens ? <span className="shrink-0 font-mono text-sky-400/70">{t.tokens >= 1000 ? `${(t.tokens / 1000).toFixed(1)}k` : t.tokens} tokens</span> : null}
+            {t.result && <span className="text-neutral-500">· {t.result}</span>}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 async function copyText(text: string) {
@@ -570,15 +934,6 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function DecisionPill({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0 rounded-lg border border-white/10 bg-neutral-950/40 p-3">
-      <div className="text-[11px] text-neutral-500">{label}</div>
-      <div className="mt-1 line-clamp-2 text-xs font-medium leading-relaxed text-neutral-200">{value}</div>
-    </div>
-  );
-}
-
 function gradeOf(score: number): { letter: string; label: string; tone: string } {
   if (score >= 85) return { letter: "A", label: "优秀", tone: "text-emerald-400" };
   if (score >= 70) return { letter: "B", label: "良好", tone: "text-sky-400" };
@@ -600,27 +955,21 @@ function OverallGrade({ report }: { report: Report }) {
     report.status === "passed" ? "已通过质检" : report.status === "degraded" ? "降级输出" : report.status;
 
   return (
-    <div className="flex items-center gap-5 rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.06] to-white/[0.02] p-5">
-      <div className="flex flex-col items-center">
-        <div className={`font-mono text-5xl font-bold leading-none ${g.tone}`}>{g.letter}</div>
-        <div className="mt-1 text-xs text-neutral-400">{g.label}</div>
-      </div>
-      <div className="h-12 w-px bg-white/10" />
-      <div className="flex-1">
-        <div className="flex items-baseline gap-2">
-          <span className="text-sm text-neutral-400">综合评级</span>
-          <span className={`font-mono text-2xl font-semibold ${g.tone}`}>{overall}</span>
-          <span className="text-xs text-neutral-600">/100 · {statusLabel}</span>
-        </div>
-        <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1">
-          {parts.map((p) => (
-            <div key={p.label} className="flex items-center gap-2 text-xs">
-              <span className="text-neutral-500">{p.label}</span>
-              <span className="font-mono text-neutral-300">{Math.round(p.value)}</span>
-            </div>
-          ))}
-        </div>
-      </div>
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm">
+      <span className={`font-mono text-lg font-bold leading-none ${g.tone}`}>{g.letter}</span>
+      <span className="text-neutral-400">综合评级</span>
+      <span className={`font-mono text-base font-semibold ${g.tone}`}>
+        {overall}
+        <span className="text-xs font-normal text-neutral-600">/100</span>
+      </span>
+      <span className="text-xs text-neutral-600">· {statusLabel}</span>
+      <span className="ml-auto flex flex-wrap gap-x-4 gap-y-1 text-xs text-neutral-500">
+        {parts.map((p) => (
+          <span key={p.label}>
+            {p.label} <span className="font-mono text-neutral-300">{Math.round(p.value)}</span>
+          </span>
+        ))}
+      </span>
     </div>
   );
 }
@@ -1062,6 +1411,61 @@ function PricingCard({ product }: { product: PricingProduct }) {
   );
 }
 
+function PricingTakeaways({
+  model,
+  cols,
+  features,
+  target,
+}: {
+  model: PricingModel;
+  cols: string[];
+  features: Feature[];
+  target: string;
+}) {
+  const byName = Object.fromEntries(model.products.map((p) => [p.name, p]));
+  const avgs = averageScores(features, cols);
+  const priced = cols
+    .flatMap((name) => {
+      const price = minMonthlyPrice(byName[name]);
+      return price == null ? [] : [{ name, price, score: avgs[name] ?? null }];
+    })
+    .sort((a, b) => a.price - b.price);
+  const cheapest = priced[0]?.name;
+  const targetPrice = minMonthlyPrice(byName[target]);
+  const highUsage = cols.find((name) => /usage|credit|用量|积分/i.test(byName[name]?.pricing_engine?.archetype ?? ""));
+  const enterprise = cols.find((name) =>
+    /github|copilot|enterprise|team/i.test(name) ||
+    (byName[name]?.tiers ?? []).some((t) => /team|enterprise|business|团队|企业/i.test(`${t.tier_name} ${t.segment ?? ""}`))
+  );
+  const caveats = [
+    targetPrice == null ? `${target} 未抓到明确付费档价格` : null,
+    priced.length < cols.length ? "部分产品缺少可比付费价，不能硬算完整单位成本" : null,
+  ].filter(Boolean);
+  const rows = [
+    { k: "谁最便宜", v: cheapest ? `${cheapest} 的入门付费价最低` : "当前价格证据不足" },
+    { k: "谁适合个人", v: cheapest || Object.entries(avgs).sort((a, b) => b[1] - a[1])[0]?.[0] || "待确认" },
+    { k: "谁适合团队", v: enterprise || "待确认，需补企业采购/权限/审计证据" },
+    { k: "成本风险", v: highUsage ? `${highUsage} 更需要关注高频使用下的边际成本` : "未发现明确用量型成本风险" },
+  ];
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {rows.map((r) => (
+          <div key={r.k}>
+            <div className="text-[11px] text-neutral-500">{r.k}</div>
+            <div className="mt-1 text-sm leading-relaxed text-neutral-200">{r.v}</div>
+          </div>
+        ))}
+      </div>
+      {caveats.length > 0 && (
+        <p className="mt-3 border-t border-white/10 pt-3 text-xs leading-relaxed text-amber-300/80">
+          {caveats.join("；")}。
+        </p>
+      )}
+    </div>
+  );
+}
+
 function minMonthlyPrice(product?: PricingProduct) {
   // 0 是「未抓到价格」占位(Analyzer 抽不到数值时填 0),不是真实免费价 — 与后端 _lowest_price 同口径。
   // 排除后该列含义 = 最低付费档,免费档不再把整列刷成 $0/mo。
@@ -1173,6 +1577,276 @@ function PriceAbilityMap({
   );
 }
 
+function ConfBadge({ confidence }: { confidence?: string }) {
+  const c = CONF_LABEL[confidence ?? "low"] ?? CONF_LABEL.low;
+  return <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${c.tone}`}>{c.text}</span>;
+}
+
+// ── §0 决策摘要 ─────────────────────────────────────────────────────────────
+function DecisionBriefCard({ report, cols, recs }: { report: Report; cols: string[]; recs: Recommendation[] }) {
+  const productLines = productFitLines(report, cols);
+  const recommendations = audienceRecommendations(report, cols, recs);
+  const conf = confidenceSummary(report);
+  const ds = report.schema_draft?.decision_summary;
+  const extra = [
+    ds?.what_to_learn?.answer,
+    ds?.what_to_avoid?.answer,
+  ].filter(Boolean).slice(0, 2) as string[];
+
+  return (
+    <section className="space-y-3">
+      <SectionTitle id="decision">决策摘要 · 结论页</SectionTitle>
+      <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.05] p-4">
+        <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
+          <div>
+            <div className="text-xs font-medium text-sky-300">结论</div>
+            <div className="mt-3 space-y-2.5">
+              {productLines.map((line) => (
+                <p key={line.product} className="text-sm leading-relaxed text-neutral-200">
+                  {line.text}
+                  <Chips ids={line.ids} />
+                </p>
+              ))}
+              {extra.map((line, i) => (
+                <p key={i} className="text-sm leading-relaxed text-neutral-400">{line}</p>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-4">
+            <div>
+              <div className="text-xs font-medium text-sky-300">推荐</div>
+              <div className="mt-2 space-y-1.5">
+                {recommendations.map((item) => (
+                  <div key={item.label} className="flex gap-2 text-sm">
+                    <span className="w-28 shrink-0 text-neutral-500">{item.label}</span>
+                    <span className="leading-relaxed text-neutral-200">{item.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-neutral-950/40 p-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-neutral-500">置信度</span>
+                <ConfBadge confidence={conf.level} />
+                <span className="text-sm text-neutral-200">{conf.label}</span>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-neutral-500">{conf.note}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ScoringRubric() {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-xs leading-relaxed text-neutral-500">
+      <span className="font-medium text-neutral-300">评分口径：</span>
+      0=未覆盖/无证据，1=基础覆盖，2=可用但限制明显，3=成熟可用，4=领先，5=明显领先。
+      评分依据为官方文档、价格页、公开用户反馈和第三方材料；未找到证据时标记为 Unknown，不默认给分。
+    </div>
+  );
+}
+
+// ── §1 竞品格局 ─────────────────────────────────────────────────────────────
+const RELATION_BLOCKS: { key: keyof CompetitorLandscape; label: string; tone: string }[] = [
+  { key: "direct", label: "直接竞品", tone: "text-red-300 border-red-500/20" },
+  { key: "indirect", label: "间接竞品", tone: "text-amber-300 border-amber-500/20" },
+  { key: "alternative", label: "替代方案", tone: "text-sky-300 border-sky-500/20" },
+];
+
+function CompetitorLandscapeCard({ landscape }: { landscape: CompetitorLandscape }) {
+  return (
+    <div className="space-y-3">
+      {RELATION_BLOCKS.map(({ key, label, tone }) => {
+        const items = (landscape[key] ?? []) as LandscapeEntry[];
+        if (!items.length) return null;
+        return (
+          <div key={key} className={`rounded-xl border bg-white/[0.02] p-4 ${tone.split(" ")[1]}`}>
+            <div className={`mb-2 text-xs font-medium ${tone.split(" ")[0]}`}>{label} · {items.length}</div>
+            <div className="space-y-2">
+              {items.map((it, i) => (
+                <div key={i} className="text-sm">
+                  <span className="font-medium text-neutral-100">{it.name}</span>
+                  <span className="text-neutral-400"> — {it.reason}</span>
+                  <Chips ids={it.evidence_ids} />
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      {landscape.selection_rationale && (
+        <p className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-xs leading-relaxed text-neutral-500">
+          <span className="text-neutral-400">竞品筛选理由：</span>{landscape.selection_rationale}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── §5 技术能力 ─────────────────────────────────────────────────────────────
+function TechCapabilitySection({ report, cols }: { report: Report; cols: string[] }) {
+  const tc = (report.schema_draft as { tech_capability?: { products?: Record<string, Record<string, unknown>> } } | undefined)?.tech_capability?.products;
+  const hasData = tc && Object.values(tc).some((p) => p && Object.values(p).some((v) => v && v !== "unknown"));
+  // 无任何技术指标证据时整段不渲染(避免 unknown 死壳);缺口已在 §13 不确定性里如实声明。
+  if (!hasData) return null;
+  const keys = [...new Set(Object.values(tc!).flatMap((p) => Object.keys(p)))];
+  return (
+    <section className="space-y-2">
+      <SectionTitle id="tech">技术能力</SectionTitle>
+      <div className="overflow-x-auto rounded-xl border border-white/10">
+        <table className="w-full border-collapse text-sm">
+          <thead className="bg-white/5">
+            <tr>
+              <th className="px-3 py-2 text-left font-medium text-neutral-300">指标</th>
+              {cols.map((c) => <th key={c} className="px-3 py-2 text-left font-medium text-neutral-300">{c}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {keys.map((k) => (
+              <tr key={k} className="border-t border-white/10">
+                <td className="px-3 py-2 text-neutral-300">{k}</td>
+                {cols.map((c) => {
+                  const v = tc![c]?.[k];
+                  return <td key={c} className={`px-3 py-2 ${v && v !== "unknown" ? "text-neutral-200" : "text-neutral-600"}`}>{String(v ?? "unknown")}</td>;
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+// ── §6 定位地图 ─────────────────────────────────────────────────────────────
+function PositioningMapCards({ products }: { products: PositioningProduct[] }) {
+  return (
+    <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+      {products.map((p) => (
+        <div key={p.name} className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium text-neutral-100">{p.name}</span>
+            {p.positioning_label && (
+              <span className="shrink-0 rounded bg-sky-500/15 px-2 py-0.5 text-[10px] text-sky-300">{p.positioning_label}</span>
+            )}
+          </div>
+          <dl className="mt-2 space-y-1.5 text-xs leading-relaxed">
+            <Field k="目标用户" v={p.target_user} />
+            <Field k="核心场景" v={p.core_scenario} />
+            <Field k="价值主张" v={p.value_proposition} />
+          </dl>
+          <Chips ids={p.evidence_ids} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Field({ k, v }: { k: string; v?: string }) {
+  if (!v) return null;
+  return (
+    <div>
+      <dt className="text-neutral-600">{k}</dt>
+      <dd className="text-neutral-300">{v}</dd>
+    </div>
+  );
+}
+
+// ── §7 功能覆盖与差距 ────────────────────────────────────────────────────────
+function FeatureCoverageCard({ analysis, cols, target }: { analysis: FeatureAnalysis; cols: string[]; target: string }) {
+  const coverage = analysis.coverage ?? {};
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 sm:grid-cols-3">
+        {cols.map((c) => {
+          const cov = coverage[c];
+          const known = cov?.coverage_known_only;
+          const ev = cov?.evidence_coverage_rate;
+          return (
+            <div key={c} className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-xs">
+              <div className="font-medium text-neutral-200">{c}</div>
+              <div className="mt-1 text-neutral-400">功能覆盖率 <span className="font-mono text-neutral-200">{known != null ? `${Math.round(known * 100)}%` : "?"}</span></div>
+              <div className="text-neutral-400">证据覆盖率 <span className="font-mono text-neutral-200">{ev != null ? `${Math.round(ev * 100)}%` : "?"}</span></div>
+            </div>
+          );
+        })}
+      </div>
+      {(analysis.winners?.length ?? 0) > 0 && (
+        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+          <div className="mb-2 text-sm font-medium text-neutral-200">单项胜负（缺深度证据时如实判 tie / unclear）</div>
+          <ul className="space-y-1.5 text-sm text-neutral-400">
+            {analysis.winners!.map((w, i) => (
+              <li key={w.feature_id ?? i} className="leading-relaxed">
+                <span className="text-neutral-300">{w.name}：</span>
+                <span className={w.winner === target ? "text-emerald-400" : "text-sky-300"}>{w.winner}</span>
+                <ConfBadge confidence={w.confidence} />
+                {w.reason && <span className="text-neutral-500"> — {w.reason}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {(analysis.differentiation_matrix?.length ?? 0) > 0 && (
+        <ul className="space-y-1 text-xs text-neutral-400">
+          {analysis.differentiation_matrix!.map((d, i) => d.note && <li key={i}>• {d.note}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ── §8 定价同口径 insights ───────────────────────────────────────────────────
+function PricingInsights({ model }: { model: PricingModel }) {
+  const cmp = model.engine_comparison;
+  const lines = [...(cmp?.insights ?? []), ...((cmp?.gaps ?? []).map((g) => g.note).filter(Boolean) as string[])];
+  if (!lines.length) return null;
+  return (
+    <ul className="space-y-1 rounded-xl border border-white/10 bg-white/[0.02] p-4 text-xs leading-relaxed text-neutral-400">
+      {lines.map((l, i) => <li key={i}>• {l}</li>)}
+    </ul>
+  );
+}
+
+// ── §12 优先级建议 · Learn / Avoid / Attack 分组 ─────────────────────────────
+const ACTION_BLOCKS: { key: string; title: string; desc: string; tone: string }[] = [
+  { key: "learn", title: "Learn · 学竞品已验证强项", desc: "把竞品已验证的强项学过来", tone: "border-emerald-500/20" },
+  { key: "avoid", title: "Avoid · 避开竞品高权重领先区", desc: "竞品高权重领先、硬碰硬不划算的区域", tone: "border-amber-500/20" },
+  { key: "attack", title: "Attack · 切入高价值空白区", desc: "高价值但竞品覆盖不足的空白区", tone: "border-sky-500/20" },
+];
+
+function GroupedRecommendations({ recs }: { recs: Recommendation[] }) {
+  const groups: Record<string, Recommendation[]> = { learn: [], avoid: [], attack: [], other: [] };
+  for (const r of recs) {
+    const t = (r.action_type ?? "").toString().toLowerCase();
+    (groups[t] ?? groups.other).push(r);
+  }
+  return (
+    <div className="space-y-4">
+      {ACTION_BLOCKS.map(({ key, title, desc, tone }) => (
+        <div key={key} className={`rounded-xl border ${tone} bg-white/[0.02] p-4`}>
+          <div className="text-sm font-medium text-neutral-200">{title}</div>
+          <div className="mt-0.5 text-[11px] text-neutral-500">{desc}</div>
+          <div className="mt-3 space-y-3">
+            {groups[key].length ? groups[key].map((r) => <RecCard key={r.rec_id} rec={r} />)
+              : <p className="text-xs text-neutral-600">暂无</p>}
+          </div>
+        </div>
+      ))}
+      {groups.other.length > 0 && (
+        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+          <div className="text-sm font-medium text-neutral-200">其它建议</div>
+          <div className="mt-3 space-y-3">
+            {groups.other.map((r) => <RecCard key={r.rec_id} rec={r} />)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SwotQuad({
   title,
   items,
@@ -1264,10 +1938,15 @@ function RecCard({ rec }: { rec: Recommendation }) {
           {ps?.priority ?? "-"} · {ps?.final_score?.toFixed(2) ?? "?"}
         </span>
       </div>
+      {rec.target_competitor && (
+        <div className="mt-1.5 text-[11px] text-neutral-500">
+          对标 <span className="text-neutral-300">{Array.isArray(rec.target_competitor) ? rec.target_competitor.join("、") : rec.target_competitor}</span>
+        </div>
+      )}
       {rec.rationale && (
         <p className="mt-2 text-sm leading-relaxed text-neutral-400">
           {rec.rationale}
-          <Chips ids={rec.evidence_ids} />
+          <Chips ids={rec.evidence_ids ?? rec.evidence_refs} />
         </p>
       )}
       <div className="mt-3 grid gap-2 sm:grid-cols-2">

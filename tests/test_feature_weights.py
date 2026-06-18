@@ -16,6 +16,16 @@ class FeatureWeightsTest(unittest.TestCase):
         self.assertEqual(len(doms), 5)
         self.assertAlmostEqual(sum(d["weight"] for d in doms), 1.0, places=6)
 
+    def test_ai_coding_focus_uses_developer_workflow_weights(self):
+        doms = fw.domains_for_focus("代码补全体验")
+        self.assertEqual(
+            [d["name"] for d in doms],
+            ["代码理解", "代码生成", "代码修改与重构", "Agent 自动执行", "调试与测试", "上下文管理", "工程集成", "模型配置", "安全权限", "协作交付"],
+        )
+        self.assertAlmostEqual(sum(d["weight"] for d in doms), 1.0, places=6)
+        self.assertEqual(doms[0]["weight"], 0.20)
+        self.assertEqual(doms[3]["weight"], 0.20)
+
     def test_unknown_focus_falls_back_to_default(self):
         doms = fw.domains_for_focus("不存在的焦点")
         self.assertEqual([d["id"] for d in doms],

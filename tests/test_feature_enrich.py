@@ -1,7 +1,7 @@
 """按 feature 骨架针对性补采:plan 构造 + 合并去重 + spine 复用。"""
 import unittest
 
-from src import analyzer, search
+from src import analyzer, feature_tree_skills, search
 
 
 META = {"target_product": "Cursor", "competitors": ["Windsurf"], "analysis_focus": ["代码补全体验"]}
@@ -43,15 +43,19 @@ class TargetedSearchTest(unittest.TestCase):
 class EnrichMergeTest(unittest.TestCase):
     def test_merges_and_dedupes(self):
         orig_get, orig_avail, orig_targeted = analyzer.get_llm, search.tavily_available, search.feature_targeted_evidence
+        orig_spine = feature_tree_skills.feature_spine_for_meta
 
         class _SpineLLM:
             def call_json(self, *a, **k):
                 return {"features": [{"feature_id": "F001", "name": "Tab 补全"}]}
 
         analyzer.get_llm = lambda: _SpineLLM()
+        # 关掉 feature-tree skill 目录命中,隔离出 LLM 抽 spine 的路径(本用例的被测对象);
+        # skill 目录命中优先返回稳定能力模型,另有专门用例覆盖。
+        feature_tree_skills.feature_spine_for_meta = lambda meta: None
         search.tavily_available = lambda: True
         # 返回一条新证据 + 一条与已有 id 重复的
-        search.feature_targeted_evidence = lambda p, names, focus="": [
+        search.feature_targeted_evidence = lambda p, names, focus="", max_results=3: [
             {"evidence_id": "SNEW1", "claim_type": "user_pain", "product": p},
             {"evidence_id": "S0001", "claim_type": "feature_existence", "product": p},  # 重复
         ]
@@ -59,6 +63,7 @@ class EnrichMergeTest(unittest.TestCase):
             merged, spine = analyzer._enrich_evidence_by_features(EVIDENCE, META, "SYS")
         finally:
             analyzer.get_llm, search.tavily_available, search.feature_targeted_evidence = orig_get, orig_avail, orig_targeted
+            feature_tree_skills.feature_spine_for_meta = orig_spine
 
         ids = [e["evidence_id"] for e in merged]
         self.assertIn("SNEW1", ids)

@@ -1,0 +1,238 @@
+skill_id: ai_coding
+name: AI 编程工具功能树
+version: 1.0
+category: AI 编程工具
+generation_mode: skill_llm_hybrid_ready
+description: 面向竞品分析的 AI 编程工具能力结构模型，按开发者工作流而不是产品页面拆分。
+
+selection_rules:
+  product_keywords:
+    - Cursor
+    - Copilot
+    - Cline
+    - Windsurf
+    - Continue
+    - Trae
+    - Claude Code
+  focus_keywords:
+    # 注:剔除过于泛化的词("开发"误命中"后端开发/游戏开发";裸"code"/"Agent"噪声大)。
+    # 保留细粒度词,真编程焦点(如"代码补全")靠多词命中自然≥3;select_skill 另有 ≥3 分阈值兜底。
+    - 代码
+    - 编程
+    - 补全
+    - IDE
+    - coding
+  category_keywords:
+    - AI 编程工具
+    - 开发者工具
+    - coding assistant
+
+principles:
+  - 功能树不是功能清单，而是竞品分析中的能力结构模型。
+  - 不按页面、按钮、菜单或营销词拆功能。
+  - 一级模块必须围绕开发者任务链路，能够被比较、打分和证据验证。
+  - 缺少证据的能力只能标记 unknown 或待证据确认，不默认给分。
+
+scoring_rubric:
+  "0": 未覆盖
+  "1": 基础覆盖
+  "2": 可用但限制明显
+  "3": 成熟可用
+  "4": 领先
+  "5": 明显领先
+
+modules:
+  - id: F001
+    name: 代码理解
+    name_en: codebase understanding semantic search dependency analysis
+    weight: 0.20
+    role: core
+    core_question: 它能不能看懂项目？
+    representative_features:
+      - 项目索引
+      - 代码库语义搜索
+      - 文件/函数/类解释
+      - 跨文件依赖理解
+      - 调用链分析
+      - 错误日志理解
+      - 文档/README/注释理解
+    evidence_requirements:
+      - 官网功能页
+      - 产品文档
+      - 实测截图
+      - 用户评价
+  - id: F002
+    name: 代码生成
+    name_en: code completion multi-line generation test generation
+    weight: 0.15
+    role: core
+    core_question: 它能不能快速写代码？
+    representative_features:
+      - 行级补全
+      - 多行补全
+      - 函数生成
+      - 文件生成
+      - 脚手架生成
+      - 测试代码生成
+      - SQL/API/正则生成
+      - 根据自然语言生成代码
+    evidence_requirements:
+      - 官网功能页
+      - 产品文档
+      - 第三方评测
+  - id: F003
+    name: 代码修改与重构
+    name_en: inline edit multi-file refactor bug fix
+    weight: 0.20
+    role: core
+    core_question: 它能不能安全改代码？
+    representative_features:
+      - Inline Edit
+      - Chat Edit
+      - 多文件修改
+      - 重命名/抽象/封装
+      - 代码风格统一
+      - Bug 修复
+      - 性能优化
+      - 类型修复
+      - 迁移/升级依赖版本
+    evidence_requirements:
+      - 产品文档
+      - 更新日志
+      - 实测截图
+      - 用户评价
+  - id: F004
+    name: Agent 自动执行
+    name_en: agent task execution tool use terminal command automation
+    weight: 0.20
+    role: core
+    core_question: 它能不能自己推进任务？
+    representative_features:
+      - 任务拆解
+      - 自动读代码
+      - 自动改文件
+      - 自动运行命令
+      - 自动修复报错
+      - 自动生成提交说明
+      - 长任务执行
+      - 人类确认节点
+    evidence_requirements:
+      - 产品文档
+      - 更新日志
+      - 实测截图
+      - 用户评价
+  - id: F005
+    name: 调试与测试
+    name_en: debugging testing lint typecheck failure repair
+    weight: 0.10
+    role: core
+    core_question: 它能不能闭环验证？
+    representative_features:
+      - 报错解释
+      - Stack trace 分析
+      - 单元测试生成
+      - 测试失败修复
+      - 终端命令建议
+      - Lint/Typecheck 修复
+      - 运行环境诊断
+      - 性能瓶颈分析
+    evidence_requirements:
+      - 产品文档
+      - 实测截图
+      - 第三方评测
+  - id: F006
+    name: 上下文管理
+    name_en: context management project context git diff terminal context
+    weight: 0.10
+    role: core
+    core_question: 它知道多少背景？
+    representative_features:
+      - 当前文件上下文
+      - 选区上下文
+      - 多文件上下文
+      - 全项目上下文
+      - Git diff 上下文
+      - 终端上下文
+      - 文档上下文
+      - Issue/PR 上下文
+      - 长上下文记忆
+    evidence_requirements:
+      - 产品文档
+      - 帮助中心
+      - 实测截图
+  - id: F007
+    name: 工程集成
+    name_en: IDE CLI GitHub GitLab CI Docker remote development integrations
+    weight: 0.02
+    role: ecosystem
+    core_question: 它是否融入开发环境？
+    representative_features:
+      - IDE 集成
+      - CLI 集成
+      - Git 集成
+      - GitHub/GitLab 集成
+      - CI/CD 集成
+      - Docker/Dev Container 支持
+      - 远程开发支持
+      - 插件/扩展生态
+    evidence_requirements:
+      - 产品文档
+      - 集成文档
+      - API 文档
+  - id: F008
+    name: 模型配置
+    name_en: model selection third-party models local models usage cost control
+    weight: 0.01
+    role: platform
+    core_question: 它能力和成本是否可控？
+    representative_features:
+      - 内置模型
+      - 自带 API Key
+      - 支持第三方模型
+      - 本地模型支持
+      - 模型切换
+      - 推理强度设置
+      - Token/上下文窗口管理
+      - 成本/用量控制
+    evidence_requirements:
+      - 产品文档
+      - 定价页
+      - API 文档
+  - id: F009
+    name: 安全权限
+    name_en: file edit confirmation command approval secrets audit enterprise permissions
+    weight: 0.01
+    role: enterprise
+    core_question: 企业敢不敢用？
+    representative_features:
+      - 文件修改确认
+      - 命令执行确认
+      - 敏感文件保护
+      - Secret 检测
+      - 数据不训练承诺
+      - 企业权限管理
+      - 审计日志
+      - 合规能力
+    evidence_requirements:
+      - 企业安全页
+      - 合规文档
+      - 管理后台文档
+  - id: F010
+    name: 协作交付
+    name_en: commit message pull request code review documentation issue handling
+    weight: 0.01
+    role: collaboration
+    core_question: 能否进入团队流程？
+    representative_features:
+      - Commit message 生成
+      - PR 描述生成
+      - Code Review
+      - 变更解释
+      - 文档生成
+      - Issue 处理
+      - 团队知识库
+      - 企业管理后台
+    evidence_requirements:
+      - 产品文档
+      - GitHub/GitLab 集成文档
+      - 企业管理文档

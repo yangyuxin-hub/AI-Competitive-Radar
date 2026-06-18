@@ -397,6 +397,9 @@ export default function AnalyzeFlow({
               const cur = answers[q.key];
               return q.multi ? ((cur as string[]) ?? []).includes(opt) : cur === opt;
             };
+            // 竞品候选含全部产品；当前主体不能做自己的竞品 → 锁定该项(提交时也会被排除)
+            const currentTarget = (answers["target"] as string) ?? "";
+            const isLocked = (opt: string) => q.key === "competitors" && opt === currentTarget;
             const customBox = q.allow_custom && (
               <span className="inline-flex items-center gap-1">
                 <input
@@ -433,14 +436,19 @@ export default function AnalyzeFlow({
                   <>
                     <div className="grid gap-2 sm:grid-cols-2">
                       {opts.map((opt) => {
-                        const on = isOn(opt);
+                        const locked = isLocked(opt);
+                        const on = isOn(opt) && !locked;
                         const hint = q.hints?.[opt];
                         return (
                           <button
                             key={opt}
-                            onClick={() => toggle(q, opt)}
+                            onClick={() => !locked && toggle(q, opt)}
+                            disabled={locked}
+                            title={locked ? "当前已选为目标产品，不能作为自己的竞品" : undefined}
                             className={`rounded-xl border px-3 py-2.5 text-left transition ${
-                              on
+                              locked
+                                ? "cursor-not-allowed border-white/5 bg-white/[0.01] opacity-40"
+                                : on
                                 ? "border-sky-500 bg-sky-500/10"
                                 : "border-white/10 bg-white/[0.02] hover:border-white/30"
                             }`}
@@ -457,9 +465,10 @@ export default function AnalyzeFlow({
                               </span>
                               <span className={`text-sm font-medium ${on ? "text-sky-200" : "text-neutral-200"}`}>
                                 {opt}
+                                {locked && <span className="ml-1.5 text-[11px] text-neutral-500">（当前目标产品）</span>}
                               </span>
                             </div>
-                            {hint && (
+                            {hint && !locked && (
                               <div className="mt-1 pl-6 text-xs leading-relaxed text-neutral-500">{hint}</div>
                             )}
                           </button>

@@ -2,11 +2,9 @@ import unittest
 
 from src.analyzer import _fallback_decision_summary
 from src.writer import (
-    _render_business_model,
     _render_caliber_lock,
     _render_decision_summary,
     _render_feature_coverage,
-    _render_feature_insights,
     _render_pricing,
     _render_recommendations,
     _render_tech_capability,
@@ -15,7 +13,7 @@ from src.writer import (
 
 
 class DecisionSummaryTest(unittest.TestCase):
-    def test_renders_five_questions_with_confidence(self):
+    def test_renders_decision_brief_with_confidence(self):
         schema = {"decision_summary": {
             "why_success": {"answer": "靠剪映生态导流", "confidence": "medium", "refs": ["S1234567"]},
             "how_monetize": {"answer": "低门槛积分扩规模", "confidence": "high", "refs": ["S7654321"]},
@@ -25,10 +23,11 @@ class DecisionSummaryTest(unittest.TestCase):
         }}
         out = _render_decision_summary(schema, {})
         self.assertIn("决策摘要", out)
-        for kw in ("为什么成功", "靠什么赚钱", "护城河", "该学什么", "该避开什么"):
+        for kw in ("关键判断", "定价/变现判断", "可以学习", "需要避开"):
             self.assertIn(kw, out)
         self.assertIn("置信度", out)
         self.assertIn("[S1234567]", out)
+        self.assertNotIn("护城河是什么", out)
 
     def test_missing_summary_degrades_gracefully(self):
         out = _render_decision_summary({}, {})
@@ -64,7 +63,7 @@ class FallbackDecisionSummaryTest(unittest.TestCase):
         self.assertIn("Runway", ds["what_to_avoid"]["answer"])
 
 
-class TechAndBizTest(unittest.TestCase):
+class TechCapabilityTest(unittest.TestCase):
     def test_tech_capability_marks_unknown(self):
         schema = {"tech_capability": {"products": {
             "Jimeng": {"max_resolution": "1080p", "max_duration": None,
@@ -84,16 +83,6 @@ class TechAndBizTest(unittest.TestCase):
         self.assertIn("补全延迟", out)
         self.assertIn("80ms", out)
         self.assertIn("上下文窗口", out)
-
-    def test_business_model_carries_archetype(self):
-        pm = {"products": [{"name": "即梦AI", "pricing_engine": {
-            "archetype": "Freemium + Subscription + Credits"}}],
-            "pricing_strategy_analysis": {"pricing_model_analysis": {
-                "summary": "定价应拆成三层看", "products": []}}}
-        out = _render_business_model(pm)
-        self.assertIn("商业模式逻辑", out)
-        self.assertIn("Freemium + Subscription + Credits", out)
-
 
 class PricingTopTableTest(unittest.TestCase):
     def test_new_schema_tier_shows_regular_monthly_not_dash(self):
@@ -129,21 +118,7 @@ class FeatureCoverageTest(unittest.TestCase):
         self.assertNotIn("独占", out)
 
 
-class InsightsAndLockTest(unittest.TestCase):
-    def test_insights_render(self):
-        ft = {"analysis": {
-            "archetypes": {"Jimeng": "工具型", "Runway": "专精型"},
-            "moat_candidates": [{"name": "运镜控制", "domain": "可控性", "depth_score": 5,
-                                 "factors": ["专业用户沉淀"], "confidence": "high",
-                                 "note": "已叠加难复制因素"}],
-            "whitespace": [{"name": "多镜头小白化", "domain": "可控性",
-                            "reason": "样本内无人做到位", "barrier": "学习成本高"}]}}
-        out = _render_feature_insights(ft, "Jimeng")
-        self.assertIn("护城河", out)
-        self.assertIn("蓝海", out)
-        self.assertIn("运镜控制", out)
-        self.assertIn("多镜头小白化", out)
-
+class LockTest(unittest.TestCase):
     def test_caliber_lock_has_all_fields(self):
         schema = {"feature_tree": {"analysis": {"feature_weight_version": "demo-v1"}}}
         meta = {"analysis_focus": ["视频质量"], "competitors": ["Kling"],
@@ -173,7 +148,7 @@ class FourLayerOrderTest(unittest.TestCase):
                     "coverage": {},
                     "winners": [],
                     "differentiation_matrix": [],
-                    "archetypes": {},
+                    "archetypes": {"Jimeng": "工具型", "Kling": "专精型"},
                     "moat_candidates": [],
                     "whitespace": [],
                     "feature_weight_version": "demo-v1",
@@ -182,7 +157,9 @@ class FourLayerOrderTest(unittest.TestCase):
                 "user_persona": {},
                 "tech_capability": {"products": {}},
                 "swot": {},
-                "recommendations": [],
+                "recommendations": [
+                    {"action_type": "learn", "action": "优先补齐首尾帧控制", "target_competitor": "Kling"}
+                ],
             },
             "analysis_meta": {"target_product": "Jimeng", "competitors": ["Kling"],
                               "analysis_focus": ["视频质量"], "generated_at": "2026-06-17"},
@@ -191,11 +168,13 @@ class FourLayerOrderTest(unittest.TestCase):
         }
         out = writer_node(state)["report_draft"]
         i_summary = out.find("决策摘要")
+        i_recs = out.find("优先级建议")
         i_facts = out.find("多维度评分总览")
         i_coverage = out.find("功能覆盖与差距")
-        i_insights = out.find("功能定位 + 护城河 + 蓝海")
         i_lock = out.find("口径锁定表")
-        self.assertTrue(0 <= i_summary < i_facts < i_coverage < i_insights < i_lock)
+        self.assertTrue(0 <= i_summary < i_facts < i_coverage < i_recs < i_lock)
+        self.assertNotIn("功能定位 · 产品形态", out)
+        self.assertNotIn("商业模式逻辑", out)
 
 
 class RecommendationsTriBlockTest(unittest.TestCase):

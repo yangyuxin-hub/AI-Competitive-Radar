@@ -126,11 +126,42 @@ export function Chip({ id }: { id: string }) {
   );
 }
 
-export function Chips({ ids }: { ids?: string[] }) {
+function SourceGroup({ ids }: { ids: string[] }) {
+  const { open, get } = useContext(EvidenceCtx);
+  const evs = ids.map((id) => get(id)).filter((e): e is Evidence => Boolean(e));
+  if (!evs.length) return null;
+  const label = `${evs.length} source${evs.length > 1 ? "s" : ""}`;
+  const title = evs
+    .slice(0, 4)
+    .map((e) => `${domainOf(e.source_url)} · ${biasLabel(e.source_bias)}`)
+    .join("\n");
+  return (
+    <button
+      type="button"
+      onClick={() => open(evs[0].evidence_id)}
+      title={title}
+      className="mx-0.5 inline-flex items-center gap-1 rounded-md border border-sky-500/20 bg-sky-500/[0.07] px-1.5 py-0.5 align-baseline text-[11px] text-sky-300 transition hover:border-sky-500/40 hover:bg-sky-500/[0.12]"
+    >
+      <span>{label}</span>
+    </button>
+  );
+}
+
+export function Chips({ ids, compact = false }: { ids?: string[]; compact?: boolean }) {
   if (!ids || ids.length === 0) return null;
+  // 去重:同一结论引用重复 evidence_id 时,既避免 React key 撞车(警告「重复/遗漏」),
+  // 也避免同一来源 chip 视觉上重复渲染。保序。
+  const unique = [...new Set(ids)];
+  if (compact) {
+    return (
+      <span className="ml-1 inline-flex align-baseline">
+        <SourceGroup ids={unique} />
+      </span>
+    );
+  }
   return (
     <span className="ml-1 inline-flex flex-wrap gap-0.5 align-baseline">
-      {ids.map((id) => (
+      {unique.map((id) => (
         <Chip key={id} id={id} />
       ))}
     </span>

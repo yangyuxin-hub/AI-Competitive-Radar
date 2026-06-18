@@ -36,6 +36,17 @@ by_claim_type:
     - { source_type: web_search, bias: third_party, note: 官方博客、媒体与数据库画像 }
 
 # ─── 按行业细化的优质来源（domain key 对齐 config/domains.yaml）──────
+by_locale:
+  zh_cn:
+    - { source_type: community, site: zhihu.com, bias: user_generated, claim_types: [performance_quality, user_pain], note: 中文产品真实使用评价/吐槽 }
+    - { source_type: community, site: sspai.com, bias: user_generated, claim_types: [performance_quality, user_pain], note: 中文效率工具评测与使用体验 }
+    - { source_type: community, site: v2ex.com, bias: user_generated, claim_types: [performance_quality, user_pain], note: 中文开发者社区反馈 }
+    - { source_type: community, site: juejin.cn, bias: user_generated, claim_types: [performance_quality, user_pain], note: 中文研发/效率工具实践文章 }
+
+by_product:
+  飞书项目:
+    - { source_type: community, site: community.feishu.cn, bias: user_generated, claim_types: [performance_quality, user_pain], note: 飞书社区反馈 }
+
 by_domain:
   ai_coding:
     - { source_type: reddit, site: reddit.com/r/cursor, bias: user_generated }
